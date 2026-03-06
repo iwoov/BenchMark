@@ -632,9 +632,18 @@ body::before {
 .detail-layout {
     flex: 1;
     display: grid;
-    grid-template-columns: 340px 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
     min-height: 0;
+    transition: grid-template-columns var(--transition-fast);
+}
+
+.detail-layout.with-detail {
+    grid-template-columns: 340px minmax(0, 1fr);
+}
+
+.detail-layout.list-only {
+    grid-template-columns: minmax(0, 1fr);
 }
 
 /* ─── Record List ─── */
@@ -712,13 +721,41 @@ body::before {
     width: 100%;
 }
 
+.record-item:focus-visible {
+    outline: none;
+    border-color: rgba(108, 92, 231, 0.45);
+    box-shadow: 0 0 0 2px rgba(108, 92, 231, 0.18);
+}
+
 .record-item:hover {
     background: var(--bg-glass-hover);
+}
+
+.record-item.batch-selected {
+    border-color: rgba(108, 92, 231, 0.35);
 }
 
 .record-item.active {
     background: var(--accent-soft);
     border-color: rgba(108, 92, 231, 0.3);
+}
+
+.record-item-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.record-item-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.record-item-check input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent);
 }
 
 .record-item strong {
@@ -757,6 +794,10 @@ body::before {
     border: 1px solid var(--border);
     min-height: 0;
     padding: 14px;
+}
+
+.batch-answer-inline {
+    margin-bottom: 16px;
 }
 
 .batch-answer-header {
@@ -1799,6 +1840,10 @@ body::before {
 
     .record-list {
         max-height: 300px;
+    }
+
+    .detail-layout.list-only .record-list {
+        max-height: none;
     }
 
     .batch-answer-list {

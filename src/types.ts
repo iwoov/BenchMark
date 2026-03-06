@@ -33,6 +33,7 @@ export interface FileViewState extends ParsedFile {
   selectedEditableColumnKeys: string[];
   level1Filter: string;
   level2Filter: string;
+  timeFilter: string;
 }
 
 export interface AIDetectConfig {

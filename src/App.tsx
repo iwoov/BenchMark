@@ -18,17 +18,6 @@ const FEEDBACK_TITLE_ALIASES = ["业务反馈意见", "质检员业务反馈意�
 const OPENSOURCE_TITLE_ALIASES = ["是否开源"] as const;
 const AI_RESULT_WITH_CONFIG_COLUMN_KEY = "__ai_result_with_config__";
 const AI_RESULT_WITH_CONFIG_COLUMN_TITLE = "AI解析结果+AI配置名";
-const BATCH_ROUTE_PATH = "/ai-batch";
-
-type AppRoute = "records" | "batch";
-
-function resolveAppRoute(pathname: string): AppRoute {
-  return pathname.startsWith(BATCH_ROUTE_PATH) ? "batch" : "records";
-}
-
-function getRoutePath(route: AppRoute): string {
-  return route === "batch" ? BATCH_ROUTE_PATH : "/";
-}
 
 function normalizeHeaderTitle(value: string): string {
   return value.replace(/\s+/g, "").toLowerCase();
@@ -463,6 +452,7 @@ function toViewState(
     selectedEditableColumnKeys: normalized.editableKeys,
     level1Filter: ALL_FILTER_VALUE,
     level2Filter: ALL_FILTER_VALUE,
+    timeFilter: ALL_FILTER_VALUE,
   };
 }
 
@@ -654,6 +644,10 @@ function normalizeLoadedFileState(value: unknown): FileViewState | null {
     level2Filter:
       typeof candidate.level2Filter === "string"
         ? candidate.level2Filter
+        : ALL_FILTER_VALUE,
+    timeFilter:
+      typeof candidate.timeFilter === "string"
+        ? candidate.timeFilter
         : ALL_FILTER_VALUE,
   };
 }
@@ -1328,12 +1322,6 @@ function App() {
   type PendingConfigMode = "import" | "edit";
   const [files, setFiles] = useState<FileViewState[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
-  const [appRoute, setAppRoute] = useState<AppRoute>(() => {
-    if (typeof window === "undefined") {
-      return "records";
-    }
-    return resolveAppRoute(window.location.pathname);
-  });
   const [isUploading, setIsUploading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -1410,19 +1398,6 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    const onPopState = () => {
-      setAppRoute(resolveAppRoute(window.location.pathname));
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => {
-      window.removeEventListener("popstate", onPopState);
-    };
-  }, []);
-
-  useEffect(() => {
     let disposed = false;
     const controller = new AbortController();
 
@@ -1491,18 +1466,6 @@ function App() {
     () => files.find((item) => item.fileId === activeFileId) ?? null,
     [files, activeFileId],
   );
-
-  const navigateToRoute = (route: AppRoute) => {
-    if (typeof window === "undefined") {
-      setAppRoute(route);
-      return;
-    }
-    const nextPath = getRoutePath(route);
-    if (window.location.pathname !== nextPath) {
-      window.history.pushState({}, "", nextPath);
-    }
-    setAppRoute(route);
-  };
 
   useEffect(() => {
     if (!activeFile) {
@@ -1692,6 +1655,13 @@ function App() {
   const level2ColumnKey = activeFile
     ? getLevelColumnKey(activeFile.columns, "level2")
     : undefined;
+  const timeColumnKey = activeFile
+    ? activeFile.columns.find((column) => isTimeColumnTitle(column.title))?.key
+    : undefined;
+  const timeOptions = useMemo(
+    () => getDistinctOptions(activeFile?.rows ?? [], timeColumnKey),
+    [activeFile?.rows, timeColumnKey],
+  );
 
   const displayColumns = useMemo(() => {
     if (!activeFile) {
@@ -1769,9 +1739,16 @@ function App() {
         }
       }
 
+      if (timeColumnKey && activeFile.timeFilter !== ALL_FILTER_VALUE) {
+        const value = getCellText(row, timeColumnKey).trim();
+        if (value !== activeFile.timeFilter) {
+          return false;
+        }
+      }
+
       return true;
     });
-  }, [activeFile, level1ColumnKey, level2ColumnKey]);
+  }, [activeFile, level1ColumnKey, level2ColumnKey, timeColumnKey]);
 
   useEffect(() => {
     if (!activeFile || visibleRows.length === 0) {
@@ -1779,12 +1756,11 @@ function App() {
       return;
     }
 
-    const selectedStillVisible = selectedRowId
-      ? visibleRows.some((row) => row.rowId === selectedRowId)
-      : false;
-
-    if (!selectedStillVisible) {
-      setSelectedRowId(visibleRows[0].rowId);
+    if (
+      selectedRowId !== null &&
+      !visibleRows.some((row) => row.rowId === selectedRowId)
+    ) {
+      setSelectedRowId(null);
     }
   }, [activeFile, visibleRows, selectedRowId]);
 
@@ -1800,13 +1776,9 @@ function App() {
     }
 
     const visibleIdSet = new Set(visibleRows.map((row) => row.rowId));
-    setBatchSelectedRowIds((previous) => {
-      const kept = previous.filter((rowId) => visibleIdSet.has(rowId));
-      if (kept.length > 0) {
-        return kept;
-      }
-      return visibleRows.map((row) => row.rowId);
-    });
+    setBatchSelectedRowIds((previous) =>
+      previous.filter((rowId) => visibleIdSet.has(rowId)),
+    );
   }, [activeFile?.fileId, visibleRows]);
 
   const rowPreviewColumns = useMemo(() => {
@@ -2838,11 +2810,15 @@ function App() {
     });
   };
 
-  const onFilterChange = (type: "level1" | "level2", value: string) => {
+  const onFilterChange = (
+    type: "level1" | "level2" | "time",
+    value: string,
+  ) => {
     patchActiveFile((file) => ({
       ...file,
       level1Filter: type === "level1" ? value : file.level1Filter,
       level2Filter: type === "level2" ? value : file.level2Filter,
+      timeFilter: type === "time" ? value : file.timeFilter,
     }));
   };
 
@@ -3264,16 +3240,6 @@ function App() {
             <button
               type="button"
               className="btn"
-              onClick={() =>
-                navigateToRoute(appRoute === "batch" ? "records" : "batch")
-              }
-              disabled={!activeFile}
-            >
-              {appRoute === "batch" ? "返回明细页" : "批量回答页"}
-            </button>
-            <button
-              type="button"
-              className="btn"
               onClick={onExportFile}
               disabled={isExporting || !activeFile}
             >
@@ -3310,10 +3276,10 @@ function App() {
             <h2>等待文件导入</h2>
             <p>
               点击右上角「导入
-              Excel」按钮，支持展示/可编辑字段配置、level1/level2筛选、图片展示与导出。
+              Excel」按钮，支持展示/可编辑字段配置、level1/level2/时间筛选、图片展示与导出。
             </p>
           </section>
-        ) : appRoute === "batch" ? (
+        ) : (
           <>
             {/* ─── Toolbar ─── */}
             <section className="toolbar">
@@ -3351,6 +3317,23 @@ function App() {
                   ))}
                 </select>
               </div>
+              <div className="filter-group">
+                <label htmlFor="time-filter">时间</label>
+                <select
+                  id="time-filter"
+                  value={activeFile.timeFilter}
+                  onChange={(event) =>
+                    onFilterChange("time", event.target.value)
+                  }
+                >
+                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
+                  {timeOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="stats">
                 <strong>{visibleRows.length}</strong>
                 <span>可选条目</span>
@@ -3361,10 +3344,12 @@ function App() {
               </div>
             </section>
 
-            <section className="batch-answer-layout">
+            <section className="batch-answer-layout batch-answer-inline">
               <div className="batch-answer-header">
                 <h3>AI批量回答</h3>
-                <p>勾选具体条目后执行批量回答，结果将写入配置的目标字段。</p>
+                <p>
+                  在列表中勾选后执行批量回答，点击记录可在右侧查看字段详情。
+                </p>
               </div>
               <div className="batch-answer-actions">
                 <label className="ai-run-config">
@@ -3444,212 +3429,166 @@ function App() {
                   </strong>
                 </div>
               </div>
-
-              {visibleRows.length === 0 ? (
-                <div className="record-list-empty">
-                  当前筛选条件下无可选条目
-                </div>
-              ) : (
-                <div className="batch-answer-list">
-                  {visibleRows.map((row, index) => {
-                    const checked = batchSelectedRowIdSet.has(row.rowId);
-                    return (
-                      <label
-                        key={row.rowId}
-                        className={`batch-answer-item ${checked ? "checked" : ""}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => onToggleBatchRowSelection(row.rowId)}
-                        />
-                        <div className="batch-answer-item-text">
-                          <strong>第 {index + 1} 条</strong>
-                          <span>{getRowPreviewText(row)}</span>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-          </>
-        ) : (
-          <>
-            {/* ─── Toolbar ─── */}
-            <section className="toolbar">
-              <div className="filter-group">
-                <label htmlFor="level1-filter">level1</label>
-                <select
-                  id="level1-filter"
-                  value={activeFile.level1Filter}
-                  onChange={(event) =>
-                    onFilterChange("level1", event.target.value)
-                  }
-                >
-                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
-                  {activeFile.level1Options.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="filter-group">
-                <label htmlFor="level2-filter">level2</label>
-                <select
-                  id="level2-filter"
-                  value={activeFile.level2Filter}
-                  onChange={(event) =>
-                    onFilterChange("level2", event.target.value)
-                  }
-                >
-                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
-                  {activeFile.level2Options.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="stats">
-                <strong>{visibleRows.length}</strong>
-                <span>筛选后行数</span>
-              </div>
             </section>
 
             {/* ─── Detail Layout ─── */}
-            <section className="detail-layout">
+            <section
+              className={`detail-layout ${selectedRow ? "with-detail" : "list-only"}`}
+            >
               {/* ─── Record List ─── */}
               <aside className="record-list">
                 <div className="record-list-header">
                   <h3>数据列表</h3>
-                  <p>选择一条数据，右侧查看并编辑详情</p>
+                  <p>
+                    {selectedRow
+                      ? "左侧为列表，右侧为当前记录详情"
+                      : "默认列表模式，点击任意记录后右侧展开字段详情"}
+                  </p>
                 </div>
                 {visibleRows.length === 0 ? (
                   <div className="record-list-empty">当前筛选条件下无数据</div>
                 ) : (
                   <div className="record-list-items">
-                    {visibleRows.map((row, index) => (
-                      <button
-                        key={row.rowId}
-                        type="button"
-                        className={`record-item ${selectedRowId === row.rowId ? "active" : ""}`}
-                        onClick={() => setSelectedRowId(row.rowId)}
-                      >
-                        <strong>第 {index + 1} 条</strong>
-                        <span>{getRowPreviewText(row)}</span>
-                      </button>
-                    ))}
+                    {visibleRows.map((row, index) => {
+                      const checked = batchSelectedRowIdSet.has(row.rowId);
+                      return (
+                        <div
+                          key={row.rowId}
+                          role="button"
+                          tabIndex={0}
+                          className={`record-item ${selectedRowId === row.rowId ? "active" : ""} ${checked ? "batch-selected" : ""}`}
+                          onClick={() =>
+                            setSelectedRowId((previous) =>
+                              previous === row.rowId ? null : row.rowId,
+                            )
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedRowId((previous) =>
+                                previous === row.rowId ? null : row.rowId,
+                              );
+                            }
+                          }}
+                        >
+                          <div className="record-item-head">
+                            <label
+                              className="record-item-check"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  onToggleBatchRowSelection(row.rowId)
+                                }
+                              />
+                            </label>
+                            <strong>第 {index + 1} 条</strong>
+                          </div>
+                          <span>{getRowPreviewText(row)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </aside>
 
               {/* ─── Record Detail ─── */}
-              <section className="record-detail">
-                <div className="record-detail-header">
-                  <h3>字段详情</h3>
-                  {selectedRow ? (
+              {selectedRow ? (
+                <section className="record-detail">
+                  <div className="record-detail-header">
+                    <h3>字段详情</h3>
                     <span>点击字段左侧勾选框可控制显示/隐藏</span>
-                  ) : null}
-                </div>
-                <div className="record-detail-ai-toolbar">
-                  <div className="record-detail-ai-actions">
-                    <label className="ai-run-config">
-                      <span>运行配置</span>
-                      <select
-                        value={selectedAIConfigName}
-                        onChange={(event) =>
-                          onSelectAIConfigForRun(event.target.value)
-                        }
+                  </div>
+                  <div className="record-detail-ai-toolbar">
+                    <div className="record-detail-ai-actions">
+                      <label className="ai-run-config">
+                        <span>运行配置</span>
+                        <select
+                          value={selectedAIConfigName}
+                          onChange={(event) =>
+                            onSelectAIConfigForRun(event.target.value)
+                          }
+                          disabled={
+                            aiConfigLoading || isAIDetecting || isAIBatchRunning
+                          }
+                        >
+                          {aiConfigList.map((item) => (
+                            <option key={item.name} value={item.name}>
+                              {item.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={onRunAIDetect}
                         disabled={
-                          aiConfigLoading || isAIDetecting || isAIBatchRunning
+                          !selectedRow ||
+                          isAIDetecting ||
+                          aiConfigLoading ||
+                          isAIBatchRunning
                         }
                       >
-                        {aiConfigList.map((item) => (
-                          <option key={item.name} value={item.name}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      onClick={onRunAIDetect}
-                      disabled={
-                        !selectedRow ||
-                        isAIDetecting ||
-                        aiConfigLoading ||
-                        isAIBatchRunning
-                      }
-                    >
-                      {isAIDetecting
-                        ? `AI回答中 ${aiDetectElapsedText}`
-                        : "发送AI回答"}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={onSaveAIResult}
-                      disabled={
-                        !selectedRow ||
-                        isAIDetecting ||
-                        isAIBatchRunning ||
-                        isSavingAIResult ||
-                        !hasAISaveContent ||
-                        aiConfig.resultFieldKey.trim().length === 0
-                      }
-                    >
-                      {isSavingAIResult ? "保存中..." : "保存AI回答"}
-                    </button>
-                    <div className="ai-result-target">
-                      <span>保存字段：</span>
-                      <strong>{aiResultFieldTitle || "未配置"}</strong>
-                      <span className="ai-target-sep">|</span>
-                      <span>重试：</span>
-                      <strong className="ai-retry-count">
-                        {aiConfig.retryCount}次
-                      </strong>
+                        {isAIDetecting
+                          ? `AI回答中 ${aiDetectElapsedText}`
+                          : "发送AI回答"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={onSaveAIResult}
+                        disabled={
+                          !selectedRow ||
+                          isAIDetecting ||
+                          isAIBatchRunning ||
+                          isSavingAIResult ||
+                          !hasAISaveContent ||
+                          aiConfig.resultFieldKey.trim().length === 0
+                        }
+                      >
+                        {isSavingAIResult ? "保存中..." : "保存AI回答"}
+                      </button>
+                      <div className="ai-result-target">
+                        <span>保存字段：</span>
+                        <strong>{aiResultFieldTitle || "未配置"}</strong>
+                        <span className="ai-target-sep">|</span>
+                        <span>重试：</span>
+                        <strong className="ai-retry-count">
+                          {aiConfig.retryCount}次
+                        </strong>
+                      </div>
                     </div>
+                    <div className="ai-stream-group">
+                      <label className="ai-stream-label">
+                        思考过程（流式）
+                      </label>
+                      <textarea
+                        className="ai-stream-input ai-thinking-input"
+                        value={aiThinkingText}
+                        onChange={(event) =>
+                          setAIThinkingText(event.target.value)
+                        }
+                        placeholder="模型返回思考过程后，会在这里实时展示，并可一起保存。"
+                      />
+                    </div>
+                    <div className="ai-stream-group">
+                      <label className="ai-stream-label">AI回答（流式）</label>
+                      <textarea
+                        className="ai-stream-input"
+                        value={aiResultText}
+                        onChange={(event) =>
+                          setAIResultText(event.target.value)
+                        }
+                        placeholder="点击“发送AI回答”后，这里会流式展示 AI 返回结果，可手动编辑后再保存。"
+                      />
+                    </div>
+                    {aiResultMessage ? (
+                      <div className="ai-stream-message">{aiResultMessage}</div>
+                    ) : null}
                   </div>
-                  <div className="ai-stream-group">
-                    <label className="ai-stream-label">思考过程（流式）</label>
-                    <textarea
-                      className="ai-stream-input ai-thinking-input"
-                      value={aiThinkingText}
-                      onChange={(event) =>
-                        setAIThinkingText(event.target.value)
-                      }
-                      placeholder={
-                        selectedRow
-                          ? "模型返回思考过程后，会在这里实时展示，并可一起保存。"
-                          : "请先在左侧选择一条数据"
-                      }
-                      disabled={!selectedRow}
-                    />
-                  </div>
-                  <div className="ai-stream-group">
-                    <label className="ai-stream-label">AI回答（流式）</label>
-                    <textarea
-                      className="ai-stream-input"
-                      value={aiResultText}
-                      onChange={(event) => setAIResultText(event.target.value)}
-                      placeholder={
-                        selectedRow
-                          ? "点击“发送AI回答”后，这里会流式展示 AI 返回结果，可手动编辑后再保存。"
-                          : "请先在左侧选择一条数据"
-                      }
-                      disabled={!selectedRow}
-                    />
-                  </div>
-                  {aiResultMessage ? (
-                    <div className="ai-stream-message">{aiResultMessage}</div>
-                  ) : null}
-                </div>
-                {!selectedRow ? (
-                  <div className="no-data">请选择一条数据</div>
-                ) : (
                   <div className="detail-fields">
                     {displayColumns.map((column) =>
                       renderDetailField(column, false),
@@ -3674,8 +3613,8 @@ function App() {
                       </div>
                     ) : null}
                   </div>
-                )}
-              </section>
+                </section>
+              ) : null}
             </section>
           </>
         )}
