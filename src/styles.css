@@ -1032,6 +1032,10 @@ body::before {
     min-height: 90px;
 }
 
+.ai-stream-input-large {
+    min-height: 240px;
+}
+
 .ai-stream-input:focus {
     border-color: var(--accent);
     outline: none;

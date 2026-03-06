@@ -385,6 +385,54 @@ function readTextValue(value: unknown): string {
   if (Array.isArray(objectValue.content)) {
     return readTextValue(objectValue.content);
   }
+  if ("reasoning_content" in objectValue) {
+    const text = readTextValue(objectValue.reasoning_content);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("reasoningContent" in objectValue) {
+    const text = readTextValue(objectValue.reasoningContent);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("reasoning_text" in objectValue) {
+    const text = readTextValue(objectValue.reasoning_text);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("reasoningText" in objectValue) {
+    const text = readTextValue(objectValue.reasoningText);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("reasoning" in objectValue) {
+    const text = readTextValue(objectValue.reasoning);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("thinking" in objectValue) {
+    const text = readTextValue(objectValue.thinking);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("summary" in objectValue) {
+    const text = readTextValue(objectValue.summary);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  if ("output_text" in objectValue) {
+    const text = readTextValue(objectValue.output_text);
+    if (text.length > 0) {
+      return text;
+    }
+  }
   return "";
 }
 
@@ -455,10 +503,33 @@ function extractStreamTextPayload(payload: unknown): {
       answerChunks.push(topText);
     }
   }
+  const rootThinking =
+    readTextValue(root.reasoning_content) ||
+    readTextValue(root.reasoningContent) ||
+    readTextValue(root.reasoning_text) ||
+    readTextValue(root.reasoningText) ||
+    readTextValue(root.reasoning) ||
+    readTextValue(root.thinking) ||
+    readTextValue(root.summary);
+  if (rootThinking.length > 0) {
+    thinkingChunks.push(rootThinking);
+  }
 
   const choices = Array.isArray(root.choices) ? root.choices : [];
   const firstChoice = asRecord(choices[0]);
   if (firstChoice) {
+    const choiceThinking =
+      readTextValue(firstChoice.reasoning_content) ||
+      readTextValue(firstChoice.reasoningContent) ||
+      readTextValue(firstChoice.reasoning_text) ||
+      readTextValue(firstChoice.reasoningText) ||
+      readTextValue(firstChoice.reasoning) ||
+      readTextValue(firstChoice.thinking) ||
+      readTextValue(firstChoice.summary);
+    if (choiceThinking.length > 0) {
+      thinkingChunks.push(choiceThinking);
+    }
+
     const delta = asRecord(firstChoice.delta);
     if (delta) {
       extractContentParts(delta.content, answerChunks, thinkingChunks);
@@ -473,8 +544,12 @@ function extractStreamTextPayload(payload: unknown): {
       }
       const deltaThinking =
         readTextValue(delta.reasoning_content) ||
+        readTextValue(delta.reasoningContent) ||
+        readTextValue(delta.reasoning_text) ||
+        readTextValue(delta.reasoningText) ||
         readTextValue(delta.reasoning) ||
-        readTextValue(delta.thinking);
+        readTextValue(delta.thinking) ||
+        readTextValue(delta.summary);
       if (deltaThinking.length > 0) {
         thinkingChunks.push(deltaThinking);
       }
@@ -493,7 +568,13 @@ function extractStreamTextPayload(payload: unknown): {
         answerChunks.push(messageText);
       }
       const messageThinking =
-        readTextValue(message.reasoning) || readTextValue(message.thinking);
+        readTextValue(message.reasoning_content) ||
+        readTextValue(message.reasoningContent) ||
+        readTextValue(message.reasoning_text) ||
+        readTextValue(message.reasoningText) ||
+        readTextValue(message.reasoning) ||
+        readTextValue(message.thinking) ||
+        readTextValue(message.summary);
       if (messageThinking.length > 0) {
         thinkingChunks.push(messageThinking);
       }

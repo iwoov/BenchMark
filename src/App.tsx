@@ -1712,8 +1712,11 @@ function App() {
       ? Math.round((aiBatchTask.completed / aiBatchTask.total) * 100)
       : 0;
   const aiDetectElapsedText = formatDuration(aiDetectElapsedMs);
-  const hasAISaveContent =
-    composeAISaveText(aiResultText, aiThinkingText).trim().length > 0;
+  const aiMergedStreamText = useMemo(
+    () => composeAISaveText(aiResultText, aiThinkingText),
+    [aiResultText, aiThinkingText],
+  );
+  const hasAISaveContent = aiMergedStreamText.trim().length > 0;
   const batchSelectedRowIdSet = useMemo(
     () => new Set(batchSelectedRowIds),
     [batchSelectedRowIds],
@@ -3563,26 +3566,17 @@ function App() {
                     </div>
                     <div className="ai-stream-group">
                       <label className="ai-stream-label">
-                        思考过程（流式）
+                        AI响应（流式，含思考过程）
                       </label>
                       <textarea
-                        className="ai-stream-input ai-thinking-input"
-                        value={aiThinkingText}
-                        onChange={(event) =>
-                          setAIThinkingText(event.target.value)
-                        }
-                        placeholder="模型返回思考过程后，会在这里实时展示，并可一起保存。"
-                      />
-                    </div>
-                    <div className="ai-stream-group">
-                      <label className="ai-stream-label">AI回答（流式）</label>
-                      <textarea
-                        className="ai-stream-input"
-                        value={aiResultText}
-                        onChange={(event) =>
-                          setAIResultText(event.target.value)
-                        }
-                        placeholder="点击“发送AI回答”后，这里会流式展示 AI 返回结果，可手动编辑后再保存。"
+                        className="ai-stream-input ai-stream-input-large"
+                        value={aiMergedStreamText}
+                        onChange={(event) => {
+                          // After manual edit, treat the merged text as final answer body.
+                          setAIThinkingText("");
+                          setAIResultText(event.target.value);
+                        }}
+                        placeholder="点击“发送AI回答”后，这里会流式展示模型输出（思考+回答），可手动编辑后再保存。"
                       />
                     </div>
                     {aiResultMessage ? (
