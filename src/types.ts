@@ -43,6 +43,7 @@ export interface AIDetectConfig {
   prompt: string;
   resultFieldKey: string;
   reasoningEffort: "low" | "medium" | "high";
+  retryCount: number;
 }
 
 export interface NamedAIDetectConfig {

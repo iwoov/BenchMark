@@ -38,6 +38,9 @@ db.exec(`
 
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
 type AIReasoningEffort = "low" | "medium" | "high";
+const DEFAULT_AI_RETRY_COUNT = 2;
+const MIN_AI_RETRY_COUNT = 0;
+const MAX_AI_RETRY_COUNT = 10;
 
 function getTableColumns(tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
@@ -58,6 +61,7 @@ function createAIDetectConfigTable(): void {
       prompt TEXT NOT NULL,
       result_field_key TEXT,
       reasoning_effort TEXT NOT NULL DEFAULT 'high',
+      retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT},
       is_active INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -137,6 +141,7 @@ function migrateLegacyAIDetectConfigTable(): void {
       prompt,
       result_field_key,
       reasoning_effort,
+      retry_count,
       is_active,
       created_at,
       updated_at
@@ -151,6 +156,7 @@ function migrateLegacyAIDetectConfigTable(): void {
       prompt,
       result_field_key,
       'high',
+      ${DEFAULT_AI_RETRY_COUNT},
       1,
       CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP
@@ -202,8 +208,20 @@ function ensureAIDetectConfigTable(): void {
       "ALTER TABLE ai_configs ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'high'",
     );
   }
+  if (!columns.has("retry_count")) {
+    db.exec(
+      `ALTER TABLE ai_configs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT}`,
+    );
+  }
   db.exec(
     "UPDATE ai_configs SET reasoning_effort = 'high' WHERE reasoning_effort IS NULL OR trim(reasoning_effort) = ''",
+  );
+  db.exec(
+    `UPDATE ai_configs
+     SET retry_count = ${DEFAULT_AI_RETRY_COUNT}
+     WHERE retry_count IS NULL
+       OR retry_count < ${MIN_AI_RETRY_COUNT}
+       OR retry_count > ${MAX_AI_RETRY_COUNT}`,
   );
 
   createAIDetectConfigTable();
@@ -249,6 +267,7 @@ export interface AIDetectConfig {
   prompt: string;
   resultFieldKey: string;
   reasoningEffort: AIReasoningEffort;
+  retryCount: number;
 }
 
 export interface NamedAIDetectConfig extends AIDetectConfig {
@@ -279,6 +298,19 @@ function normalizeReasoningEffort(
     return value;
   }
   return "high";
+}
+
+function normalizeRetryCount(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return DEFAULT_AI_RETRY_COUNT;
+  }
+  if (value < MIN_AI_RETRY_COUNT) {
+    return MIN_AI_RETRY_COUNT;
+  }
+  if (value > MAX_AI_RETRY_COUNT) {
+    return MAX_AI_RETRY_COUNT;
+  }
+  return value;
 }
 
 /**
@@ -398,6 +430,7 @@ export function listAIDetectConfigs(fileName: string): {
          prompt,
          result_field_key,
          reasoning_effort,
+         retry_count,
          is_active,
          updated_at
        FROM ai_configs
@@ -413,6 +446,7 @@ export function listAIDetectConfigs(fileName: string): {
     prompt: string;
     result_field_key: string | null;
     reasoning_effort: string | null;
+    retry_count: number | null;
     is_active: number;
     updated_at: string;
   }>;
@@ -426,6 +460,7 @@ export function listAIDetectConfigs(fileName: string): {
     prompt: row.prompt,
     resultFieldKey: row.result_field_key ?? "",
     reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+    retryCount: normalizeRetryCount(row.retry_count),
     isActive: row.is_active === 1,
     updatedAt: row.updated_at,
   }));
@@ -461,11 +496,12 @@ export function saveAIDetectConfig(
          prompt,
          result_field_key,
          reasoning_effort,
+         retry_count,
          is_active,
          created_at,
          updated_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON CONFLICT(file_name, config_name) DO UPDATE SET
          ai_url = excluded.ai_url,
          ai_model = excluded.ai_model,
@@ -474,6 +510,7 @@ export function saveAIDetectConfig(
          prompt = excluded.prompt,
          result_field_key = excluded.result_field_key,
          reasoning_effort = excluded.reasoning_effort,
+         retry_count = excluded.retry_count,
          is_active = CASE
            WHEN excluded.is_active = 1 THEN 1
            ELSE ai_configs.is_active
@@ -489,6 +526,7 @@ export function saveAIDetectConfig(
       config.prompt,
       config.resultFieldKey || null,
       config.reasoningEffort,
+      normalizeRetryCount(config.retryCount),
       shouldSetActive ? 1 : 0,
     );
 

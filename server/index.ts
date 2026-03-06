@@ -110,9 +110,28 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 type AIReasoningEffort = "low" | "medium" | "high";
+const DEFAULT_AI_RETRY_COUNT = 2;
+const MIN_AI_RETRY_COUNT = 0;
+const MAX_AI_RETRY_COUNT = 10;
 
 function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
   return value === "low" || value === "medium" || value === "high";
+}
+
+function isValidAIRetryCount(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= MIN_AI_RETRY_COUNT &&
+    value <= MAX_AI_RETRY_COUNT
+  );
+}
+
+function normalizeAIRetryCount(value: unknown): number {
+  if (isValidAIRetryCount(value)) {
+    return value;
+  }
+  return DEFAULT_AI_RETRY_COUNT;
 }
 
 function normalizeOpenAIUrl(rawUrl: string): string {
@@ -300,6 +319,21 @@ function logAIThinkingById(requestId: string, text: string): void {
   console.log(
     `[AIThinking][${requestId}] len=${normalized.length} truncated=${AI_RESPONSE_LOG_MAX_CHARS}\n${normalized.slice(0, AI_RESPONSE_LOG_MAX_CHARS)}\n...[truncated]`,
   );
+}
+
+function parseUpstreamErrorMessage(rawText: string): string {
+  if (rawText.length === 0) {
+    return "AI 检测请求失败";
+  }
+  try {
+    const payload = JSON.parse(rawText) as {
+      error?: { message?: string };
+      message?: string;
+    };
+    return payload.error?.message ?? payload.message ?? "AI 检测请求失败";
+  } catch {
+    return rawText.slice(0, 400);
+  }
 }
 
 type AIClientStreamEvent =
@@ -763,6 +797,7 @@ app.get("/api/ai-config/:fileName", (req, res) => {
       prompt: item.prompt,
       resultFieldKey: item.resultFieldKey,
       reasoningEffort: item.reasoningEffort,
+      retryCount: item.retryCount,
       isActive: item.isActive,
       updatedAt: item.updatedAt,
     })),
@@ -777,6 +812,7 @@ app.get("/api/ai-config/:fileName", (req, res) => {
           prompt: activeConfig.prompt,
           resultFieldKey: activeConfig.resultFieldKey,
           reasoningEffort: activeConfig.reasoningEffort,
+          retryCount: activeConfig.retryCount,
         }
       : null,
   });
@@ -793,6 +829,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     prompt,
     resultFieldKey,
     reasoningEffort,
+    retryCount,
     setActive,
   } = req.body as {
     name?: unknown;
@@ -803,6 +840,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     prompt: unknown;
     resultFieldKey?: unknown;
     reasoningEffort?: unknown;
+    retryCount?: unknown;
     setActive?: unknown;
   };
 
@@ -849,6 +887,11 @@ app.put("/api/ai-config/:fileName", (req, res) => {
       .status(400)
       .json({ message: "reasoningEffort must be low, medium or high" });
   }
+  if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
+    return res.status(400).json({
+      message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+    });
+  }
 
   const configName =
     typeof name === "string" && name.trim().length > 0
@@ -857,6 +900,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
     ? reasoningEffort
     : "high";
+  const normalizedRetryCount = normalizeAIRetryCount(retryCount);
   saveAIDetectConfig(
     decodeURIComponent(fileName),
     configName,
@@ -868,6 +912,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
       prompt,
       resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
       reasoningEffort: normalizedReasoningEffort,
+      retryCount: normalizedRetryCount,
     },
     {
       setActive: setActive !== false,
@@ -896,14 +941,16 @@ app.post("/api/ai-config/:fileName/active", (req, res) => {
 // ─── AI Detection Stream ───
 
 app.post("/api/ai-detect/stream", async (req, res) => {
-  const { url, model, apiKey, prompt, fields, reasoningEffort } = req.body as {
-    url: unknown;
-    model: unknown;
-    apiKey: unknown;
-    prompt: unknown;
-    fields: unknown;
-    reasoningEffort?: unknown;
-  };
+  const { url, model, apiKey, prompt, fields, reasoningEffort, retryCount } =
+    req.body as {
+      url: unknown;
+      model: unknown;
+      apiKey: unknown;
+      prompt: unknown;
+      fields: unknown;
+      reasoningEffort?: unknown;
+      retryCount?: unknown;
+    };
 
   if (!isNonEmptyString(url)) {
     return res.status(400).json({ message: "url must be a non-empty string" });
@@ -935,9 +982,15 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       .status(400)
       .json({ message: "reasoningEffort must be low, medium or high" });
   }
+  if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
+    return res.status(400).json({
+      message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+    });
+  }
   const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
     ? reasoningEffort
     : "high";
+  const normalizedRetryCount = normalizeAIRetryCount(retryCount);
 
   const aiRequestId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
@@ -980,7 +1033,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
   }));
   // eslint-disable-next-line no-console
   console.log(
-    `[AIRequest][${aiRequestId}] model=${model} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
+    `[AIRequest][${aiRequestId}] model=${model} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
   );
   // eslint-disable-next-line no-console
   console.log(
@@ -1081,51 +1134,77 @@ app.post("/api/ai-detect/stream", async (req, res) => {
           ]
         : promptContent.promptText;
 
-    // eslint-disable-next-line no-console
-    console.log(
-      `[AIUpstream][${aiRequestId}] dispatch elapsedMs=${elapsedMs()} url=${targetUrl}`,
-    );
-    const upstream = await fetch(targetUrl, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        messages: [{ role: "user", content: userContent }],
-        reasoning: {
-          effort: normalizedReasoningEffort,
-        },
-      }),
-    });
-    upstreamStatusCode = upstream.status;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[AIUpstream][${aiRequestId}] connected elapsedMs=${elapsedMs()} status=${upstream.status} ok=${upstream.ok} hasBody=${Boolean(upstream.body)}`,
-    );
-
-    if (!upstream.ok || !upstream.body) {
-      const rawText = await upstream.text().catch(() => "");
-      let message = "AI 检测请求失败";
-      if (rawText.length > 0) {
-        try {
-          const payload = JSON.parse(rawText) as {
-            error?: { message?: string };
-            message?: string;
-          };
-          message = payload.error?.message ?? payload.message ?? message;
-        } catch {
-          message = rawText.slice(0, 400);
-        }
-      }
+    const totalAttempts = normalizedRetryCount + 1;
+    let upstream: Response | null = null;
+    let lastFailedStatus = 500;
+    let lastFailedMessage = "AI 检测请求失败";
+    for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
       // eslint-disable-next-line no-console
       console.log(
-        `[AIResponseError][${aiRequestId}] status=${upstream.status || 500} message=${message}`,
+        `[AIUpstream][${aiRequestId}] dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${targetUrl}`,
       );
-      return res.status(upstream.status || 500).json({ message });
+      try {
+        const candidate = await fetch(targetUrl, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            stream: true,
+            messages: [{ role: "user", content: userContent }],
+            reasoning: {
+              effort: normalizedReasoningEffort,
+            },
+          }),
+        });
+        upstreamStatusCode = candidate.status;
+        const hasBody = Boolean(candidate.body);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstream][${aiRequestId}] connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
+        );
+
+        if (candidate.status === 200 && hasBody) {
+          upstream = candidate;
+          break;
+        }
+
+        if (candidate.status !== 200) {
+          const rawText = await candidate.text().catch(() => "");
+          lastFailedStatus = candidate.status || 500;
+          lastFailedMessage = parseUpstreamErrorMessage(rawText);
+        } else {
+          lastFailedStatus = 502;
+          lastFailedMessage = "AI 响应流为空";
+        }
+
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamRetry][${aiRequestId}] attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
+        );
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw error;
+        }
+        lastFailedStatus = 500;
+        lastFailedMessage =
+          error instanceof Error ? error.message : "AI 检测请求失败";
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamRetry][${aiRequestId}] attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
+        );
+      }
+    }
+
+    if (!upstream || !upstream.body) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
+      );
+      return res.status(lastFailedStatus).json({ message: lastFailedMessage });
     }
 
     res.status(200);

@@ -312,35 +312,6 @@ function getImageSearchRoots(): string[] {
     roots.push(path.resolve(home));
   }
 
-  if (process.platform === "win32") {
-    const driveRoots = new Set<string>();
-    const maybeDrivePrefix = new Set<string>();
-    const homeDrive = process.env.HOMEDRIVE?.trim();
-    if (homeDrive && /^[a-zA-Z]:$/.test(homeDrive)) {
-      maybeDrivePrefix.add(homeDrive.toUpperCase());
-    }
-    const systemDrive = process.env.SystemDrive?.trim();
-    if (systemDrive && /^[a-zA-Z]:$/.test(systemDrive)) {
-      maybeDrivePrefix.add(systemDrive.toUpperCase());
-    }
-    for (let code = 67; code <= 90; code += 1) {
-      maybeDrivePrefix.add(`${String.fromCharCode(code)}:`);
-    }
-    for (const drivePrefix of maybeDrivePrefix) {
-      const driveRoot = `${drivePrefix}\\`;
-      if (!isPathExistingDir(driveRoot)) {
-        continue;
-      }
-      driveRoots.add(driveRoot);
-      driveRoots.add(path.join(driveRoot, "Users"));
-      const userName = process.env.USERNAME?.trim();
-      if (userName) {
-        driveRoots.add(path.join(driveRoot, "Users", userName));
-      }
-    }
-    roots.push(...driveRoots);
-  }
-
   return Array.from(new Set(roots)).filter((item) => isPathExistingDir(item));
 }
 
@@ -439,12 +410,6 @@ function normalizeHyperlinkToAbsolutePath(
       hyperlinkPathCache.set(trimmed, null);
       return null;
     }
-  }
-
-  const normalizedWindowsPath = normalizeWindowsDrivePath(trimmed);
-  if (normalizedWindowsPath) {
-    hyperlinkPathCache.set(trimmed, normalizedWindowsPath);
-    return normalizedWindowsPath;
   }
 
   if (path.isAbsolute(trimmed) || /^[a-zA-Z]:[\\/]/.test(trimmed)) {

@@ -931,6 +931,7 @@ body::before {
 .ai-result-target {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 4px;
     padding: 6px 10px;
     border-radius: var(--radius-sm);
@@ -949,27 +950,14 @@ body::before {
     white-space: nowrap;
 }
 
-.ai-detect-timer {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--bg-elevated);
-    color: var(--text-secondary);
-    font-size: 12px;
+.ai-target-sep {
+    color: var(--text-tertiary);
+    margin: 0 2px;
 }
 
-.ai-detect-timer strong {
-    color: var(--text-primary);
-    font-weight: 700;
+.ai-result-target .ai-retry-count {
+    max-width: none;
     font-variant-numeric: tabular-nums;
-}
-
-.ai-detect-timer.running {
-    border-color: rgba(99, 102, 241, 0.45);
-    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.18) inset;
 }
 
 .ai-stream-group {
@@ -1873,10 +1861,6 @@ body::before {
     }
 
     .ai-result-target {
-        justify-content: space-between;
-    }
-
-    .ai-detect-timer {
         justify-content: space-between;
     }
 

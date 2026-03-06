@@ -83,9 +83,13 @@ const DEFAULT_AI_CONFIG: AIDetectConfig = {
     "你是一个质检助手。请根据输入字段给出回答结论、问题点和建议。\n输出要求：\n1. 先给出结论（合格/不合格）\n2. 再列出具体问题\n3. 最后给出修改建议\n\n字段内容如下：\n{{fields_json}}",
   resultFieldKey: "",
   reasoningEffort: "high",
+  retryCount: 2,
 };
 const DEFAULT_AI_CONFIG_NAME = "默认配置";
 const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
+const DEFAULT_AI_RETRY_COUNT = 2;
+const MIN_AI_RETRY_COUNT = 0;
+const MAX_AI_RETRY_COUNT = 10;
 const DEFAULT_AI_BATCH_CONCURRENCY = 4;
 const MIN_AI_BATCH_CONCURRENCY = 1;
 const MAX_AI_BATCH_CONCURRENCY = 32;
@@ -158,6 +162,19 @@ function normalizeAIBatchConcurrency(value: unknown): number {
     return MAX_AI_BATCH_CONCURRENCY;
   }
   return rounded;
+}
+
+function normalizeAIRetryCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return DEFAULT_AI_RETRY_COUNT;
+  }
+  if (value < MIN_AI_RETRY_COUNT) {
+    return MIN_AI_RETRY_COUNT;
+  }
+  if (value > MAX_AI_RETRY_COUNT) {
+    return MAX_AI_RETRY_COUNT;
+  }
+  return value;
 }
 
 function composeAISaveText(answerText: string, thinkingText: string): string {
@@ -658,6 +675,7 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
     candidate.reasoningEffort === "high"
       ? candidate.reasoningEffort
       : DEFAULT_AI_CONFIG.reasoningEffort;
+  const retryCount = normalizeAIRetryCount(candidate.retryCount);
 
   return {
     url:
@@ -679,6 +697,7 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         ? candidate.resultFieldKey
         : "",
     reasoningEffort,
+    retryCount,
   };
 }
 
@@ -808,6 +827,7 @@ function normalizeAIDetectConfigForColumns(
     ...config,
     submitFieldKeys,
     resultFieldKey: nextResultFieldKey,
+    retryCount: normalizeAIRetryCount(config.retryCount),
   };
 }
 
@@ -856,6 +876,7 @@ async function requestAIDetectResult(
     prompt: string;
     fields: AIDetectFieldPayload[];
     reasoningEffort: AIDetectConfig["reasoningEffort"];
+    retryCount: number;
   },
   options?: {
     signal?: AbortSignal;
@@ -2158,6 +2179,7 @@ function App() {
           prompt: normalizedConfig.prompt,
           fields,
           reasoningEffort: normalizedConfig.reasoningEffort,
+          retryCount: normalizedConfig.retryCount,
         },
         {
           signal: controller.signal,
@@ -2386,6 +2408,7 @@ function App() {
               prompt: normalizedConfig.prompt,
               fields,
               reasoningEffort: normalizedConfig.reasoningEffort,
+              retryCount: normalizedConfig.retryCount,
             },
             { signal: controller.signal },
           );
@@ -3414,6 +3437,11 @@ function App() {
                 <div className="ai-result-target">
                   <span>保存字段：</span>
                   <strong>{aiResultFieldTitle || "未配置"}</strong>
+                  <span className="ai-target-sep">|</span>
+                  <span>重试：</span>
+                  <strong className="ai-retry-count">
+                    {aiConfig.retryCount}次
+                  </strong>
                 </div>
               </div>
 
@@ -3578,12 +3606,11 @@ function App() {
                     <div className="ai-result-target">
                       <span>保存字段：</span>
                       <strong>{aiResultFieldTitle || "未配置"}</strong>
-                    </div>
-                    <div
-                      className={`ai-detect-timer ${isAIDetecting ? "running" : ""}`}
-                    >
-                      <span>计时：</span>
-                      <strong>{aiDetectElapsedText}</strong>
+                      <span className="ai-target-sep">|</span>
+                      <span>重试：</span>
+                      <strong className="ai-retry-count">
+                        {aiConfig.retryCount}次
+                      </strong>
                     </div>
                   </div>
                   <div className="ai-stream-group">
@@ -3819,6 +3846,24 @@ function App() {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="ai-config-field">
+                <span>失败重试次数（后端）</span>
+                <input
+                  type="number"
+                  min={MIN_AI_RETRY_COUNT}
+                  max={MAX_AI_RETRY_COUNT}
+                  step={1}
+                  value={draftAIConfig.retryCount}
+                  onChange={(event) =>
+                    setDraftAIConfig((previous) => ({
+                      ...previous,
+                      retryCount: normalizeAIRetryCount(
+                        Number(event.target.value),
+                      ),
+                    }))
+                  }
+                />
               </label>
               <label className="ai-config-field">
                 <span>API Key</span>
