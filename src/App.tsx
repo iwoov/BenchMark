@@ -64,9 +64,12 @@ interface ColumnPrefsConfig {
 }
 
 const DEFAULT_AI_CONFIG: AIDetectConfig = {
+  provider: "openai",
   url: "https://api.openai.com/v1",
   model: "gpt-4.1-mini",
   apiKey: "",
+  vertexProject: "",
+  vertexLocation: "us-central1",
   submitFieldKeys: [],
   prompt:
     "你是一个质检助手。请根据输入字段给出回答结论、问题点和建议。\n输出要求：\n1. 先给出结论（合格/不合格）\n2. 再列出具体问题\n3. 最后给出修改建议\n\n字段内容如下：\n{{fields_json}}",
@@ -76,6 +79,10 @@ const DEFAULT_AI_CONFIG: AIDetectConfig = {
 };
 const DEFAULT_AI_CONFIG_NAME = "默认配置";
 const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
+const AI_PROVIDER_OPTIONS = [
+  { value: "openai", label: "OpenAI兼容接口" },
+  { value: "vertex", label: "Google Vertex 原生" },
+] as const;
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
@@ -658,6 +665,10 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
   }
 
   const candidate = value as Partial<AIDetectConfig>;
+  const provider =
+    candidate.provider === "openai" || candidate.provider === "vertex"
+      ? candidate.provider
+      : DEFAULT_AI_CONFIG.provider;
   const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
     ? candidate.submitFieldKeys.filter(
         (item): item is string => typeof item === "string",
@@ -672,6 +683,7 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
   const retryCount = normalizeAIRetryCount(candidate.retryCount);
 
   return {
+    provider,
     url:
       typeof candidate.url === "string" && candidate.url.trim().length > 0
         ? candidate.url
@@ -681,6 +693,15 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         ? candidate.model
         : DEFAULT_AI_CONFIG.model,
     apiKey: typeof candidate.apiKey === "string" ? candidate.apiKey : "",
+    vertexProject:
+      typeof candidate.vertexProject === "string"
+        ? candidate.vertexProject
+        : "",
+    vertexLocation:
+      typeof candidate.vertexLocation === "string" &&
+      candidate.vertexLocation.trim().length > 0
+        ? candidate.vertexLocation
+        : DEFAULT_AI_CONFIG.vertexLocation,
     submitFieldKeys,
     prompt:
       typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
@@ -864,9 +885,12 @@ function buildAIDetectFieldsForRow(
 
 async function requestAIDetectResult(
   payload: {
+    provider: AIDetectConfig["provider"];
     url: string;
     model: string;
     apiKey: string;
+    vertexProject: string;
+    vertexLocation: string;
     prompt: string;
     fields: AIDetectFieldPayload[];
     reasoningEffort: AIDetectConfig["reasoningEffort"];
@@ -2008,17 +2032,29 @@ function App() {
       activeFile.columns,
     );
 
-    if (nextConfig.url.trim().length === 0) {
-      setAIConfigFormMessage("AI URL 不能为空");
-      return;
-    }
     if (nextConfig.model.trim().length === 0) {
       setAIConfigFormMessage("模型不能为空");
       return;
     }
-    if (nextConfig.apiKey.trim().length === 0) {
-      setAIConfigFormMessage("API Key 不能为空");
-      return;
+    if (nextConfig.provider === "openai") {
+      if (nextConfig.url.trim().length === 0) {
+        setAIConfigFormMessage("OpenAI 兼容接口 URL 不能为空");
+        return;
+      }
+      if (nextConfig.apiKey.trim().length === 0) {
+        setAIConfigFormMessage("OpenAI API Key 不能为空");
+        return;
+      }
+    }
+    if (nextConfig.provider === "vertex") {
+      if (nextConfig.vertexProject.trim().length === 0) {
+        setAIConfigFormMessage("Vertex Project 不能为空");
+        return;
+      }
+      if (nextConfig.vertexLocation.trim().length === 0) {
+        setAIConfigFormMessage("Vertex Location 不能为空");
+        return;
+      }
     }
     if (nextConfig.submitFieldKeys.length === 0) {
       setAIConfigFormMessage("请至少选择一个提交回答字段");
@@ -2101,17 +2137,29 @@ function App() {
     syncActiveAIConfigState(normalizedConfig);
     const runningConfigName = selectedAIConfigName;
 
-    if (normalizedConfig.url.trim().length === 0) {
-      setAIResultMessage("请先配置 AI URL");
-      return;
-    }
     if (normalizedConfig.model.trim().length === 0) {
       setAIResultMessage("请先配置模型");
       return;
     }
-    if (normalizedConfig.apiKey.trim().length === 0) {
-      setAIResultMessage("请先配置 API Key");
-      return;
+    if (normalizedConfig.provider === "openai") {
+      if (normalizedConfig.url.trim().length === 0) {
+        setAIResultMessage("请先配置 OpenAI 兼容接口 URL");
+        return;
+      }
+      if (normalizedConfig.apiKey.trim().length === 0) {
+        setAIResultMessage("请先配置 OpenAI API Key");
+        return;
+      }
+    }
+    if (normalizedConfig.provider === "vertex") {
+      if (normalizedConfig.vertexProject.trim().length === 0) {
+        setAIResultMessage("请先配置 Vertex Project");
+        return;
+      }
+      if (normalizedConfig.vertexLocation.trim().length === 0) {
+        setAIResultMessage("请先配置 Vertex Location");
+        return;
+      }
     }
     if (normalizedConfig.submitFieldKeys.length === 0) {
       setAIResultMessage("请先在 AI 配置中选择提交回答字段");
@@ -2148,9 +2196,12 @@ function App() {
     try {
       const streamResult = await requestAIDetectResult(
         {
+          provider: normalizedConfig.provider,
           url: normalizedConfig.url,
           model: normalizedConfig.model,
           apiKey: normalizedConfig.apiKey,
+          vertexProject: normalizedConfig.vertexProject,
+          vertexLocation: normalizedConfig.vertexLocation,
           prompt: normalizedConfig.prompt,
           fields,
           reasoningEffort: normalizedConfig.reasoningEffort,
@@ -2270,17 +2321,29 @@ function App() {
     syncActiveAIConfigState(normalizedConfig);
     const runningConfigName = selectedAIConfigName;
 
-    if (normalizedConfig.url.trim().length === 0) {
-      setErrorMessage("请先配置 AI URL");
-      return;
-    }
     if (normalizedConfig.model.trim().length === 0) {
       setErrorMessage("请先配置模型");
       return;
     }
-    if (normalizedConfig.apiKey.trim().length === 0) {
-      setErrorMessage("请先配置 API Key");
-      return;
+    if (normalizedConfig.provider === "openai") {
+      if (normalizedConfig.url.trim().length === 0) {
+        setErrorMessage("请先配置 OpenAI 兼容接口 URL");
+        return;
+      }
+      if (normalizedConfig.apiKey.trim().length === 0) {
+        setErrorMessage("请先配置 OpenAI API Key");
+        return;
+      }
+    }
+    if (normalizedConfig.provider === "vertex") {
+      if (normalizedConfig.vertexProject.trim().length === 0) {
+        setErrorMessage("请先配置 Vertex Project");
+        return;
+      }
+      if (normalizedConfig.vertexLocation.trim().length === 0) {
+        setErrorMessage("请先配置 Vertex Location");
+        return;
+      }
     }
     if (normalizedConfig.submitFieldKeys.length === 0) {
       setErrorMessage("请先在 AI 配置中选择提交回答字段");
@@ -2377,9 +2440,12 @@ function App() {
 
           const streamResult = await requestAIDetectResult(
             {
+              provider: normalizedConfig.provider,
               url: normalizedConfig.url,
               model: normalizedConfig.model,
               apiKey: normalizedConfig.apiKey,
+              vertexProject: normalizedConfig.vertexProject,
+              vertexLocation: normalizedConfig.vertexLocation,
               prompt: normalizedConfig.prompt,
               fields,
               reasoningEffort: normalizedConfig.reasoningEffort,
@@ -3712,7 +3778,7 @@ function App() {
       {isAIConfigModalOpen && activeFile ? (
         <div className="column-modal-mask">
           <div className="column-modal ai-config-modal">
-            <h3>AI回答配置（OpenAI格式）</h3>
+            <h3>AI回答配置</h3>
             <p>{activeFile.fileName}</p>
             {aiConfigFormMessage ? (
               <div className="column-modal-notice">{aiConfigFormMessage}</div>
@@ -3734,19 +3800,72 @@ function App() {
                 ))}
               </datalist>
               <label className="ai-config-field">
-                <span>AI URL</span>
-                <input
-                  type="text"
-                  value={draftAIConfig.url}
+                <span>接口类型</span>
+                <select
+                  value={draftAIConfig.provider}
                   onChange={(event) =>
                     setDraftAIConfig((previous) => ({
                       ...previous,
-                      url: event.target.value,
+                      provider: event.target
+                        .value as AIDetectConfig["provider"],
                     }))
                   }
-                  placeholder="例如：https://api.openai.com/v1"
-                />
+                >
+                  {AI_PROVIDER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </label>
+              {draftAIConfig.provider === "openai" ? (
+                <label className="ai-config-field">
+                  <span>OpenAI兼容接口 URL</span>
+                  <input
+                    type="text"
+                    value={draftAIConfig.url}
+                    onChange={(event) =>
+                      setDraftAIConfig((previous) => ({
+                        ...previous,
+                        url: event.target.value,
+                      }))
+                    }
+                    placeholder="例如：https://api.openai.com/v1"
+                  />
+                </label>
+              ) : null}
+              {draftAIConfig.provider === "vertex" ? (
+                <>
+                  <label className="ai-config-field">
+                    <span>Vertex Project</span>
+                    <input
+                      type="text"
+                      value={draftAIConfig.vertexProject}
+                      onChange={(event) =>
+                        setDraftAIConfig((previous) => ({
+                          ...previous,
+                          vertexProject: event.target.value,
+                        }))
+                      }
+                      placeholder="例如：my-gcp-project"
+                    />
+                  </label>
+                  <label className="ai-config-field">
+                    <span>Vertex Location</span>
+                    <input
+                      type="text"
+                      value={draftAIConfig.vertexLocation}
+                      onChange={(event) =>
+                        setDraftAIConfig((previous) => ({
+                          ...previous,
+                          vertexLocation: event.target.value,
+                        }))
+                      }
+                      placeholder="例如：us-central1"
+                    />
+                  </label>
+                </>
+              ) : null}
               <label className="ai-config-field">
                 <span>模型</span>
                 <input
@@ -3798,20 +3917,22 @@ function App() {
                   }
                 />
               </label>
-              <label className="ai-config-field">
-                <span>API Key</span>
-                <input
-                  type="password"
-                  value={draftAIConfig.apiKey}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      apiKey: event.target.value,
-                    }))
-                  }
-                  placeholder="请输入 API Key"
-                />
-              </label>
+              {draftAIConfig.provider === "openai" ? (
+                <label className="ai-config-field">
+                  <span>OpenAI API Key</span>
+                  <input
+                    type="password"
+                    value={draftAIConfig.apiKey}
+                    onChange={(event) =>
+                      setDraftAIConfig((previous) => ({
+                        ...previous,
+                        apiKey: event.target.value,
+                      }))
+                    }
+                    placeholder="请输入 API Key"
+                  />
+                </label>
+              ) : null}
               <label className="ai-config-field">
                 <span>结果保存字段</span>
                 <select

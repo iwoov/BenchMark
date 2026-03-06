@@ -37,6 +37,7 @@ db.exec(`
 `);
 
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
+type AIProvider = "openai" | "vertex";
 type AIReasoningEffort = "low" | "medium" | "high";
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
@@ -54,9 +55,12 @@ function createAIDetectConfigTable(): void {
     CREATE TABLE IF NOT EXISTS ai_configs (
       file_name TEXT NOT NULL,
       config_name TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'openai',
       ai_url TEXT NOT NULL,
       ai_model TEXT NOT NULL,
       api_key TEXT NOT NULL,
+      vertex_project TEXT NOT NULL DEFAULT '',
+      vertex_location TEXT NOT NULL DEFAULT '',
       submit_field_keys TEXT NOT NULL,
       prompt TEXT NOT NULL,
       result_field_key TEXT,
@@ -134,9 +138,12 @@ function migrateLegacyAIDetectConfigTable(): void {
     `INSERT INTO ai_configs (
       file_name,
       config_name,
+      provider,
       ai_url,
       ai_model,
       api_key,
+      vertex_project,
+      vertex_location,
       submit_field_keys,
       prompt,
       result_field_key,
@@ -149,9 +156,12 @@ function migrateLegacyAIDetectConfigTable(): void {
     SELECT
       file_name,
       ?,
+      'openai',
       ai_url,
       ai_model,
       api_key,
+      '',
+      '',
       submit_field_keys,
       prompt,
       result_field_key,
@@ -213,6 +223,33 @@ function ensureAIDetectConfigTable(): void {
       `ALTER TABLE ai_configs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT}`,
     );
   }
+  if (!columns.has("provider")) {
+    db.exec(
+      "ALTER TABLE ai_configs ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'",
+    );
+  }
+  if (!columns.has("vertex_project")) {
+    db.exec(
+      "ALTER TABLE ai_configs ADD COLUMN vertex_project TEXT NOT NULL DEFAULT ''",
+    );
+  }
+  if (!columns.has("vertex_location")) {
+    db.exec(
+      "ALTER TABLE ai_configs ADD COLUMN vertex_location TEXT NOT NULL DEFAULT ''",
+    );
+  }
+  db.exec(
+    "UPDATE ai_configs SET provider = 'openai' WHERE provider IS NULL OR trim(provider) = ''",
+  );
+  db.exec(
+    "UPDATE ai_configs SET provider = 'openai' WHERE provider NOT IN ('openai', 'vertex')",
+  );
+  db.exec(
+    "UPDATE ai_configs SET vertex_project = '' WHERE vertex_project IS NULL",
+  );
+  db.exec(
+    "UPDATE ai_configs SET vertex_location = '' WHERE vertex_location IS NULL",
+  );
   db.exec(
     "UPDATE ai_configs SET reasoning_effort = 'high' WHERE reasoning_effort IS NULL OR trim(reasoning_effort) = ''",
   );
@@ -260,9 +297,12 @@ export interface PersistedFileState {
 }
 
 export interface AIDetectConfig {
+  provider: AIProvider;
   url: string;
   model: string;
   apiKey: string;
+  vertexProject: string;
+  vertexLocation: string;
   submitFieldKeys: string[];
   prompt: string;
   resultFieldKey: string;
@@ -298,6 +338,13 @@ function normalizeReasoningEffort(
     return value;
   }
   return "high";
+}
+
+function normalizeAIProvider(value: string | null | undefined): AIProvider {
+  if (value === "openai" || value === "vertex") {
+    return value;
+  }
+  return "openai";
 }
 
 function normalizeRetryCount(value: number | null | undefined): number {
@@ -423,9 +470,12 @@ export function listAIDetectConfigs(fileName: string): {
     .prepare(
       `SELECT
          config_name,
+         provider,
          ai_url,
          ai_model,
          api_key,
+         vertex_project,
+         vertex_location,
          submit_field_keys,
          prompt,
          result_field_key,
@@ -439,9 +489,12 @@ export function listAIDetectConfigs(fileName: string): {
     )
     .all(fileName) as Array<{
     config_name: string;
+    provider: string | null;
     ai_url: string;
     ai_model: string;
     api_key: string;
+    vertex_project: string | null;
+    vertex_location: string | null;
     submit_field_keys: string;
     prompt: string;
     result_field_key: string | null;
@@ -453,9 +506,12 @@ export function listAIDetectConfigs(fileName: string): {
 
   const configs = rows.map((row) => ({
     name: row.config_name,
+    provider: normalizeAIProvider(row.provider),
     url: row.ai_url,
     model: row.ai_model,
     apiKey: row.api_key,
+    vertexProject: row.vertex_project ?? "",
+    vertexLocation: row.vertex_location ?? "",
     submitFieldKeys: parseJsonStringArray(row.submit_field_keys),
     prompt: row.prompt,
     resultFieldKey: row.result_field_key ?? "",
@@ -489,9 +545,12 @@ export function saveAIDetectConfig(
       `INSERT INTO ai_configs (
          file_name,
          config_name,
+         provider,
          ai_url,
          ai_model,
          api_key,
+         vertex_project,
+         vertex_location,
          submit_field_keys,
          prompt,
          result_field_key,
@@ -501,11 +560,14 @@ export function saveAIDetectConfig(
          created_at,
          updated_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON CONFLICT(file_name, config_name) DO UPDATE SET
+         provider = excluded.provider,
          ai_url = excluded.ai_url,
          ai_model = excluded.ai_model,
          api_key = excluded.api_key,
+         vertex_project = excluded.vertex_project,
+         vertex_location = excluded.vertex_location,
          submit_field_keys = excluded.submit_field_keys,
          prompt = excluded.prompt,
          result_field_key = excluded.result_field_key,
@@ -519,9 +581,12 @@ export function saveAIDetectConfig(
     ).run(
       fileName,
       normalizedName,
+      normalizeAIProvider(config.provider),
       config.url,
       config.model,
       config.apiKey,
+      config.vertexProject,
+      config.vertexLocation,
       JSON.stringify(config.submitFieldKeys),
       config.prompt,
       config.resultFieldKey || null,

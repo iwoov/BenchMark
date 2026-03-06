@@ -37,9 +37,12 @@ export interface FileViewState extends ParsedFile {
 }
 
 export interface AIDetectConfig {
+  provider: "openai" | "vertex";
   url: string;
   model: string;
   apiKey: string;
+  vertexProject: string;
+  vertexLocation: string;
   submitFieldKeys: string[];
   prompt: string;
   resultFieldKey: string;

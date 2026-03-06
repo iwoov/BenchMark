@@ -110,12 +110,17 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 type AIReasoningEffort = "low" | "medium" | "high";
+type AIProvider = "openai" | "vertex";
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
 
 function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
   return value === "low" || value === "medium" || value === "high";
+}
+
+function isAIProvider(value: unknown): value is AIProvider {
+  return value === "openai" || value === "vertex";
 }
 
 function isValidAIRetryCount(value: unknown): value is number {
@@ -334,6 +339,50 @@ function parseUpstreamErrorMessage(rawText: string): string {
   } catch {
     return rawText.slice(0, 400);
   }
+}
+
+function parseUnknownUpstreamError(error: unknown): {
+  status: number;
+  message: string;
+} {
+  if (error instanceof Error) {
+    const record = asRecord(error as unknown);
+    const statusCandidate = Number(record?.status ?? record?.code);
+    const status =
+      Number.isInteger(statusCandidate) &&
+      statusCandidate >= 400 &&
+      statusCandidate <= 599
+        ? statusCandidate
+        : 500;
+    return {
+      status,
+      message: error.message || "AI 检测请求失败",
+    };
+  }
+
+  const record = asRecord(error);
+  if (!record) {
+    return {
+      status: 500,
+      message: "AI 检测请求失败",
+    };
+  }
+
+  const statusCandidate = Number(record.status ?? record.code);
+  const status =
+    Number.isInteger(statusCandidate) &&
+    statusCandidate >= 400 &&
+    statusCandidate <= 599
+      ? statusCandidate
+      : 500;
+  const message =
+    (typeof record.message === "string" && record.message) ||
+    (typeof record.details === "string" && record.details) ||
+    "AI 检测请求失败";
+  return {
+    status,
+    message,
+  };
 }
 
 type AIClientStreamEvent =
@@ -633,6 +682,218 @@ type PromptBuildResult = {
   imageFields: Array<{ title: string; value: string; imageUrl: string }>;
 };
 
+type VertexContentPart =
+  | {
+      text: string;
+    }
+  | {
+      inlineData: {
+        mimeType: string;
+        data: string;
+      };
+    }
+  | {
+      fileData: {
+        mimeType?: string;
+        fileUri: string;
+      };
+    };
+
+type VertexGenerateContentRequest = {
+  contents: Array<{
+    role: "user";
+    parts: VertexContentPart[];
+  }>;
+  generationConfig?: {
+    thinkingConfig?: {
+      includeThoughts?: boolean;
+    };
+  };
+};
+
+type VertexGenerateContentChunk = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+        thought?: boolean;
+        type?: string;
+      }>;
+    };
+  }>;
+};
+
+type VertexModelClient = {
+  generateContentStream: (
+    request: VertexGenerateContentRequest,
+  ) => Promise<{ stream: AsyncIterable<VertexGenerateContentChunk> }>;
+};
+
+type VertexAIClient = {
+  getGenerativeModel: (options: { model: string }) => VertexModelClient;
+};
+
+type VertexAIConstructor = new (options: {
+  project: string;
+  location: string;
+}) => VertexAIClient;
+
+async function createVertexModelClient(
+  project: string,
+  location: string,
+  model: string,
+): Promise<VertexModelClient> {
+  const moduleName = "@google-cloud/vertexai";
+  let imported: unknown;
+  try {
+    imported = await import(moduleName);
+  } catch {
+    throw new Error(
+      "未安装 @google-cloud/vertexai，请先执行 pnpm add @google-cloud/vertexai",
+    );
+  }
+
+  const moduleRecord = asRecord(imported);
+  const defaultRecord = asRecord(moduleRecord?.default);
+  const maybeCtor = moduleRecord?.VertexAI ?? defaultRecord?.VertexAI;
+  if (typeof maybeCtor !== "function") {
+    throw new Error("Vertex SDK 加载失败，缺少 VertexAI 构造器");
+  }
+
+  const VertexAI = maybeCtor as VertexAIConstructor;
+  const client = new VertexAI({
+    project: project.trim(),
+    location: location.trim(),
+  });
+  return client.getGenerativeModel({
+    model: model.trim(),
+  });
+}
+
+function parseBase64DataUrl(value: string): {
+  mimeType: string;
+  data: string;
+} | null {
+  const match = value.trim().match(/^data:([^;,]+);base64,(.+)$/i);
+  if (!match || match.length < 3) {
+    return null;
+  }
+  const mimeType = match[1].trim();
+  const data = match[2].trim();
+  if (!mimeType || !data) {
+    return null;
+  }
+  return {
+    mimeType,
+    data,
+  };
+}
+
+function buildVertexUserParts(
+  promptContent: PromptBuildResult,
+): VertexContentPart[] {
+  const parts: VertexContentPart[] = [
+    {
+      text: promptContent.promptText,
+    },
+  ];
+
+  for (const field of promptContent.imageFields) {
+    const imageLabel =
+      field.value.trim().length > 0
+        ? `字段图片：${field.title}（说明：${field.value}）`
+        : `字段图片：${field.title}`;
+    parts.push({ text: imageLabel });
+
+    const imageUrl = field.imageUrl.trim();
+    const inlineData = parseBase64DataUrl(imageUrl);
+    if (inlineData) {
+      parts.push({
+        inlineData: {
+          mimeType: inlineData.mimeType,
+          data: inlineData.data,
+        },
+      });
+      continue;
+    }
+
+    if (imageUrl.startsWith("gs://")) {
+      const ext = getImageExtFromPathLike(imageUrl);
+      parts.push({
+        fileData: {
+          fileUri: imageUrl,
+          mimeType: ext ? getImageMimeType(ext) : undefined,
+        },
+      });
+      continue;
+    }
+
+    parts.push({
+      text: `[图片地址（未转为 inlineData）: ${imageUrl}]`,
+    });
+  }
+
+  return parts;
+}
+
+function extractVertexStreamTextPayload(payload: unknown): {
+  answerText: string;
+  thinkingText: string;
+} {
+  const root = asRecord(payload);
+  if (!root) {
+    return {
+      answerText: "",
+      thinkingText: "",
+    };
+  }
+
+  const answerChunks: string[] = [];
+  const thinkingChunks: string[] = [];
+  const candidates = Array.isArray(root.candidates) ? root.candidates : [];
+
+  for (const candidate of candidates) {
+    const candidateRecord = asRecord(candidate);
+    if (!candidateRecord) {
+      continue;
+    }
+    const content = asRecord(candidateRecord.content);
+    const parts = Array.isArray(content?.parts) ? content.parts : [];
+    for (const part of parts) {
+      const partRecord = asRecord(part);
+      if (!partRecord) {
+        continue;
+      }
+      const text =
+        typeof partRecord.text === "string"
+          ? partRecord.text
+          : readTextValue(partRecord.text);
+      if (text.length === 0) {
+        continue;
+      }
+      const type =
+        typeof partRecord.type === "string"
+          ? partRecord.type.toLowerCase()
+          : "";
+      const isThought =
+        partRecord.thought === true ||
+        type.includes("thought") ||
+        type.includes("reasoning") ||
+        type.includes("thinking");
+      if (isThought) {
+        thinkingChunks.push(text);
+      } else {
+        answerChunks.push(text);
+      }
+    }
+  }
+
+  return {
+    answerText: answerChunks.join(""),
+    thinkingText: thinkingChunks.join(""),
+  };
+}
+
 function toAIDetectFields(value: unknown): AIDetectField[] | null {
   if (!Array.isArray(value)) {
     return null;
@@ -871,9 +1132,12 @@ app.get("/api/ai-config/:fileName", (req, res) => {
   return res.json({
     configs: configs.map((item) => ({
       name: item.name,
+      provider: item.provider,
       url: item.url,
       model: item.model,
       apiKey: item.apiKey,
+      vertexProject: item.vertexProject,
+      vertexLocation: item.vertexLocation,
       submitFieldKeys: item.submitFieldKeys,
       prompt: item.prompt,
       resultFieldKey: item.resultFieldKey,
@@ -886,9 +1150,12 @@ app.get("/api/ai-config/:fileName", (req, res) => {
     // Keep compatibility with legacy frontend that only reads one config.
     config: activeConfig
       ? {
+          provider: activeConfig.provider,
           url: activeConfig.url,
           model: activeConfig.model,
           apiKey: activeConfig.apiKey,
+          vertexProject: activeConfig.vertexProject,
+          vertexLocation: activeConfig.vertexLocation,
           submitFieldKeys: activeConfig.submitFieldKeys,
           prompt: activeConfig.prompt,
           resultFieldKey: activeConfig.resultFieldKey,
@@ -903,9 +1170,12 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   const { fileName } = req.params;
   const {
     name,
+    provider,
     url,
     model,
     apiKey,
+    vertexProject,
+    vertexLocation,
     submitFieldKeys,
     prompt,
     resultFieldKey,
@@ -914,29 +1184,64 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     setActive,
   } = req.body as {
     name?: unknown;
-    url: unknown;
-    model: unknown;
-    apiKey: unknown;
-    submitFieldKeys: unknown;
-    prompt: unknown;
+    provider?: unknown;
+    url?: unknown;
+    model?: unknown;
+    apiKey?: unknown;
+    vertexProject?: unknown;
+    vertexLocation?: unknown;
+    submitFieldKeys?: unknown;
+    prompt?: unknown;
     resultFieldKey?: unknown;
     reasoningEffort?: unknown;
     retryCount?: unknown;
     setActive?: unknown;
   };
 
-  if (!isNonEmptyString(url)) {
-    return res.status(400).json({ message: "url must be a non-empty string" });
+  const normalizedProvider: AIProvider = isAIProvider(provider)
+    ? provider
+    : "openai";
+
+  if (url !== undefined && typeof url !== "string") {
+    return res.status(400).json({ message: "url must be a string" });
+  }
+  if (apiKey !== undefined && typeof apiKey !== "string") {
+    return res.status(400).json({ message: "apiKey must be a string" });
+  }
+  if (vertexProject !== undefined && typeof vertexProject !== "string") {
+    return res.status(400).json({ message: "vertexProject must be a string" });
+  }
+  if (vertexLocation !== undefined && typeof vertexLocation !== "string") {
+    return res.status(400).json({ message: "vertexLocation must be a string" });
   }
   if (!isNonEmptyString(model)) {
     return res
       .status(400)
       .json({ message: "model must be a non-empty string" });
   }
-  if (!isNonEmptyString(apiKey)) {
-    return res
-      .status(400)
-      .json({ message: "apiKey must be a non-empty string" });
+  if (normalizedProvider === "openai") {
+    if (!isNonEmptyString(url)) {
+      return res
+        .status(400)
+        .json({ message: "url must be a non-empty string for openai" });
+    }
+    if (!isNonEmptyString(apiKey)) {
+      return res
+        .status(400)
+        .json({ message: "apiKey must be a non-empty string for openai" });
+    }
+  }
+  if (normalizedProvider === "vertex") {
+    if (!isNonEmptyString(vertexProject)) {
+      return res.status(400).json({
+        message: "vertexProject must be a non-empty string for vertex",
+      });
+    }
+    if (!isNonEmptyString(vertexLocation)) {
+      return res.status(400).json({
+        message: "vertexLocation must be a non-empty string for vertex",
+      });
+    }
   }
   if (
     !Array.isArray(submitFieldKeys) ||
@@ -986,9 +1291,12 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     decodeURIComponent(fileName),
     configName,
     {
-      url,
+      provider: normalizedProvider,
+      url: typeof url === "string" ? url : "",
       model,
-      apiKey,
+      apiKey: typeof apiKey === "string" ? apiKey : "",
+      vertexProject: typeof vertexProject === "string" ? vertexProject : "",
+      vertexLocation: typeof vertexLocation === "string" ? vertexLocation : "",
       submitFieldKeys,
       prompt,
       resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
@@ -1022,34 +1330,78 @@ app.post("/api/ai-config/:fileName/active", (req, res) => {
 // ─── AI Detection Stream ───
 
 app.post("/api/ai-detect/stream", async (req, res) => {
-  const { url, model, apiKey, prompt, fields, reasoningEffort, retryCount } =
-    req.body as {
-      url: unknown;
-      model: unknown;
-      apiKey: unknown;
-      prompt: unknown;
-      fields: unknown;
-      reasoningEffort?: unknown;
-      retryCount?: unknown;
-    };
+  const {
+    provider,
+    url,
+    model,
+    apiKey,
+    vertexProject,
+    vertexLocation,
+    prompt,
+    fields,
+    reasoningEffort,
+    retryCount,
+  } = req.body as {
+    provider?: unknown;
+    url?: unknown;
+    model?: unknown;
+    apiKey?: unknown;
+    vertexProject?: unknown;
+    vertexLocation?: unknown;
+    prompt?: unknown;
+    fields: unknown;
+    reasoningEffort?: unknown;
+    retryCount?: unknown;
+  };
+  const normalizedProvider: AIProvider = isAIProvider(provider)
+    ? provider
+    : "openai";
 
-  if (!isNonEmptyString(url)) {
-    return res.status(400).json({ message: "url must be a non-empty string" });
+  if (url !== undefined && typeof url !== "string") {
+    return res.status(400).json({ message: "url must be a string" });
+  }
+  if (apiKey !== undefined && typeof apiKey !== "string") {
+    return res.status(400).json({ message: "apiKey must be a string" });
+  }
+  if (vertexProject !== undefined && typeof vertexProject !== "string") {
+    return res.status(400).json({ message: "vertexProject must be a string" });
+  }
+  if (vertexLocation !== undefined && typeof vertexLocation !== "string") {
+    return res.status(400).json({ message: "vertexLocation must be a string" });
   }
   if (!isNonEmptyString(model)) {
     return res
       .status(400)
       .json({ message: "model must be a non-empty string" });
   }
-  if (!isNonEmptyString(apiKey)) {
-    return res
-      .status(400)
-      .json({ message: "apiKey must be a non-empty string" });
-  }
   if (!isNonEmptyString(prompt)) {
     return res
       .status(400)
       .json({ message: "prompt must be a non-empty string" });
+  }
+  if (normalizedProvider === "openai") {
+    if (!isNonEmptyString(url)) {
+      return res
+        .status(400)
+        .json({ message: "url must be a non-empty string for openai" });
+    }
+    if (!isNonEmptyString(apiKey)) {
+      return res
+        .status(400)
+        .json({ message: "apiKey must be a non-empty string for openai" });
+    }
+  }
+  if (normalizedProvider === "vertex") {
+    if (!isNonEmptyString(vertexProject)) {
+      return res.status(400).json({
+        message: "vertexProject must be a non-empty string for vertex",
+      });
+    }
+    if (!isNonEmptyString(vertexLocation)) {
+      return res.status(400).json({
+        message: "vertexLocation must be a non-empty string for vertex",
+      });
+    }
   }
 
   const fieldPayload = toAIDetectFields(fields);
@@ -1072,6 +1424,13 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     ? reasoningEffort
     : "high";
   const normalizedRetryCount = normalizeAIRetryCount(retryCount);
+  const normalizedOpenAIUrl =
+    typeof url === "string" ? normalizeOpenAIUrl(url) : "";
+  const normalizedOpenAIApiKey = typeof apiKey === "string" ? apiKey : "";
+  const normalizedVertexProject =
+    typeof vertexProject === "string" ? vertexProject.trim() : "";
+  const normalizedVertexLocation =
+    typeof vertexLocation === "string" ? vertexLocation.trim() : "";
 
   const aiRequestId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
@@ -1114,19 +1473,19 @@ app.post("/api/ai-detect/stream", async (req, res) => {
   }));
   // eslint-disable-next-line no-console
   console.log(
-    `[AIRequest][${aiRequestId}] model=${model} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
+    `[AIRequest][${aiRequestId}] provider=${normalizedProvider} model=${model} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
   );
   // eslint-disable-next-line no-console
   console.log(
     `[AIRequestFields][${aiRequestId}] ${JSON.stringify(aiFieldLogs)}`,
   );
-
-  const targetUrl = normalizeOpenAIUrl(url);
-  try {
-    // Validate URL before dispatching request.
-    new URL(targetUrl);
-  } catch {
-    return res.status(400).json({ message: "url is invalid" });
+  if (normalizedProvider === "openai") {
+    try {
+      // Validate URL before dispatching request.
+      new URL(normalizedOpenAIUrl);
+    } catch {
+      return res.status(400).json({ message: "url is invalid" });
+    }
   }
 
   const controller = new AbortController();
@@ -1187,100 +1546,291 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     const promptContent = buildPromptContent(prompt, aiFields);
     let aiResponseText = "";
     let aiThinkingText = "";
-    const userContent: string | OpenAIMessageContentPart[] =
-      promptContent.imageFields.length > 0
-        ? [
-            {
-              type: "text",
-              text: promptContent.promptText,
-            },
-            ...promptContent.imageFields.flatMap((field) => {
-              const imageLabel =
-                field.value.trim().length > 0
-                  ? `字段图片：${field.title}（说明：${field.value}）`
-                  : `字段图片：${field.title}`;
-              return [
-                {
-                  type: "text" as const,
-                  text: imageLabel,
-                },
-                {
-                  type: "image_url" as const,
-                  image_url: {
-                    url: field.imageUrl,
-                  },
-                },
-              ];
-            }),
-          ]
-        : promptContent.promptText;
-
     const totalAttempts = normalizedRetryCount + 1;
-    let upstream: Response | null = null;
     let lastFailedStatus = 500;
     let lastFailedMessage = "AI 检测请求失败";
+    if (normalizedProvider === "openai") {
+      const userContent: string | OpenAIMessageContentPart[] =
+        promptContent.imageFields.length > 0
+          ? [
+              {
+                type: "text",
+                text: promptContent.promptText,
+              },
+              ...promptContent.imageFields.flatMap((field) => {
+                const imageLabel =
+                  field.value.trim().length > 0
+                    ? `字段图片：${field.title}（说明：${field.value}）`
+                    : `字段图片：${field.title}`;
+                return [
+                  {
+                    type: "text" as const,
+                    text: imageLabel,
+                  },
+                  {
+                    type: "image_url" as const,
+                    image_url: {
+                      url: field.imageUrl,
+                    },
+                  },
+                ];
+              }),
+            ]
+          : promptContent.promptText;
+
+      let upstream: Response | null = null;
+      for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstream][${aiRequestId}] provider=openai dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${normalizedOpenAIUrl}`,
+        );
+        try {
+          const candidate = await fetch(normalizedOpenAIUrl, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${normalizedOpenAIApiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              stream: true,
+              messages: [{ role: "user", content: userContent }],
+              reasoning: {
+                effort: normalizedReasoningEffort,
+              },
+            }),
+          });
+          upstreamStatusCode = candidate.status;
+          const hasBody = Boolean(candidate.body);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[AIUpstream][${aiRequestId}] provider=openai connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
+          );
+
+          if (candidate.status === 200 && hasBody) {
+            upstream = candidate;
+            break;
+          }
+
+          if (candidate.status !== 200) {
+            const rawText = await candidate.text().catch(() => "");
+            lastFailedStatus = candidate.status || 500;
+            lastFailedMessage = parseUpstreamErrorMessage(rawText);
+          } else {
+            lastFailedStatus = 502;
+            lastFailedMessage = "AI 响应流为空";
+          }
+
+          // eslint-disable-next-line no-console
+          console.log(
+            `[AIUpstreamRetry][${aiRequestId}] provider=openai attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
+          );
+        } catch (error) {
+          if (controller.signal.aborted) {
+            throw error;
+          }
+          const parsedError = parseUnknownUpstreamError(error);
+          lastFailedStatus = parsedError.status;
+          lastFailedMessage = parsedError.message;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[AIUpstreamRetry][${aiRequestId}] provider=openai attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
+          );
+        }
+      }
+
+      if (!upstream || !upstream.body) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
+        );
+        return res
+          .status(lastFailedStatus)
+          .json({ message: lastFailedMessage });
+      }
+
+      res.status(200);
+      res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let rawStreamPreview = "";
+
+      const reader = upstream.body.getReader();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (!value) {
+          continue;
+        }
+
+        const current = decoder.decode(value, { stream: true });
+        if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+          rawStreamPreview += current;
+        }
+        buffer += current;
+
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) {
+            continue;
+          }
+
+          const data = trimmed.slice(5).trim();
+          if (data === "[DONE]") {
+            doneByDoneToken = true;
+            logAIResponseById(aiRequestId, aiResponseText);
+            if (aiThinkingText.trim().length > 0) {
+              logAIThinkingById(aiRequestId, aiThinkingText);
+            }
+            writeAIClientStreamEvent(res, { type: "done" });
+            res.end();
+            return;
+          }
+          if (data.length === 0) {
+            continue;
+          }
+
+          try {
+            const payload = JSON.parse(data) as unknown;
+            const extracted = extractStreamTextPayload(payload);
+            if (extracted.thinkingText.length > 0) {
+              aiThinkingText += extracted.thinkingText;
+              streamThinkingChunkCount += 1;
+              streamThinkingTextLength += extracted.thinkingText.length;
+              writeAIClientStreamEvent(res, {
+                type: "thinking",
+                text: extracted.thinkingText,
+              });
+            }
+            if (extracted.answerText.length > 0) {
+              aiResponseText += extracted.answerText;
+              streamChunkCount += 1;
+              streamTextLength += extracted.answerText.length;
+              writeAIClientStreamEvent(res, {
+                type: "answer",
+                text: extracted.answerText,
+              });
+            }
+          } catch {
+            // Ignore non-JSON stream chunks.
+          }
+        }
+      }
+
+      buffer += decoder.decode();
+      if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+        rawStreamPreview += buffer;
+      }
+
+      if (buffer.length > 0 && buffer.includes("data:")) {
+        const maybeData = buffer
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line.startsWith("data:"));
+        const value = maybeData ? maybeData.slice(5).trim() : "";
+        if (value && value !== "[DONE]") {
+          try {
+            const payload = JSON.parse(value) as unknown;
+            const extracted = extractStreamTextPayload(payload);
+            if (extracted.thinkingText.length > 0) {
+              aiThinkingText += extracted.thinkingText;
+              streamThinkingChunkCount += 1;
+              streamThinkingTextLength += extracted.thinkingText.length;
+              writeAIClientStreamEvent(res, {
+                type: "thinking",
+                text: extracted.thinkingText,
+              });
+            }
+            if (extracted.answerText.length > 0) {
+              aiResponseText += extracted.answerText;
+              streamChunkCount += 1;
+              streamTextLength += extracted.answerText.length;
+              writeAIClientStreamEvent(res, {
+                type: "answer",
+                text: extracted.answerText,
+              });
+            }
+          } catch {
+            // Ignore trailing invalid chunk.
+          }
+        }
+      }
+
+      doneByNaturalEnd = true;
+      logAIResponseById(aiRequestId, aiResponseText);
+      if (aiThinkingText.trim().length > 0) {
+        logAIThinkingById(aiRequestId, aiThinkingText);
+      }
+      if (
+        aiResponseText.trim().length === 0 &&
+        rawStreamPreview.trim().length > 0
+      ) {
+        logAIRawResponseById(aiRequestId, rawStreamPreview);
+      }
+      writeAIClientStreamEvent(res, { type: "done" });
+      res.end();
+      return;
+    }
+
+    const vertexParts = buildVertexUserParts(promptContent);
+    let vertexStream: AsyncIterable<VertexGenerateContentChunk> | null = null;
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
       // eslint-disable-next-line no-console
       console.log(
-        `[AIUpstream][${aiRequestId}] dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${targetUrl}`,
+        `[AIUpstream][${aiRequestId}] provider=vertex dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} project=${normalizedVertexProject} location=${normalizedVertexLocation}`,
       );
       try {
-        const candidate = await fetch(targetUrl, {
-          method: "POST",
-          signal: controller.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            stream: true,
-            messages: [{ role: "user", content: userContent }],
-            reasoning: {
-              effort: normalizedReasoningEffort,
+        const modelClient = await createVertexModelClient(
+          normalizedVertexProject,
+          normalizedVertexLocation,
+          model,
+        );
+        const response = await modelClient.generateContentStream({
+          contents: [
+            {
+              role: "user",
+              parts: vertexParts,
             },
-          }),
+          ],
+          generationConfig: {
+            thinkingConfig: {
+              includeThoughts: true,
+            },
+          },
         });
-        upstreamStatusCode = candidate.status;
-        const hasBody = Boolean(candidate.body);
+        upstreamStatusCode = 200;
+        vertexStream = response.stream;
         // eslint-disable-next-line no-console
         console.log(
-          `[AIUpstream][${aiRequestId}] connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
+          `[AIUpstream][${aiRequestId}] provider=vertex connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts}`,
         );
-
-        if (candidate.status === 200 && hasBody) {
-          upstream = candidate;
-          break;
-        }
-
-        if (candidate.status !== 200) {
-          const rawText = await candidate.text().catch(() => "");
-          lastFailedStatus = candidate.status || 500;
-          lastFailedMessage = parseUpstreamErrorMessage(rawText);
-        } else {
-          lastFailedStatus = 502;
-          lastFailedMessage = "AI 响应流为空";
-        }
-
-        // eslint-disable-next-line no-console
-        console.log(
-          `[AIUpstreamRetry][${aiRequestId}] attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
-        );
+        break;
       } catch (error) {
         if (controller.signal.aborted) {
           throw error;
         }
-        lastFailedStatus = 500;
-        lastFailedMessage =
-          error instanceof Error ? error.message : "AI 检测请求失败";
+        const parsedError = parseUnknownUpstreamError(error);
+        lastFailedStatus = parsedError.status;
+        lastFailedMessage = parsedError.message;
         // eslint-disable-next-line no-console
         console.log(
-          `[AIUpstreamRetry][${aiRequestId}] attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
+          `[AIUpstreamRetry][${aiRequestId}] provider=vertex attempt=${attempt}/${totalAttempts} status=${lastFailedStatus} message=${lastFailedMessage}`,
         );
       }
     }
 
-    if (!upstream || !upstream.body) {
+    if (!vertexStream) {
       // eslint-disable-next-line no-console
       console.log(
         `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
@@ -1295,113 +1845,28 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let rawStreamPreview = "";
-
-    const reader = upstream.body.getReader();
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
+    for await (const chunk of vertexStream) {
+      if (controller.signal.aborted) {
+        throw new Error("请求已取消");
       }
-      if (!value) {
-        continue;
+      const extracted = extractVertexStreamTextPayload(chunk);
+      if (extracted.thinkingText.length > 0) {
+        aiThinkingText += extracted.thinkingText;
+        streamThinkingChunkCount += 1;
+        streamThinkingTextLength += extracted.thinkingText.length;
+        writeAIClientStreamEvent(res, {
+          type: "thinking",
+          text: extracted.thinkingText,
+        });
       }
-
-      const current = decoder.decode(value, { stream: true });
-      if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
-        rawStreamPreview += current;
-      }
-      buffer += current;
-
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) {
-          continue;
-        }
-
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") {
-          doneByDoneToken = true;
-          logAIResponseById(aiRequestId, aiResponseText);
-          if (aiThinkingText.trim().length > 0) {
-            logAIThinkingById(aiRequestId, aiThinkingText);
-          }
-          writeAIClientStreamEvent(res, { type: "done" });
-          res.end();
-          return;
-        }
-        if (data.length === 0) {
-          continue;
-        }
-
-        try {
-          const payload = JSON.parse(data) as unknown;
-          const extracted = extractStreamTextPayload(payload);
-          if (extracted.thinkingText.length > 0) {
-            aiThinkingText += extracted.thinkingText;
-            streamThinkingChunkCount += 1;
-            streamThinkingTextLength += extracted.thinkingText.length;
-            writeAIClientStreamEvent(res, {
-              type: "thinking",
-              text: extracted.thinkingText,
-            });
-          }
-          if (extracted.answerText.length > 0) {
-            aiResponseText += extracted.answerText;
-            streamChunkCount += 1;
-            streamTextLength += extracted.answerText.length;
-            writeAIClientStreamEvent(res, {
-              type: "answer",
-              text: extracted.answerText,
-            });
-          }
-        } catch {
-          // Ignore non-JSON stream chunks.
-        }
-      }
-    }
-
-    buffer += decoder.decode();
-    if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
-      rawStreamPreview += buffer;
-    }
-
-    if (buffer.length > 0 && buffer.includes("data:")) {
-      const maybeData = buffer
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find((line) => line.startsWith("data:"));
-      const value = maybeData ? maybeData.slice(5).trim() : "";
-      if (value && value !== "[DONE]") {
-        try {
-          const payload = JSON.parse(value) as unknown;
-          const extracted = extractStreamTextPayload(payload);
-          if (extracted.thinkingText.length > 0) {
-            aiThinkingText += extracted.thinkingText;
-            streamThinkingChunkCount += 1;
-            streamThinkingTextLength += extracted.thinkingText.length;
-            writeAIClientStreamEvent(res, {
-              type: "thinking",
-              text: extracted.thinkingText,
-            });
-          }
-          if (extracted.answerText.length > 0) {
-            aiResponseText += extracted.answerText;
-            streamChunkCount += 1;
-            streamTextLength += extracted.answerText.length;
-            writeAIClientStreamEvent(res, {
-              type: "answer",
-              text: extracted.answerText,
-            });
-          }
-        } catch {
-          // Ignore trailing invalid chunk.
-        }
+      if (extracted.answerText.length > 0) {
+        aiResponseText += extracted.answerText;
+        streamChunkCount += 1;
+        streamTextLength += extracted.answerText.length;
+        writeAIClientStreamEvent(res, {
+          type: "answer",
+          text: extracted.answerText,
+        });
       }
     }
 
@@ -1409,12 +1874,6 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     logAIResponseById(aiRequestId, aiResponseText);
     if (aiThinkingText.trim().length > 0) {
       logAIThinkingById(aiRequestId, aiThinkingText);
-    }
-    if (
-      aiResponseText.trim().length === 0 &&
-      rawStreamPreview.trim().length > 0
-    ) {
-      logAIRawResponseById(aiRequestId, rawStreamPreview);
     }
     writeAIClientStreamEvent(res, { type: "done" });
     res.end();
@@ -1427,10 +1886,20 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       );
       return;
     }
-    const message = error instanceof Error ? error.message : "AI 检测请求失败";
+    const parsedError = parseUnknownUpstreamError(error);
     // eslint-disable-next-line no-console
-    console.log(`[AIResponseException][${aiRequestId}] ${message}`);
-    return res.status(500).json({ message });
+    console.log(
+      `[AIResponseException][${aiRequestId}] status=${parsedError.status} message=${parsedError.message}`,
+    );
+    if (res.headersSent) {
+      if (!res.writableEnded) {
+        res.end();
+      }
+      return;
+    }
+    return res
+      .status(parsedError.status)
+      .json({ message: parsedError.message });
   }
 });
 
