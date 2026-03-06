@@ -8,13 +8,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseWorkbook } from "./excelParser.js";
 import {
-  getAIDetectConfig,
+  DEFAULT_AI_CONFIG_NAME,
   deleteFileState,
   getColumnPrefs,
+  listAIDetectConfigs,
   listFileStates,
   saveAIDetectConfig,
   saveColumnPrefs,
   saveFileState,
+  setAIDetectActiveConfig,
 } from "./db.js";
 
 type ExcelJSImportLike = { Workbook: new () => ExcelJS.Workbook };
@@ -45,21 +47,31 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/images/local", (req, res) => {
   const pathQuery = req.query.path;
   if (typeof pathQuery !== "string" || pathQuery.trim().length === 0) {
+    // eslint-disable-next-line no-console
+    console.log("[ImageLocal] reject empty path query");
     return res.status(400).json({ message: "path is required" });
   }
 
   const absolutePath = toAbsoluteImagePath(pathQuery);
   if (!absolutePath) {
+    // eslint-disable-next-line no-console
+    console.log(`[ImageLocal] reject non-absolute path=${pathQuery}`);
     return res.status(400).json({ message: "path must be an absolute path" });
   }
 
   const ext = getImageExtFromPathLike(absolutePath);
   if (!ext) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ImageLocal] reject unsupported extension path=${absolutePath}`,
+    );
     return res.status(400).json({ message: "unsupported image extension" });
   }
 
   try {
     if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+      // eslint-disable-next-line no-console
+      console.log(`[ImageLocal] not found path=${absolutePath}`);
       return res.status(404).json({ message: "image not found" });
     }
 
@@ -68,6 +80,8 @@ app.get("/api/images/local", (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=120");
     const stream = fs.createReadStream(absolutePath);
     stream.on("error", () => {
+      // eslint-disable-next-line no-console
+      console.log(`[ImageLocal] read stream error path=${absolutePath}`);
       if (!res.headersSent) {
         res.status(500).json({ message: "read image failed" });
       } else {
@@ -77,6 +91,8 @@ app.get("/api/images/local", (req, res) => {
     stream.pipe(res);
     return;
   } catch {
+    // eslint-disable-next-line no-console
+    console.log(`[ImageLocal] read image failed path=${absolutePath}`);
     return res.status(500).json({ message: "read image failed" });
   }
 });
@@ -91,6 +107,12 @@ function normalizeUploadedFileName(fileName: string): string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+type AIReasoningEffort = "low" | "medium" | "high";
+
+function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
+  return value === "low" || value === "medium" || value === "high";
 }
 
 function normalizeOpenAIUrl(rawUrl: string): string {
@@ -407,7 +429,12 @@ function extractStreamTextPayload(payload: unknown): {
     if (delta) {
       extractContentParts(delta.content, answerChunks, thinkingChunks);
       const deltaText = readTextValue(delta.content);
-      if (!Array.isArray(delta.content) && deltaText.length > 0) {
+      // extractContentParts already handles string/array content; avoid duplicate chunks.
+      if (
+        typeof delta.content !== "string" &&
+        !Array.isArray(delta.content) &&
+        deltaText.length > 0
+      ) {
         answerChunks.push(deltaText);
       }
       const deltaThinking =
@@ -423,7 +450,12 @@ function extractStreamTextPayload(payload: unknown): {
     if (message) {
       extractContentParts(message.content, answerChunks, thinkingChunks);
       const messageText = readTextValue(message.content);
-      if (!Array.isArray(message.content) && messageText.length > 0) {
+      // extractContentParts already handles string/array content; avoid duplicate chunks.
+      if (
+        typeof message.content !== "string" &&
+        !Array.isArray(message.content) &&
+        messageText.length > 0
+      ) {
         answerChunks.push(messageText);
       }
       const messageThinking =
@@ -717,21 +749,62 @@ app.put("/api/column-prefs/:fileName", (req, res) => {
 
 app.get("/api/ai-config/:fileName", (req, res) => {
   const { fileName } = req.params;
-  const config = getAIDetectConfig(decodeURIComponent(fileName));
-  return res.json({ config });
+  const { configs, activeConfigName } = listAIDetectConfigs(
+    decodeURIComponent(fileName),
+  );
+  const activeConfig = configs.find((item) => item.name === activeConfigName);
+  return res.json({
+    configs: configs.map((item) => ({
+      name: item.name,
+      url: item.url,
+      model: item.model,
+      apiKey: item.apiKey,
+      submitFieldKeys: item.submitFieldKeys,
+      prompt: item.prompt,
+      resultFieldKey: item.resultFieldKey,
+      reasoningEffort: item.reasoningEffort,
+      isActive: item.isActive,
+      updatedAt: item.updatedAt,
+    })),
+    activeConfigName,
+    // Keep compatibility with legacy frontend that only reads one config.
+    config: activeConfig
+      ? {
+          url: activeConfig.url,
+          model: activeConfig.model,
+          apiKey: activeConfig.apiKey,
+          submitFieldKeys: activeConfig.submitFieldKeys,
+          prompt: activeConfig.prompt,
+          resultFieldKey: activeConfig.resultFieldKey,
+          reasoningEffort: activeConfig.reasoningEffort,
+        }
+      : null,
+  });
 });
 
 app.put("/api/ai-config/:fileName", (req, res) => {
   const { fileName } = req.params;
-  const { url, model, apiKey, submitFieldKeys, prompt, resultFieldKey } =
-    req.body as {
-      url: unknown;
-      model: unknown;
-      apiKey: unknown;
-      submitFieldKeys: unknown;
-      prompt: unknown;
-      resultFieldKey?: unknown;
-    };
+  const {
+    name,
+    url,
+    model,
+    apiKey,
+    submitFieldKeys,
+    prompt,
+    resultFieldKey,
+    reasoningEffort,
+    setActive,
+  } = req.body as {
+    name?: unknown;
+    url: unknown;
+    model: unknown;
+    apiKey: unknown;
+    submitFieldKeys: unknown;
+    prompt: unknown;
+    resultFieldKey?: unknown;
+    reasoningEffort?: unknown;
+    setActive?: unknown;
+  };
 
   if (!isNonEmptyString(url)) {
     return res.status(400).json({ message: "url must be a non-empty string" });
@@ -762,28 +835,74 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   if (resultFieldKey !== undefined && typeof resultFieldKey !== "string") {
     return res.status(400).json({ message: "resultFieldKey must be a string" });
   }
+  if (name !== undefined && typeof name !== "string") {
+    return res.status(400).json({ message: "name must be a string" });
+  }
+  if (typeof name === "string" && name.trim().length === 0) {
+    return res.status(400).json({ message: "name must be a non-empty string" });
+  }
+  if (setActive !== undefined && typeof setActive !== "boolean") {
+    return res.status(400).json({ message: "setActive must be a boolean" });
+  }
+  if (reasoningEffort !== undefined && !isAIReasoningEffort(reasoningEffort)) {
+    return res
+      .status(400)
+      .json({ message: "reasoningEffort must be low, medium or high" });
+  }
 
-  saveAIDetectConfig(decodeURIComponent(fileName), {
-    url,
-    model,
-    apiKey,
-    submitFieldKeys,
-    prompt,
-    resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
-  });
+  const configName =
+    typeof name === "string" && name.trim().length > 0
+      ? name.trim()
+      : DEFAULT_AI_CONFIG_NAME;
+  const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
+    ? reasoningEffort
+    : "high";
+  saveAIDetectConfig(
+    decodeURIComponent(fileName),
+    configName,
+    {
+      url,
+      model,
+      apiKey,
+      submitFieldKeys,
+      prompt,
+      resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
+      reasoningEffort: normalizedReasoningEffort,
+    },
+    {
+      setActive: setActive !== false,
+    },
+  );
 
+  return res.json({ ok: true });
+});
+
+app.post("/api/ai-config/:fileName/active", (req, res) => {
+  const { fileName } = req.params;
+  const { name } = req.body as {
+    name?: unknown;
+  };
+  if (!isNonEmptyString(name)) {
+    return res.status(400).json({ message: "name must be a non-empty string" });
+  }
+
+  const ok = setAIDetectActiveConfig(decodeURIComponent(fileName), name);
+  if (!ok) {
+    return res.status(404).json({ message: "AI 配置不存在" });
+  }
   return res.json({ ok: true });
 });
 
 // ─── AI Detection Stream ───
 
 app.post("/api/ai-detect/stream", async (req, res) => {
-  const { url, model, apiKey, prompt, fields } = req.body as {
+  const { url, model, apiKey, prompt, fields, reasoningEffort } = req.body as {
     url: unknown;
     model: unknown;
     apiKey: unknown;
     prompt: unknown;
     fields: unknown;
+    reasoningEffort?: unknown;
   };
 
   if (!isNonEmptyString(url)) {
@@ -811,6 +930,14 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       .status(400)
       .json({ message: "fields must be a non-empty array" });
   }
+  if (reasoningEffort !== undefined && !isAIReasoningEffort(reasoningEffort)) {
+    return res
+      .status(400)
+      .json({ message: "reasoningEffort must be low, medium or high" });
+  }
+  const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
+    ? reasoningEffort
+    : "high";
 
   const aiRequestId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
@@ -969,6 +1096,9 @@ app.post("/api/ai-detect/stream", async (req, res) => {
         model,
         stream: true,
         messages: [{ role: "user", content: userContent }],
+        reasoning: {
+          effort: normalizedReasoningEffort,
+        },
       }),
     });
     upstreamStatusCode = upstream.status;

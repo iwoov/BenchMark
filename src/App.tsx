@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AIDetectConfig,
   FileViewState,
+  NamedAIDetectConfig,
   ParsedCell,
   ParsedColumn,
   ParsedFile,
@@ -10,9 +11,24 @@ import type {
 
 const ALL_FILTER_VALUE = "全部";
 const QUALIFIED_TITLE_ALIASES = ["是否合格"] as const;
+const TIME_TITLE_ALIASES = ["时间"] as const;
+const CREATOR_TITLE_ALIASES = ["创建人"] as const;
 const INSPECTOR_TITLE_ALIASES = ["质检员"] as const;
 const FEEDBACK_TITLE_ALIASES = ["业务反馈意见", "质检员业务反馈意见"] as const;
 const OPENSOURCE_TITLE_ALIASES = ["是否开源"] as const;
+const AI_RESULT_WITH_CONFIG_COLUMN_KEY = "__ai_result_with_config__";
+const AI_RESULT_WITH_CONFIG_COLUMN_TITLE = "AI解析结果+AI配置名";
+const BATCH_ROUTE_PATH = "/ai-batch";
+
+type AppRoute = "records" | "batch";
+
+function resolveAppRoute(pathname: string): AppRoute {
+  return pathname.startsWith(BATCH_ROUTE_PATH) ? "batch" : "records";
+}
+
+function getRoutePath(route: AppRoute): string {
+  return route === "batch" ? BATCH_ROUTE_PATH : "/";
+}
 
 function normalizeHeaderTitle(value: string): string {
   return value.replace(/\s+/g, "").toLowerCase();
@@ -30,6 +46,14 @@ function matchesHeaderAlias(
 
 function isQualifiedColumnTitle(columnTitle: string): boolean {
   return matchesHeaderAlias(columnTitle, QUALIFIED_TITLE_ALIASES);
+}
+
+function isTimeColumnTitle(columnTitle: string): boolean {
+  return matchesHeaderAlias(columnTitle, TIME_TITLE_ALIASES);
+}
+
+function isCreatorColumnTitle(columnTitle: string): boolean {
+  return matchesHeaderAlias(columnTitle, CREATOR_TITLE_ALIASES);
 }
 
 function isInspectorColumnTitle(columnTitle: string): boolean {
@@ -56,11 +80,15 @@ const DEFAULT_AI_CONFIG: AIDetectConfig = {
   apiKey: "",
   submitFieldKeys: [],
   prompt:
-    "你是一个质检助手。请根据输入字段给出检测结论、问题点和建议。\n输出要求：\n1. 先给出结论（合格/不合格）\n2. 再列出具体问题\n3. 最后给出修改建议\n\n字段内容如下：\n{{fields_json}}",
+    "你是一个质检助手。请根据输入字段给出回答结论、问题点和建议。\n输出要求：\n1. 先给出结论（合格/不合格）\n2. 再列出具体问题\n3. 最后给出修改建议\n\n字段内容如下：\n{{fields_json}}",
   resultFieldKey: "",
+  reasoningEffort: "high",
 };
-
-const AI_BATCH_CONCURRENCY = 4;
+const DEFAULT_AI_CONFIG_NAME = "默认配置";
+const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
+const DEFAULT_AI_BATCH_CONCURRENCY = 4;
+const MIN_AI_BATCH_CONCURRENCY = 1;
+const MAX_AI_BATCH_CONCURRENCY = 32;
 
 interface AIDetectFieldPayload {
   title: string;
@@ -118,6 +146,20 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds}`;
 }
 
+function normalizeAIBatchConcurrency(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_AI_BATCH_CONCURRENCY;
+  }
+  const rounded = Math.floor(value);
+  if (rounded < MIN_AI_BATCH_CONCURRENCY) {
+    return MIN_AI_BATCH_CONCURRENCY;
+  }
+  if (rounded > MAX_AI_BATCH_CONCURRENCY) {
+    return MAX_AI_BATCH_CONCURRENCY;
+  }
+  return rounded;
+}
+
 function composeAISaveText(answerText: string, thinkingText: string): string {
   const answer = answerText.trim();
   const thinking = thinkingText.trim();
@@ -132,6 +174,20 @@ function composeAISaveText(answerText: string, thinkingText: string): string {
     return `【思考过程】\n${thinkingText}`;
   }
   return `【思考过程】\n${thinkingText}\n\n【AI结果】\n${answerText}`;
+}
+
+function composeAISaveTextWithConfigName(
+  answerText: string,
+  thinkingText: string,
+  configName: string,
+): string {
+  const content = composeAISaveText(answerText, thinkingText).trim();
+  if (content.length === 0) {
+    return "";
+  }
+  const normalizedConfigName =
+    configName.trim().length > 0 ? configName.trim() : DEFAULT_AI_CONFIG_NAME;
+  return `【AI配置】${normalizedConfigName}\n${content}`;
 }
 
 function getCellImageSources(cell: ParsedCell | undefined): string[] {
@@ -152,6 +208,17 @@ function getCellImageSources(cell: ParsedCell | undefined): string[] {
   }
 
   return [];
+}
+
+function logUIImageRenderError(
+  rowId: string,
+  columnTitle: string,
+  src: string,
+): void {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[UIImageRenderError] row=${rowId} column=${columnTitle} src=${src}`,
+  );
 }
 
 function getFileNameFromDisposition(disposition: string | null): string | null {
@@ -244,13 +311,75 @@ function getAllColumnKeys(columns: ParsedColumn[]): string[] {
   return columns.map((column) => column.key);
 }
 
+function isAIResultWithConfigColumn(column: ParsedColumn): boolean {
+  if (column.key === AI_RESULT_WITH_CONFIG_COLUMN_KEY) {
+    return true;
+  }
+  return (
+    normalizeHeaderTitle(column.title) ===
+    normalizeHeaderTitle(AI_RESULT_WITH_CONFIG_COLUMN_TITLE)
+  );
+}
+
+function getAIResultWithConfigColumn(
+  columns: ParsedColumn[],
+): ParsedColumn | null {
+  return columns.find((column) => isAIResultWithConfigColumn(column)) ?? null;
+}
+
+function ensureAIResultWithConfigColumn(parsed: ParsedFile): ParsedFile {
+  const existingColumn = getAIResultWithConfigColumn(parsed.columns);
+  const targetColumn =
+    existingColumn ??
+    ({
+      key: AI_RESULT_WITH_CONFIG_COLUMN_KEY,
+      title: AI_RESULT_WITH_CONFIG_COLUMN_TITLE,
+      editable: true,
+      required: false,
+    } as ParsedColumn);
+  const columns = existingColumn
+    ? parsed.columns
+    : [...parsed.columns, targetColumn];
+  const targetKey = targetColumn.key;
+  const rows = parsed.rows.map((row) => {
+    if (row.values[targetKey]) {
+      return row;
+    }
+    return {
+      ...row,
+      values: {
+        ...row.values,
+        [targetKey]: {
+          type: "text",
+          value: "",
+        } as ParsedCell,
+      },
+    };
+  });
+
+  if (
+    columns === parsed.columns &&
+    rows.every((row, index) => row === parsed.rows[index])
+  ) {
+    return parsed;
+  }
+  return {
+    ...parsed,
+    columns,
+    rows,
+  };
+}
+
 function isFilterColumnTitle(columnTitle: string): boolean {
   const normalized = normalizeHeaderTitle(columnTitle);
   return normalized === "level1" || normalized === "level2";
 }
 
 function getFieldSignature(columns: ParsedColumn[]): string {
-  return columns.map((column) => normalizeHeaderTitle(column.title)).join("|");
+  return columns
+    .filter((column) => !isAIResultWithConfigColumn(column))
+    .map((column) => normalizeHeaderTitle(column.title))
+    .join("|");
 }
 
 function normalizeColumnSelection(
@@ -264,9 +393,16 @@ function normalizeColumnSelection(
   const allColumnKeys = getAllColumnKeys(columns);
   const allowedKeys = new Set(allColumnKeys);
 
-  const editableKeys = deduplicateKeys(selectedEditableColumnKeys ?? []).filter(
+  let editableKeys = deduplicateKeys(selectedEditableColumnKeys ?? []).filter(
     (key) => allowedKeys.has(key),
   );
+  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
+  if (
+    aiResultWithConfigColumn &&
+    !editableKeys.includes(aiResultWithConfigColumn.key)
+  ) {
+    editableKeys = [...editableKeys, aiResultWithConfigColumn.key];
+  }
 
   const displaySourceKeys = selectedDisplayColumnKeys ?? allColumnKeys;
   const displaySet = new Set(
@@ -297,14 +433,15 @@ function toViewState(
   selectedDisplayColumnKeys?: string[],
   selectedEditableColumnKeys?: string[],
 ): FileViewState {
+  const nextParsed = ensureAIResultWithConfigColumn(parsed);
   const normalized = normalizeColumnSelection(
-    parsed.columns,
+    nextParsed.columns,
     selectedDisplayColumnKeys,
     selectedEditableColumnKeys,
   );
   return {
-    ...parsed,
-    columns: applyEditableConfig(parsed.columns, normalized.editableKeys),
+    ...nextParsed,
+    columns: applyEditableConfig(nextParsed.columns, normalized.editableKeys),
     selectedDisplayColumnKeys: normalized.displayKeys,
     selectedEditableColumnKeys: normalized.editableKeys,
     level1Filter: ALL_FILTER_VALUE,
@@ -515,6 +652,12 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         (item): item is string => typeof item === "string",
       )
     : [];
+  const reasoningEffort =
+    candidate.reasoningEffort === "low" ||
+    candidate.reasoningEffort === "medium" ||
+    candidate.reasoningEffort === "high"
+      ? candidate.reasoningEffort
+      : DEFAULT_AI_CONFIG.reasoningEffort;
 
   return {
     url:
@@ -535,10 +678,88 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
       typeof candidate.resultFieldKey === "string"
         ? candidate.resultFieldKey
         : "",
+    reasoningEffort,
   };
 }
 
+function normalizeAIConfigName(value: unknown): string {
+  if (typeof value !== "string") {
+    return DEFAULT_AI_CONFIG_NAME;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_AI_CONFIG_NAME;
+}
+
+function normalizeLoadedNamedAIDetectConfigs(
+  value: unknown,
+): NamedAIDetectConfig[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const usedNames = new Set<string>();
+  const result: NamedAIDetectConfig[] = [];
+
+  value.forEach((item) => {
+    if (!item || typeof item !== "object") {
+      return;
+    }
+    const candidate = item as {
+      name?: unknown;
+      config?: unknown;
+    };
+    const name =
+      typeof candidate.name === "string" ? candidate.name.trim() : "";
+    if (name.length === 0 || usedNames.has(name)) {
+      return;
+    }
+
+    const config = normalizeLoadedAIDetectConfig(
+      candidate.config && typeof candidate.config === "object"
+        ? candidate.config
+        : item,
+    );
+    usedNames.add(name);
+    result.push({
+      name,
+      config,
+    });
+  });
+
+  return result;
+}
+
+function normalizeNamedAIDetectConfigsForColumns(
+  configs: NamedAIDetectConfig[],
+  columns: ParsedColumn[],
+): NamedAIDetectConfig[] {
+  return configs.map((item) => ({
+    name: item.name,
+    config: normalizeAIDetectConfigForColumns(item.config, columns),
+  }));
+}
+
+function pickAIConfigName(
+  configs: NamedAIDetectConfig[],
+  preferredName: unknown,
+): string {
+  if (configs.length === 0) {
+    return DEFAULT_AI_CONFIG_NAME;
+  }
+  if (typeof preferredName === "string") {
+    const trimmed = preferredName.trim();
+    if (trimmed.length > 0 && configs.some((item) => item.name === trimmed)) {
+      return trimmed;
+    }
+  }
+  return configs[0].name;
+}
+
 function getDefaultResultFieldKey(columns: ParsedColumn[]): string {
+  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
+  if (aiResultWithConfigColumn) {
+    return aiResultWithConfigColumn.key;
+  }
   const feedbackEditable = columns.find(
     (column) => column.editable && isFeedbackColumnTitle(column.title),
   );
@@ -547,6 +768,15 @@ function getDefaultResultFieldKey(columns: ParsedColumn[]): string {
   }
   const firstEditable = columns.find((column) => column.editable);
   return firstEditable?.key ?? "";
+}
+
+function isLegacyAIDetectResultColumnTitle(columnTitle: string): boolean {
+  return (
+    isOpensourceColumnTitle(columnTitle) ||
+    isQualifiedColumnTitle(columnTitle) ||
+    isInspectorColumnTitle(columnTitle) ||
+    isFeedbackColumnTitle(columnTitle)
+  );
 }
 
 function normalizeAIDetectConfigForColumns(
@@ -560,9 +790,19 @@ function normalizeAIDetectConfigForColumns(
   const editableKeySet = new Set(
     columns.filter((column) => column.editable).map((column) => column.key),
   );
-  const nextResultFieldKey = editableKeySet.has(config.resultFieldKey)
-    ? config.resultFieldKey
-    : getDefaultResultFieldKey(columns);
+  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
+  const currentResultColumn = columns.find(
+    (column) => column.key === config.resultFieldKey,
+  );
+  const shouldMigrateLegacyResultField =
+    aiResultWithConfigColumn !== null &&
+    currentResultColumn !== undefined &&
+    isLegacyAIDetectResultColumnTitle(currentResultColumn.title);
+  const nextResultFieldKey = shouldMigrateLegacyResultField
+    ? aiResultWithConfigColumn.key
+    : editableKeySet.has(config.resultFieldKey)
+      ? config.resultFieldKey
+      : getDefaultResultFieldKey(columns);
 
   return {
     ...config,
@@ -615,6 +855,7 @@ async function requestAIDetectResult(
     apiKey: string;
     prompt: string;
     fields: AIDetectFieldPayload[];
+    reasoningEffort: AIDetectConfig["reasoningEffort"];
   },
   options?: {
     signal?: AbortSignal;
@@ -636,7 +877,7 @@ async function requestAIDetectResult(
     const payload = (await response.json().catch(() => ({}))) as {
       message?: string;
     };
-    throw new Error(payload.message ?? "AI 检测失败");
+    throw new Error(payload.message ?? "AI 回答失败");
   }
   if (!response.body) {
     throw new Error("AI 响应流为空");
@@ -1066,12 +1307,30 @@ function App() {
   type PendingConfigMode = "import" | "edit";
   const [files, setFiles] = useState<FileViewState[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
+  const [appRoute, setAppRoute] = useState<AppRoute>(() => {
+    if (typeof window === "undefined") {
+      return "records";
+    }
+    return resolveAppRoute(window.location.pathname);
+  });
   const [isUploading, setIsUploading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isAIConfigModalOpen, setIsAIConfigModalOpen] = useState(false);
   const [aiConfigLoading, setAIConfigLoading] = useState(false);
   const [aiConfigSaving, setAIConfigSaving] = useState(false);
+  const [aiConfigList, setAIConfigList] = useState<NamedAIDetectConfig[]>([
+    {
+      name: DEFAULT_AI_CONFIG_NAME,
+      config: { ...DEFAULT_AI_CONFIG },
+    },
+  ]);
+  const [selectedAIConfigName, setSelectedAIConfigName] = useState<string>(
+    DEFAULT_AI_CONFIG_NAME,
+  );
+  const [draftAIConfigName, setDraftAIConfigName] = useState<string>(
+    DEFAULT_AI_CONFIG_NAME,
+  );
   const [aiConfig, setAIConfig] = useState<AIDetectConfig>({
     ...DEFAULT_AI_CONFIG,
   });
@@ -1082,13 +1341,20 @@ function App() {
   const [isAIDetecting, setIsAIDetecting] = useState(false);
   const [aiThinkingText, setAIThinkingText] = useState("");
   const [aiResultText, setAIResultText] = useState("");
+  const [aiResultConfigName, setAIResultConfigName] = useState<string>(
+    DEFAULT_AI_CONFIG_NAME,
+  );
   const [aiResultMessage, setAIResultMessage] = useState("");
   const [aiDetectElapsedMs, setAIDetectElapsedMs] = useState(0);
   const [isSavingAIResult, setIsSavingAIResult] = useState(false);
   const [aiBatchTask, setAIBatchTask] = useState<AIBatchTaskState>(
     INITIAL_AI_BATCH_TASK,
   );
+  const [aiBatchConcurrency, setAIBatchConcurrency] = useState<number>(
+    DEFAULT_AI_BATCH_CONCURRENCY,
+  );
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [batchSelectedRowIds, setBatchSelectedRowIds] = useState<string[]>([]);
   const [pendingFile, setPendingFile] = useState<ParsedFile | null>(null);
   const [pendingSelectedDisplayKeys, setPendingSelectedDisplayKeys] = useState<
     string[]
@@ -1121,6 +1387,19 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const onPopState = () => {
+      setAppRoute(resolveAppRoute(window.location.pathname));
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -1192,15 +1471,37 @@ function App() {
     [files, activeFileId],
   );
 
+  const navigateToRoute = (route: AppRoute) => {
+    if (typeof window === "undefined") {
+      setAppRoute(route);
+      return;
+    }
+    const nextPath = getRoutePath(route);
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, "", nextPath);
+    }
+    setAppRoute(route);
+  };
+
   useEffect(() => {
     if (!activeFile) {
-      const next = { ...DEFAULT_AI_CONFIG };
-      setAIConfig(next);
-      setDraftAIConfig(next);
+      const nextConfig = { ...DEFAULT_AI_CONFIG };
+      setAIConfigList([
+        {
+          name: DEFAULT_AI_CONFIG_NAME,
+          config: nextConfig,
+        },
+      ]);
+      setSelectedAIConfigName(DEFAULT_AI_CONFIG_NAME);
+      setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
+      setAIConfig(nextConfig);
+      setDraftAIConfig(nextConfig);
       setAIConfigFormMessage("");
       setAIThinkingText("");
       setAIResultText("");
+      setAIResultConfigName(DEFAULT_AI_CONFIG_NAME);
       setAIResultMessage("");
+      setBatchSelectedRowIds([]);
       aiDetectStartedAtRef.current = null;
       setAIDetectElapsedMs(0);
       setAIConfigLoading(false);
@@ -1222,29 +1523,64 @@ function App() {
           throw new Error("加载 AI 配置失败");
         }
 
-        const payload = (await response.json()) as { config?: unknown };
-        const loaded = normalizeLoadedAIDetectConfig(payload.config);
-        const normalized = normalizeAIDetectConfigForColumns(
-          loaded,
+        const payload = (await response.json()) as {
+          configs?: unknown;
+          activeConfigName?: unknown;
+          config?: unknown;
+        };
+        let loadedConfigs = normalizeLoadedNamedAIDetectConfigs(
+          payload.configs,
+        );
+        if (loadedConfigs.length === 0) {
+          loadedConfigs = [
+            {
+              name: DEFAULT_AI_CONFIG_NAME,
+              config: normalizeLoadedAIDetectConfig(payload.config),
+            },
+          ];
+        }
+
+        const normalizedConfigs = normalizeNamedAIDetectConfigsForColumns(
+          loadedConfigs,
           activeFile.columns,
         );
+        const activeConfigName = pickAIConfigName(
+          normalizedConfigs,
+          payload.activeConfigName,
+        );
+        const activeConfig =
+          normalizedConfigs.find((item) => item.name === activeConfigName)
+            ?.config ?? normalizedConfigs[0].config;
 
         if (disposed) {
           return;
         }
-        setAIConfig(normalized);
-        setDraftAIConfig(normalized);
+        setAIConfigList(normalizedConfigs);
+        setSelectedAIConfigName(activeConfigName);
+        setDraftAIConfigName(activeConfigName);
+        setAIConfig(activeConfig);
+        setDraftAIConfig(activeConfig);
+        setAIResultConfigName(activeConfigName);
         setAIConfigFormMessage("");
       } catch {
         if (disposed) {
           return;
         }
-        const fallback = normalizeAIDetectConfigForColumns(
+        const fallbackConfig = normalizeAIDetectConfigForColumns(
           { ...DEFAULT_AI_CONFIG },
           activeFile.columns,
         );
-        setAIConfig(fallback);
-        setDraftAIConfig(fallback);
+        setAIConfigList([
+          {
+            name: DEFAULT_AI_CONFIG_NAME,
+            config: fallbackConfig,
+          },
+        ]);
+        setSelectedAIConfigName(DEFAULT_AI_CONFIG_NAME);
+        setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
+        setAIConfig(fallbackConfig);
+        setDraftAIConfig(fallbackConfig);
+        setAIResultConfigName(DEFAULT_AI_CONFIG_NAME);
         setAIConfigFormMessage("");
       } finally {
         if (!disposed) {
@@ -1265,8 +1601,37 @@ function App() {
     if (!activeFile) {
       return;
     }
-    setAIConfig((previous) =>
-      normalizeAIDetectConfigForColumns(previous, activeFile.columns),
+    const normalizedConfigs = normalizeNamedAIDetectConfigsForColumns(
+      aiConfigList,
+      activeFile.columns,
+    );
+    const nextConfigList =
+      normalizedConfigs.length > 0
+        ? normalizedConfigs
+        : [
+            {
+              name: DEFAULT_AI_CONFIG_NAME,
+              config: normalizeAIDetectConfigForColumns(
+                { ...DEFAULT_AI_CONFIG },
+                activeFile.columns,
+              ),
+            },
+          ];
+    const nextSelectedName = pickAIConfigName(
+      nextConfigList,
+      selectedAIConfigName,
+    );
+    const nextSelectedConfig =
+      nextConfigList.find((item) => item.name === nextSelectedName)?.config ??
+      nextConfigList[0].config;
+
+    setAIConfigList(nextConfigList);
+    setSelectedAIConfigName(nextSelectedName);
+    setAIConfig(nextSelectedConfig);
+    setDraftAIConfigName((previous) =>
+      nextConfigList.some((item) => item.name === previous)
+        ? previous
+        : nextSelectedName,
     );
     setDraftAIConfig((previous) =>
       normalizeAIDetectConfigForColumns(previous, activeFile.columns),
@@ -1290,6 +1655,7 @@ function App() {
   useEffect(() => {
     setAIThinkingText("");
     setAIResultText("");
+    setAIResultConfigName(selectedAIConfigName);
     setAIResultMessage("");
     aiStreamAbortRef.current?.abort();
     aiStreamAbortRef.current = null;
@@ -1325,7 +1691,12 @@ function App() {
   }, [activeFile]);
 
   const aiSubmitFieldColumns = useMemo(
-    () => (activeFile ? activeFile.columns : []),
+    () =>
+      activeFile
+        ? activeFile.columns.filter(
+            (column) => !isAIResultWithConfigColumn(column),
+          )
+        : [],
     [activeFile],
   );
 
@@ -1352,6 +1723,10 @@ function App() {
   const aiDetectElapsedText = formatDuration(aiDetectElapsedMs);
   const hasAISaveContent =
     composeAISaveText(aiResultText, aiThinkingText).trim().length > 0;
+  const batchSelectedRowIdSet = useMemo(
+    () => new Set(batchSelectedRowIds),
+    [batchSelectedRowIds],
+  );
 
   const visibleRows = useMemo(() => {
     if (!activeFile) {
@@ -1397,6 +1772,22 @@ function App() {
     [visibleRows, selectedRowId],
   );
 
+  useEffect(() => {
+    if (!activeFile) {
+      setBatchSelectedRowIds([]);
+      return;
+    }
+
+    const visibleIdSet = new Set(visibleRows.map((row) => row.rowId));
+    setBatchSelectedRowIds((previous) => {
+      const kept = previous.filter((rowId) => visibleIdSet.has(rowId));
+      if (kept.length > 0) {
+        return kept;
+      }
+      return visibleRows.map((row) => row.rowId);
+    });
+  }, [activeFile?.fileId, visibleRows]);
+
   const rowPreviewColumns = useMemo(() => {
     if (!activeFile) {
       return [];
@@ -1404,9 +1795,10 @@ function App() {
 
     const preferred = activeFile.columns.filter(
       (column) =>
-        normalizeHeaderTitle(column.title) === "level1" ||
-        normalizeHeaderTitle(column.title) === "level2" ||
-        isQualifiedColumnTitle(column.title),
+        isFilterColumnTitle(column.title) ||
+        isQualifiedColumnTitle(column.title) ||
+        isTimeColumnTitle(column.title) ||
+        isCreatorColumnTitle(column.title),
     );
     const merged = [...preferred, ...displayColumns];
     const uniqueMap = new Map<string, ParsedColumn>();
@@ -1415,8 +1807,16 @@ function App() {
         uniqueMap.set(column.key, column);
       }
     });
-    return Array.from(uniqueMap.values()).slice(0, 3);
+    return Array.from(uniqueMap.values()).slice(0, 5);
   }, [activeFile, displayColumns]);
+
+  const getRowPreviewText = (row: ParsedRow): string =>
+    rowPreviewColumns
+      .map((column) => {
+        const value = row.values[column.key]?.value?.trim();
+        return `${column.title}: ${value || "-"}`;
+      })
+      .join(" ｜ ");
 
   const persistFileState = (file: FileViewState) => {
     fetch(`/api/files/${encodeURIComponent(file.fileId)}/state`, {
@@ -1501,6 +1901,62 @@ function App() {
     setPendingConfigMode("edit");
   };
 
+  const syncActiveAIConfigState = (nextConfig: AIDetectConfig) => {
+    setAIConfig(nextConfig);
+    setAIConfigList((previous) =>
+      previous.map((item) =>
+        item.name === selectedAIConfigName
+          ? {
+              ...item,
+              config: nextConfig,
+            }
+          : item,
+      ),
+    );
+  };
+
+  const onSelectAIConfigForRun = (configName: string) => {
+    if (!activeFile) {
+      return;
+    }
+    const matched = aiConfigList.find((item) => item.name === configName);
+    if (!matched) {
+      return;
+    }
+
+    const normalized = normalizeAIDetectConfigForColumns(
+      matched.config,
+      activeFile.columns,
+    );
+    setSelectedAIConfigName(configName);
+    setAIConfig(normalized);
+    setAIConfigList((previous) =>
+      previous.map((item) =>
+        item.name === configName
+          ? {
+              ...item,
+              config: normalized,
+            }
+          : item,
+      ),
+    );
+    if (!isAIConfigModalOpen) {
+      setDraftAIConfigName(configName);
+      setDraftAIConfig(normalized);
+    }
+    setAIConfigFormMessage("");
+
+    fetch(`/api/ai-config/${encodeURIComponent(activeFile.fileName)}/active`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: configName,
+      }),
+    }).catch(() => {});
+  };
+
   const onOpenAIConfigModal = () => {
     if (!activeFile) {
       return;
@@ -1508,12 +1964,14 @@ function App() {
     setDraftAIConfig(
       normalizeAIDetectConfigForColumns(aiConfig, activeFile.columns),
     );
+    setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
     setIsAIConfigModalOpen(true);
   };
 
   const onCancelAIConfigModal = () => {
     setDraftAIConfig(aiConfig);
+    setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
     setIsAIConfigModalOpen(false);
   };
@@ -1543,6 +2001,12 @@ function App() {
       return;
     }
 
+    const nextConfigName = normalizeAIConfigName(draftAIConfigName);
+    if (draftAIConfigName.trim().length === 0) {
+      setAIConfigFormMessage("配置名称不能为空");
+      return;
+    }
+
     const nextConfig = normalizeAIDetectConfigForColumns(
       draftAIConfig,
       activeFile.columns,
@@ -1561,7 +2025,7 @@ function App() {
       return;
     }
     if (nextConfig.submitFieldKeys.length === 0) {
-      setAIConfigFormMessage("请至少选择一个提交检查字段");
+      setAIConfigFormMessage("请至少选择一个提交回答字段");
       return;
     }
     if (nextConfig.prompt.trim().length === 0) {
@@ -1588,7 +2052,11 @@ function App() {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(nextConfig),
+          body: JSON.stringify({
+            name: nextConfigName,
+            ...nextConfig,
+            setActive: true,
+          }),
         },
       );
 
@@ -1599,7 +2067,16 @@ function App() {
         throw new Error(payload.message ?? "保存 AI 配置失败");
       }
 
+      setAIConfigList((previous) => [
+        {
+          name: nextConfigName,
+          config: nextConfig,
+        },
+        ...previous.filter((item) => item.name !== nextConfigName),
+      ]);
+      setSelectedAIConfigName(nextConfigName);
       setAIConfig(nextConfig);
+      setDraftAIConfigName(nextConfigName);
       setDraftAIConfig(nextConfig);
       setAIConfigFormMessage("");
       setIsAIConfigModalOpen(false);
@@ -1617,7 +2094,7 @@ function App() {
       return;
     }
     if (isAIBatchRunning) {
-      setAIResultMessage("批量 AI 任务运行中，暂不可发起单条检测");
+      setAIResultMessage("批量 AI 任务运行中，暂不可发起单条回答");
       return;
     }
 
@@ -1625,7 +2102,8 @@ function App() {
       aiConfig,
       activeFile.columns,
     );
-    setAIConfig(normalizedConfig);
+    syncActiveAIConfigState(normalizedConfig);
+    const runningConfigName = selectedAIConfigName;
 
     if (normalizedConfig.url.trim().length === 0) {
       setAIResultMessage("请先配置 AI URL");
@@ -1640,7 +2118,7 @@ function App() {
       return;
     }
     if (normalizedConfig.submitFieldKeys.length === 0) {
-      setAIResultMessage("请先在 AI 配置中选择提交检查字段");
+      setAIResultMessage("请先在 AI 配置中选择提交回答字段");
       return;
     }
     if (normalizedConfig.prompt.trim().length === 0) {
@@ -1655,7 +2133,7 @@ function App() {
     );
 
     if (fields.length === 0) {
-      setAIResultMessage("当前记录没有可提交的检测字段");
+      setAIResultMessage("当前记录没有可提交的回答字段");
       return;
     }
 
@@ -1667,6 +2145,7 @@ function App() {
     setIsAIDetecting(true);
     setAIThinkingText("");
     setAIResultText("");
+    setAIResultConfigName(runningConfigName);
     setAIResultMessage("");
     setErrorMessage("");
 
@@ -1678,6 +2157,7 @@ function App() {
           apiKey: normalizedConfig.apiKey,
           prompt: normalizedConfig.prompt,
           fields,
+          reasoningEffort: normalizedConfig.reasoningEffort,
         },
         {
           signal: controller.signal,
@@ -1697,13 +2177,15 @@ function App() {
       ) {
         setAIResultMessage("AI 返回为空");
       } else {
-        setAIResultMessage("AI 检测完成，可直接保存到目标字段");
+        setAIResultMessage(
+          `AI 回答完成（配置：${runningConfigName}），可直接保存到目标字段`,
+        );
       }
     } catch (error) {
       if (controller.signal.aborted) {
-        setAIResultMessage("AI 检测已取消");
+        setAIResultMessage("AI 回答已取消");
       } else {
-        const message = error instanceof Error ? error.message : "AI 检测失败";
+        const message = error instanceof Error ? error.message : "AI 回答失败";
         setAIResultMessage(message);
       }
     } finally {
@@ -1776,7 +2258,7 @@ function App() {
     }
   };
 
-  const onRunAllAIDetect = async () => {
+  const onRunBatchAIAnswer = async (rowIds?: string[]) => {
     if (!activeFile) {
       return;
     }
@@ -1788,7 +2270,8 @@ function App() {
       aiConfig,
       activeFile.columns,
     );
-    setAIConfig(normalizedConfig);
+    syncActiveAIConfigState(normalizedConfig);
+    const runningConfigName = selectedAIConfigName;
 
     if (normalizedConfig.url.trim().length === 0) {
       setErrorMessage("请先配置 AI URL");
@@ -1803,7 +2286,7 @@ function App() {
       return;
     }
     if (normalizedConfig.submitFieldKeys.length === 0) {
-      setErrorMessage("请先在 AI 配置中选择提交检查字段");
+      setErrorMessage("请先在 AI 配置中选择提交回答字段");
       return;
     }
     if (normalizedConfig.prompt.trim().length === 0) {
@@ -1824,9 +2307,27 @@ function App() {
       return;
     }
 
-    const targetRows = activeFile.rows;
+    const rowIdSet = new Set(activeFile.rows.map((row) => row.rowId));
+    const normalizedTargetRowIds = rowIds
+      ? Array.from(new Set(rowIds.filter((rowId) => rowIdSet.has(rowId))))
+      : null;
+    const selectedRowIdSet = normalizedTargetRowIds
+      ? new Set(normalizedTargetRowIds)
+      : null;
+    const targetRows =
+      normalizedTargetRowIds && normalizedTargetRowIds.length > 0
+        ? activeFile.rows.filter(
+            (row) => selectedRowIdSet?.has(row.rowId) === true,
+          )
+        : normalizedTargetRowIds
+          ? []
+          : activeFile.rows;
     if (targetRows.length === 0) {
-      setErrorMessage("当前文件没有可执行的行数据");
+      setErrorMessage(
+        normalizedTargetRowIds
+          ? "请先至少选择一条数据再执行批量回答"
+          : "当前文件没有可执行的行数据",
+      );
       return;
     }
 
@@ -1835,7 +2336,9 @@ function App() {
     const targetColumns = activeFile.columns;
     const resultMap = new Map<string, string>();
     let nextCursor = 0;
-    const workerCount = Math.min(AI_BATCH_CONCURRENCY, targetRows.length);
+    const requestedConcurrency =
+      normalizeAIBatchConcurrency(aiBatchConcurrency);
+    const workerCount = Math.min(requestedConcurrency, targetRows.length);
 
     aiBatchAbortRef.current?.abort();
     const controller = new AbortController();
@@ -1848,7 +2351,10 @@ function App() {
       completed: 0,
       success: 0,
       failed: 0,
-      message: `并发 ${AI_BATCH_CONCURRENCY} 线程`,
+      message:
+        normalizedTargetRowIds && normalizedTargetRowIds.length > 0
+          ? `已选择 ${targetRows.length} 条，并发 ${workerCount} 线程`
+          : `并发 ${workerCount} 线程`,
     });
     setErrorMessage("");
     setAIResultMessage("");
@@ -1869,7 +2375,7 @@ function App() {
             normalizedConfig.submitFieldKeys,
           );
           if (fields.length === 0) {
-            throw new Error("没有可提交的检测字段");
+            throw new Error("没有可提交的回答字段");
           }
 
           const streamResult = await requestAIDetectResult(
@@ -1879,12 +2385,14 @@ function App() {
               apiKey: normalizedConfig.apiKey,
               prompt: normalizedConfig.prompt,
               fields,
+              reasoningEffort: normalizedConfig.reasoningEffort,
             },
             { signal: controller.signal },
           );
-          const text = composeAISaveText(
+          const text = composeAISaveTextWithConfigName(
             streamResult.answerText,
             streamResult.thinkingText,
+            runningConfigName,
           );
 
           if (text.trim().length === 0) {
@@ -1925,7 +2433,7 @@ function App() {
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
-        message: `结果已写入字段：${targetResultColumn.title}`,
+        message: `结果已写入字段：${targetResultColumn.title}（配置：${runningConfigName}）`,
       }));
       setErrorMessage("");
     } catch (error) {
@@ -1934,7 +2442,7 @@ function App() {
       }
 
       const message =
-        error instanceof Error ? error.message : "批量 AI 任务执行失败";
+        error instanceof Error ? error.message : "批量 AI 回答任务执行失败";
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
@@ -1948,12 +2456,20 @@ function App() {
     }
   };
 
+  const onRunSelectedBatchAIAnswer = async () => {
+    await onRunBatchAIAnswer(batchSelectedRowIds);
+  };
+
   const onSaveAIResult = () => {
     if (!activeFile || !selectedRow) {
       return;
     }
 
-    const composedText = composeAISaveText(aiResultText, aiThinkingText);
+    const composedText = composeAISaveTextWithConfigName(
+      aiResultText,
+      aiThinkingText,
+      aiResultConfigName,
+    );
     if (composedText.trim().length === 0) {
       setAIResultMessage("暂无可保存的 AI 返回结果");
       return;
@@ -1977,9 +2493,13 @@ function App() {
     try {
       onEditCell(selectedRow.rowId, resultFieldKey, composedText);
       if (aiThinkingText.trim().length > 0) {
-        setAIResultMessage(`已保存到字段：${targetColumn.title}（含思考过程）`);
+        setAIResultMessage(
+          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}，含思考过程）`,
+        );
       } else {
-        setAIResultMessage(`已保存到字段：${targetColumn.title}`);
+        setAIResultMessage(
+          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}）`,
+        );
       }
     } finally {
       setIsSavingAIResult(false);
@@ -2061,6 +2581,49 @@ function App() {
       }
 
       const parsed = (await response.json()) as ParsedFile;
+      let parsedImageCellCount = 0;
+      let parsedTextLikeImageCellCount = 0;
+      const textLikeSamples: string[] = [];
+      parsed.rows.forEach((row) => {
+        parsed.columns.forEach((column) => {
+          const cell = row.values[column.key];
+          if (!cell) {
+            return;
+          }
+          if (
+            cell.type === "image" &&
+            typeof cell.src === "string" &&
+            cell.src
+          ) {
+            parsedImageCellCount += 1;
+            return;
+          }
+          if (
+            cell.type === "text" &&
+            typeof cell.value === "string" &&
+            /\.(png|jpe?g|webp|gif|bmp|tiff?)([?#].*)?$/i.test(
+              cell.value.trim(),
+            )
+          ) {
+            parsedTextLikeImageCellCount += 1;
+            if (textLikeSamples.length < 8) {
+              textLikeSamples.push(
+                `row=${row.rowId} column=${column.title} value=${cell.value.trim()}`,
+              );
+            }
+          }
+        });
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[UIParsedImage] file=${parsed.fileName} imageCells=${parsedImageCellCount} textLikeImageCells=${parsedTextLikeImageCellCount}`,
+      );
+      if (textLikeSamples.length > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[UIParsedImageTextLike] ${JSON.stringify(textLikeSamples)}`,
+        );
+      }
       const defaultDisplayKeys = getAllColumnKeys(parsed.columns);
       let initialDisplayKeys = defaultDisplayKeys;
       let initialEditableKeys: string[] = [];
@@ -2260,6 +2823,23 @@ function App() {
     }));
   };
 
+  const onToggleBatchRowSelection = (rowId: string) => {
+    setBatchSelectedRowIds((previous) => {
+      if (previous.includes(rowId)) {
+        return previous.filter((item) => item !== rowId);
+      }
+      return [...previous, rowId];
+    });
+  };
+
+  const onSelectAllBatchRows = () => {
+    setBatchSelectedRowIds(visibleRows.map((row) => row.rowId));
+  };
+
+  const onClearBatchRows = () => {
+    setBatchSelectedRowIds([]);
+  };
+
   const onEditCell = (rowId: string, columnKey: string, value: string) => {
     patchActiveFile((file) => ({
       ...file,
@@ -2303,6 +2883,8 @@ function App() {
   };
 
   const renderReadonlyCell = (
+    row: ParsedRow,
+    column: ParsedColumn,
     cell: ParsedCell | undefined,
     shouldRenderLatex: boolean,
   ) => {
@@ -2317,6 +2899,9 @@ function App() {
             src={cell.src}
             alt={cell.value || "Excel图片"}
             onClick={() => setPreviewImageSrc(cell.src!)}
+            onError={() => {
+              logUIImageRenderError(row.rowId, column.title, cell.src ?? "");
+            }}
           />
           {cell.value ? <span>{cell.value}</span> : null}
         </div>
@@ -2353,7 +2938,7 @@ function App() {
   ) => {
     const cell = row.values[column.key];
     if (!column.editable) {
-      return renderReadonlyCell(cell, shouldRenderLatex);
+      return renderReadonlyCell(row, column, cell, shouldRenderLatex);
     }
 
     const currentValue = cell?.value ?? "";
@@ -2435,6 +3020,9 @@ function App() {
             src={cell.src}
             alt={cell.value || "Excel图片"}
             onClick={() => setPreviewImageSrc(cell.src!)}
+            onError={() => {
+              logUIImageRenderError(row.rowId, column.title, cell.src ?? "");
+            }}
           />
           <input
             className="editable-text-input"
@@ -2648,20 +3236,17 @@ function App() {
               onClick={onOpenAIConfigModal}
               disabled={!activeFile || aiConfigLoading}
             >
-              AI检测配置
+              AI回答配置
             </button>
             <button
               type="button"
               className="btn"
-              onClick={onRunAllAIDetect}
-              disabled={
-                !activeFile ||
-                aiConfigLoading ||
-                isAIDetecting ||
-                isAIBatchRunning
+              onClick={() =>
+                navigateToRoute(appRoute === "batch" ? "records" : "batch")
               }
+              disabled={!activeFile}
             >
-              {isAIBatchRunning ? "批量任务运行中..." : "一键跑AI检查"}
+              {appRoute === "batch" ? "返回明细页" : "批量回答页"}
             </button>
             <button
               type="button"
@@ -2705,6 +3290,162 @@ function App() {
               Excel」按钮，支持展示/可编辑字段配置、level1/level2筛选、图片展示与导出。
             </p>
           </section>
+        ) : appRoute === "batch" ? (
+          <>
+            {/* ─── Toolbar ─── */}
+            <section className="toolbar">
+              <div className="filter-group">
+                <label htmlFor="level1-filter">level1</label>
+                <select
+                  id="level1-filter"
+                  value={activeFile.level1Filter}
+                  onChange={(event) =>
+                    onFilterChange("level1", event.target.value)
+                  }
+                >
+                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
+                  {activeFile.level1Options.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="filter-group">
+                <label htmlFor="level2-filter">level2</label>
+                <select
+                  id="level2-filter"
+                  value={activeFile.level2Filter}
+                  onChange={(event) =>
+                    onFilterChange("level2", event.target.value)
+                  }
+                >
+                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
+                  {activeFile.level2Options.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="stats">
+                <strong>{visibleRows.length}</strong>
+                <span>可选条目</span>
+              </div>
+              <div className="stats">
+                <strong>{batchSelectedRowIds.length}</strong>
+                <span>已勾选条目</span>
+              </div>
+            </section>
+
+            <section className="batch-answer-layout">
+              <div className="batch-answer-header">
+                <h3>AI批量回答</h3>
+                <p>勾选具体条目后执行批量回答，结果将写入配置的目标字段。</p>
+              </div>
+              <div className="batch-answer-actions">
+                <label className="ai-run-config">
+                  <span>运行配置</span>
+                  <select
+                    value={selectedAIConfigName}
+                    onChange={(event) =>
+                      onSelectAIConfigForRun(event.target.value)
+                    }
+                    disabled={
+                      aiConfigLoading || isAIDetecting || isAIBatchRunning
+                    }
+                  >
+                    {aiConfigList.map((item) => (
+                      <option key={item.name} value={item.name}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="ai-run-config">
+                  <span>并发数</span>
+                  <input
+                    type="number"
+                    min={MIN_AI_BATCH_CONCURRENCY}
+                    max={MAX_AI_BATCH_CONCURRENCY}
+                    step={1}
+                    value={aiBatchConcurrency}
+                    onChange={(event) =>
+                      setAIBatchConcurrency(
+                        normalizeAIBatchConcurrency(Number(event.target.value)),
+                      )
+                    }
+                    disabled={isAIBatchRunning}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onSelectAllBatchRows}
+                  disabled={visibleRows.length === 0 || isAIBatchRunning}
+                >
+                  全选可见
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onClearBatchRows}
+                  disabled={
+                    batchSelectedRowIds.length === 0 || isAIBatchRunning
+                  }
+                >
+                  清空勾选
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={onRunSelectedBatchAIAnswer}
+                  disabled={
+                    aiConfigLoading ||
+                    isAIDetecting ||
+                    isAIBatchRunning ||
+                    batchSelectedRowIds.length === 0
+                  }
+                >
+                  {isAIBatchRunning
+                    ? "AI批量回答中..."
+                    : `批量回答已选 ${batchSelectedRowIds.length} 条`}
+                </button>
+                <div className="ai-result-target">
+                  <span>保存字段：</span>
+                  <strong>{aiResultFieldTitle || "未配置"}</strong>
+                </div>
+              </div>
+
+              {visibleRows.length === 0 ? (
+                <div className="record-list-empty">
+                  当前筛选条件下无可选条目
+                </div>
+              ) : (
+                <div className="batch-answer-list">
+                  {visibleRows.map((row, index) => {
+                    const checked = batchSelectedRowIdSet.has(row.rowId);
+                    return (
+                      <label
+                        key={row.rowId}
+                        className={`batch-answer-item ${checked ? "checked" : ""}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => onToggleBatchRowSelection(row.rowId)}
+                        />
+                        <div className="batch-answer-item-text">
+                          <strong>第 {index + 1} 条</strong>
+                          <span>{getRowPreviewText(row)}</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </>
         ) : (
           <>
             {/* ─── Toolbar ─── */}
@@ -2761,25 +3502,17 @@ function App() {
                   <div className="record-list-empty">当前筛选条件下无数据</div>
                 ) : (
                   <div className="record-list-items">
-                    {visibleRows.map((row, index) => {
-                      const preview = rowPreviewColumns
-                        .map((column) => {
-                          const value = row.values[column.key]?.value?.trim();
-                          return `${column.title}: ${value || "-"}`;
-                        })
-                        .join(" ｜ ");
-                      return (
-                        <button
-                          key={row.rowId}
-                          type="button"
-                          className={`record-item ${selectedRowId === row.rowId ? "active" : ""}`}
-                          onClick={() => setSelectedRowId(row.rowId)}
-                        >
-                          <strong>第 {index + 1} 条</strong>
-                          <span>{preview}</span>
-                        </button>
-                      );
-                    })}
+                    {visibleRows.map((row, index) => (
+                      <button
+                        key={row.rowId}
+                        type="button"
+                        className={`record-item ${selectedRowId === row.rowId ? "active" : ""}`}
+                        onClick={() => setSelectedRowId(row.rowId)}
+                      >
+                        <strong>第 {index + 1} 条</strong>
+                        <span>{getRowPreviewText(row)}</span>
+                      </button>
+                    ))}
                   </div>
                 )}
               </aside>
@@ -2794,6 +3527,24 @@ function App() {
                 </div>
                 <div className="record-detail-ai-toolbar">
                   <div className="record-detail-ai-actions">
+                    <label className="ai-run-config">
+                      <span>运行配置</span>
+                      <select
+                        value={selectedAIConfigName}
+                        onChange={(event) =>
+                          onSelectAIConfigForRun(event.target.value)
+                        }
+                        disabled={
+                          aiConfigLoading || isAIDetecting || isAIBatchRunning
+                        }
+                      >
+                        {aiConfigList.map((item) => (
+                          <option key={item.name} value={item.name}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <button
                       type="button"
                       className="btn btn-primary"
@@ -2806,8 +3557,8 @@ function App() {
                       }
                     >
                       {isAIDetecting
-                        ? `AI检测中 ${aiDetectElapsedText}`
-                        : "发送AI检测"}
+                        ? `AI回答中 ${aiDetectElapsedText}`
+                        : "发送AI回答"}
                     </button>
                     <button
                       type="button"
@@ -2822,7 +3573,7 @@ function App() {
                         aiConfig.resultFieldKey.trim().length === 0
                       }
                     >
-                      {isSavingAIResult ? "保存中..." : "保存AI结果"}
+                      {isSavingAIResult ? "保存中..." : "保存AI回答"}
                     </button>
                     <div className="ai-result-target">
                       <span>保存字段：</span>
@@ -2852,14 +3603,14 @@ function App() {
                     />
                   </div>
                   <div className="ai-stream-group">
-                    <label className="ai-stream-label">AI结果（流式）</label>
+                    <label className="ai-stream-label">AI回答（流式）</label>
                     <textarea
                       className="ai-stream-input"
                       value={aiResultText}
                       onChange={(event) => setAIResultText(event.target.value)}
                       placeholder={
                         selectedRow
-                          ? "点击“发送AI检测”后，这里会流式展示 AI 返回结果，可手动编辑后再保存。"
+                          ? "点击“发送AI回答”后，这里会流式展示 AI 返回结果，可手动编辑后再保存。"
                           : "请先在左侧选择一条数据"
                       }
                       disabled={!selectedRow}
@@ -2873,12 +3624,9 @@ function App() {
                   <div className="no-data">请选择一条数据</div>
                 ) : (
                   <div className="detail-fields">
-                    {/* Visible fields */}
                     {displayColumns.map((column) =>
                       renderDetailField(column, false),
                     )}
-
-                    {/* Hidden fields section */}
                     {hiddenColumns.length > 0 ? (
                       <div className="hidden-fields-section">
                         <button
@@ -3004,12 +3752,27 @@ function App() {
       {isAIConfigModalOpen && activeFile ? (
         <div className="column-modal-mask">
           <div className="column-modal ai-config-modal">
-            <h3>AI检测配置（OpenAI格式）</h3>
+            <h3>AI回答配置（OpenAI格式）</h3>
             <p>{activeFile.fileName}</p>
             {aiConfigFormMessage ? (
               <div className="column-modal-notice">{aiConfigFormMessage}</div>
             ) : null}
             <div className="ai-config-form">
+              <label className="ai-config-field">
+                <span>配置名称（输入新名称即新增）</span>
+                <input
+                  type="text"
+                  value={draftAIConfigName}
+                  onChange={(event) => setDraftAIConfigName(event.target.value)}
+                  placeholder="例如：默认配置 / 低成本模型 / 高质量模型"
+                  list="ai-config-name-options"
+                />
+              </label>
+              <datalist id="ai-config-name-options">
+                {aiConfigList.map((item) => (
+                  <option key={item.name} value={item.name} />
+                ))}
+              </datalist>
               <label className="ai-config-field">
                 <span>AI URL</span>
                 <input
@@ -3037,6 +3800,25 @@ function App() {
                   }
                   placeholder="例如：gpt-4.1-mini"
                 />
+              </label>
+              <label className="ai-config-field">
+                <span>Reasoning 级别</span>
+                <select
+                  value={draftAIConfig.reasoningEffort}
+                  onChange={(event) =>
+                    setDraftAIConfig((previous) => ({
+                      ...previous,
+                      reasoningEffort: event.target
+                        .value as AIDetectConfig["reasoningEffort"],
+                    }))
+                  }
+                >
+                  {AI_REASONING_EFFORT_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="ai-config-field">
                 <span>API Key</span>
@@ -3070,7 +3852,7 @@ function App() {
               </label>
               <div className="ai-config-section">
                 <div className="ai-config-section-title">
-                  提交检查字段（可多选）
+                  提交回答字段（可多选）
                 </div>
                 <div className="ai-config-fields">
                   {aiSubmitFieldColumns.map((column) => {
@@ -3125,7 +3907,7 @@ function App() {
                 onClick={onSaveAIConfig}
                 disabled={aiConfigSaving}
               >
-                {aiConfigSaving ? "保存中..." : "保存AI配置"}
+                {aiConfigSaving ? "保存中..." : "保存AI回答配置"}
               </button>
             </div>
           </div>

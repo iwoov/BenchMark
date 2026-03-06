@@ -28,8 +28,65 @@ const IMAGE_SEARCH_SKIP_DIRS = new Set([
 const imageRootCache = new Map<string, string | null>();
 const hyperlinkPathCache = new Map<string, string | null>();
 
+type HyperlinkImageResolveReason =
+  | "ok"
+  | "empty"
+  | "invalid_http_url"
+  | "http_unsupported_ext"
+  | "path_unresolved"
+  | "path_unsupported_ext"
+  | "path_missing_file";
+
+type HyperlinkImageResolveResult = {
+  imageSrc: string | null;
+  reason: HyperlinkImageResolveReason;
+  normalizedHyperlink: string;
+};
+
+type WorkbookImageParseStats = {
+  totalCells: number;
+  hyperlinkCells: number;
+  resolvedImageCells: number;
+  unresolvedHyperlinkCells: number;
+  invalidHttpUrlCells: number;
+  unsupportedHttpExtCells: number;
+  unresolvedPathCells: number;
+  unsupportedPathExtCells: number;
+  missingPathFileCells: number;
+  textLooksLikeImageCells: number;
+  unresolvedSamples: string[];
+  textLooksLikeImageSamples: string[];
+};
+
 interface ColumnRuntimeMeta extends ParsedColumn {
   colNumber: number;
+}
+
+function createWorkbookImageParseStats(): WorkbookImageParseStats {
+  return {
+    totalCells: 0,
+    hyperlinkCells: 0,
+    resolvedImageCells: 0,
+    unresolvedHyperlinkCells: 0,
+    invalidHttpUrlCells: 0,
+    unsupportedHttpExtCells: 0,
+    unresolvedPathCells: 0,
+    unsupportedPathExtCells: 0,
+    missingPathFileCells: 0,
+    textLooksLikeImageCells: 0,
+    unresolvedSamples: [],
+    textLooksLikeImageSamples: [],
+  };
+}
+
+function pushStatSample(
+  samples: string[],
+  sample: string,
+  max: number = 8,
+): void {
+  if (samples.length < max) {
+    samples.push(sample);
+  }
 }
 
 function normalizeHeaderTitle(value: string): string {
@@ -195,11 +252,53 @@ function normalizeRelativePathSegments(pathLike: string): string[] {
     .filter((segment) => segment.length > 0);
 }
 
+function normalizeWindowsDrivePath(pathLike: string): string | null {
+  const trimmed = pathLike.trim().replace(/^"+|"+$/g, "");
+  if (!trimmed) {
+    return null;
+  }
+
+  const drivePipe = /^([a-zA-Z])\|[\\/](.+)$/.exec(trimmed);
+  if (drivePipe) {
+    return `${drivePipe[1].toUpperCase()}:\\${drivePipe[2].replace(/[\\/]+/g, "\\")}`;
+  }
+
+  const unixWrappedDrive = /^\/([a-zA-Z]):[\\/](.+)$/.exec(trimmed);
+  if (unixWrappedDrive) {
+    return `${unixWrappedDrive[1].toUpperCase()}:\\${unixWrappedDrive[2].replace(/[\\/]+/g, "\\")}`;
+  }
+
+  const driveWithSlash = /^([a-zA-Z]):[\\/](.+)$/.exec(trimmed);
+  if (driveWithSlash) {
+    return `${driveWithSlash[1].toUpperCase()}:\\${driveWithSlash[2].replace(/[\\/]+/g, "\\")}`;
+  }
+
+  const driveWithoutSlash = /^([a-zA-Z]):([^\\/].+)$/.exec(trimmed);
+  if (driveWithoutSlash) {
+    return `${driveWithoutSlash[1].toUpperCase()}:\\${driveWithoutSlash[2].replace(/[\\/]+/g, "\\")}`;
+  }
+
+  return null;
+}
+
 function getImageSearchRoots(): string[] {
   const roots: string[] = [];
-  const envRoot = process.env.BENCHMARK_IMAGE_ROOT?.trim();
-  if (envRoot) {
-    roots.push(path.resolve(envRoot));
+  const envRootsRaw = (
+    process.env.BENCHMARK_IMAGE_ROOTS ?? process.env.BENCHMARK_IMAGE_ROOT
+  )?.trim();
+  if (envRootsRaw) {
+    envRootsRaw
+      .split(/[;,]/)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .forEach((item) => {
+        const normalizedWindowsPath = normalizeWindowsDrivePath(item);
+        if (normalizedWindowsPath) {
+          roots.push(normalizedWindowsPath);
+        } else {
+          roots.push(path.resolve(item));
+        }
+      });
   }
 
   const cwd = process.cwd();
@@ -211,6 +310,35 @@ function getImageSearchRoots(): string[] {
     roots.push(path.resolve(home, "Desktop"));
     roots.push(path.resolve(home, "Documents"));
     roots.push(path.resolve(home));
+  }
+
+  if (process.platform === "win32") {
+    const driveRoots = new Set<string>();
+    const maybeDrivePrefix = new Set<string>();
+    const homeDrive = process.env.HOMEDRIVE?.trim();
+    if (homeDrive && /^[a-zA-Z]:$/.test(homeDrive)) {
+      maybeDrivePrefix.add(homeDrive.toUpperCase());
+    }
+    const systemDrive = process.env.SystemDrive?.trim();
+    if (systemDrive && /^[a-zA-Z]:$/.test(systemDrive)) {
+      maybeDrivePrefix.add(systemDrive.toUpperCase());
+    }
+    for (let code = 67; code <= 90; code += 1) {
+      maybeDrivePrefix.add(`${String.fromCharCode(code)}:`);
+    }
+    for (const drivePrefix of maybeDrivePrefix) {
+      const driveRoot = `${drivePrefix}\\`;
+      if (!isPathExistingDir(driveRoot)) {
+        continue;
+      }
+      driveRoots.add(driveRoot);
+      driveRoots.add(path.join(driveRoot, "Users"));
+      const userName = process.env.USERNAME?.trim();
+      if (userName) {
+        driveRoots.add(path.join(driveRoot, "Users", userName));
+      }
+    }
+    roots.push(...driveRoots);
   }
 
   return Array.from(new Set(roots)).filter((item) => isPathExistingDir(item));
@@ -288,7 +416,7 @@ function normalizeHyperlinkToAbsolutePath(
   hyperlink: string,
   fileName: string,
 ): string | null {
-  const trimmed = hyperlink.trim();
+  const trimmed = hyperlink.trim().replace(/^"+|"+$/g, "");
   if (!trimmed) {
     return null;
   }
@@ -311,6 +439,12 @@ function normalizeHyperlinkToAbsolutePath(
       hyperlinkPathCache.set(trimmed, null);
       return null;
     }
+  }
+
+  const normalizedWindowsPath = normalizeWindowsDrivePath(trimmed);
+  if (normalizedWindowsPath) {
+    hyperlinkPathCache.set(trimmed, normalizedWindowsPath);
+    return normalizedWindowsPath;
   }
 
   if (path.isAbsolute(trimmed) || /^[a-zA-Z]:[\\/]/.test(trimmed)) {
@@ -352,13 +486,17 @@ function normalizeHyperlinkToAbsolutePath(
   return null;
 }
 
-function toImageSrcFromHyperlink(
+function resolveImageSrcFromHyperlink(
   hyperlink: string,
   fileName: string,
-): string | null {
+): HyperlinkImageResolveResult {
   const trimmed = hyperlink.trim();
   if (!trimmed) {
-    return null;
+    return {
+      imageSrc: null,
+      reason: "empty",
+      normalizedHyperlink: trimmed,
+    };
   }
 
   if (/^https?:\/\//i.test(trimmed)) {
@@ -366,29 +504,65 @@ function toImageSrcFromHyperlink(
       const url = new URL(trimmed);
       const ext = getImageExtFromPathLike(url.pathname);
       if (!ext) {
-        return null;
+        return {
+          imageSrc: null,
+          reason: "http_unsupported_ext",
+          normalizedHyperlink: trimmed,
+        };
       }
-      return trimmed;
+      return {
+        imageSrc: trimmed,
+        reason: "ok",
+        normalizedHyperlink: trimmed,
+      };
     } catch {
-      return null;
+      return {
+        imageSrc: null,
+        reason: "invalid_http_url",
+        normalizedHyperlink: trimmed,
+      };
     }
   }
 
   const absolutePath = normalizeHyperlinkToAbsolutePath(trimmed, fileName);
   if (!absolutePath) {
-    return null;
+    return {
+      imageSrc: null,
+      reason: "path_unresolved",
+      normalizedHyperlink: trimmed,
+    };
   }
 
   const ext = getImageExtFromPathLike(absolutePath);
   if (!ext) {
-    return null;
+    return {
+      imageSrc: null,
+      reason: "path_unsupported_ext",
+      normalizedHyperlink: absolutePath,
+    };
   }
 
   if (!isPathExistingFile(absolutePath)) {
-    return null;
+    return {
+      imageSrc: null,
+      reason: "path_missing_file",
+      normalizedHyperlink: absolutePath,
+    };
   }
 
-  return `/api/images/local?path=${encodeURIComponent(absolutePath)}`;
+  return {
+    imageSrc: `/api/images/local?path=${encodeURIComponent(absolutePath)}`,
+    reason: "ok",
+    normalizedHyperlink: absolutePath,
+  };
+}
+
+function looksLikeImageText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return /\.(png|jpe?g|webp|gif|bmp|tiff?)([?#].*)?$/i.test(trimmed);
 }
 
 function extractHyperlinkFromFormula(formula: string): string | null {
@@ -442,8 +616,12 @@ function buildRows(
   headerRowIndex: number,
   fileId: string,
   fileName: string,
-): ParsedRow[] {
+): {
+  rows: ParsedRow[];
+  stats: WorkbookImageParseStats;
+} {
   const rows: ParsedRow[] = [];
+  const stats = createWorkbookImageParseStats();
 
   for (
     let rowIndex = headerRowIndex + 1;
@@ -455,15 +633,19 @@ function buildRows(
     let hasData = false;
 
     for (const column of columns) {
+      stats.totalCells += 1;
       const cell = row.getCell(column.colNumber);
       const rawValue = cell.value;
       const textValue = normalizeCellText(rawValue);
       const hyperlink = extractHyperlinkFromCell(cell);
-      const imageSrc = hyperlink
-        ? toImageSrcFromHyperlink(hyperlink, fileName)
+      const resolveResult = hyperlink
+        ? resolveImageSrcFromHyperlink(hyperlink, fileName)
         : null;
+      const imageSrc = resolveResult?.imageSrc ?? null;
 
       if (imageSrc) {
+        stats.hyperlinkCells += 1;
+        stats.resolvedImageCells += 1;
         values[column.key] = textValue
           ? {
               type: "image",
@@ -478,6 +660,33 @@ function buildRows(
             };
         hasData = true;
         continue;
+      }
+
+      if (hyperlink) {
+        stats.hyperlinkCells += 1;
+        stats.unresolvedHyperlinkCells += 1;
+        const reason = resolveResult?.reason ?? "path_unresolved";
+        if (reason === "invalid_http_url") {
+          stats.invalidHttpUrlCells += 1;
+        } else if (reason === "http_unsupported_ext") {
+          stats.unsupportedHttpExtCells += 1;
+        } else if (reason === "path_unresolved") {
+          stats.unresolvedPathCells += 1;
+        } else if (reason === "path_unsupported_ext") {
+          stats.unsupportedPathExtCells += 1;
+        } else if (reason === "path_missing_file") {
+          stats.missingPathFileCells += 1;
+        }
+        pushStatSample(
+          stats.unresolvedSamples,
+          `R${rowIndex}C${column.colNumber} ${reason} ${resolveResult?.normalizedHyperlink ?? hyperlink}`,
+        );
+      } else if (looksLikeImageText(textValue)) {
+        stats.textLooksLikeImageCells += 1;
+        pushStatSample(
+          stats.textLooksLikeImageSamples,
+          `R${rowIndex}C${column.colNumber} ${textValue}`,
+        );
       }
 
       if (textValue) {
@@ -500,7 +709,7 @@ function buildRows(
     });
   }
 
-  return rows;
+  return { rows, stats };
 }
 
 function getLevelOptions(rows: ParsedRow[], columnKey?: string): string[] {
@@ -562,7 +771,45 @@ export async function parseWorkbook(
 
   validateRequiredColumns(columns);
 
-  const rows = buildRows(worksheet, columns, headerRowIndex, fileId, fileName);
+  const { rows, stats } = buildRows(
+    worksheet,
+    columns,
+    headerRowIndex,
+    fileId,
+    fileName,
+  );
+  const worksheetWithImages = worksheet as ExcelJS.Worksheet & {
+    getImages?: () => unknown[];
+  };
+  const embeddedImages =
+    typeof worksheetWithImages.getImages === "function"
+      ? worksheetWithImages.getImages()
+      : [];
+  const embeddedImageCount = Array.isArray(embeddedImages)
+    ? embeddedImages.length
+    : 0;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[ExcelImageParse][${fileId}] file=${fileName} rows=${rows.length} cells=${stats.totalCells} hyperlinks=${stats.hyperlinkCells} resolvedImages=${stats.resolvedImageCells} unresolvedHyperlinks=${stats.unresolvedHyperlinkCells} unresolvedPath=${stats.unresolvedPathCells} unsupportedHttpExt=${stats.unsupportedHttpExtCells} unsupportedPathExt=${stats.unsupportedPathExtCells} missingPathFile=${stats.missingPathFileCells} textLooksLikeImage=${stats.textLooksLikeImageCells} embeddedImages=${embeddedImageCount}`,
+  );
+  if (stats.unresolvedSamples.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ExcelImageParseUnresolved][${fileId}] ${JSON.stringify(stats.unresolvedSamples)}`,
+    );
+  }
+  if (stats.textLooksLikeImageSamples.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ExcelImageParseTextLike][${fileId}] ${JSON.stringify(stats.textLooksLikeImageSamples)}`,
+    );
+  }
+  if (embeddedImageCount > 0 && stats.resolvedImageCells === 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ExcelImageParseHint][${fileId}] 检测到工作表内嵌图片，但当前解析仅支持单元格超链接图片，可能导致只显示图片名称文本。`,
+    );
+  }
 
   const level1Key = columns.find((column) =>
     matchesHeader(column.title, LEVEL1_ALIASES),

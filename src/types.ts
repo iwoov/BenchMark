@@ -42,4 +42,10 @@ export interface AIDetectConfig {
   submitFieldKeys: string[];
   prompt: string;
   resultFieldKey: string;
+  reasoningEffort: "low" | "medium" | "high";
+}
+
+export interface NamedAIDetectConfig {
+  name: string;
+  config: AIDetectConfig;
 }

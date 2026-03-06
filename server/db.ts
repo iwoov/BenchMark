@@ -36,17 +36,179 @@ db.exec(`
   );
 `);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS ai_configs (
-    file_name TEXT PRIMARY KEY,
-    ai_url TEXT NOT NULL,
-    ai_model TEXT NOT NULL,
-    api_key TEXT NOT NULL,
-    submit_field_keys TEXT NOT NULL,
-    prompt TEXT NOT NULL,
-    result_field_key TEXT
+export const DEFAULT_AI_CONFIG_NAME = "默认配置";
+type AIReasoningEffort = "low" | "medium" | "high";
+
+function getTableColumns(tableName: string): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+    name: string;
+  }>;
+  return rows.map((row) => row.name);
+}
+
+function createAIDetectConfigTable(): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_configs (
+      file_name TEXT NOT NULL,
+      config_name TEXT NOT NULL,
+      ai_url TEXT NOT NULL,
+      ai_model TEXT NOT NULL,
+      api_key TEXT NOT NULL,
+      submit_field_keys TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      result_field_key TEXT,
+      reasoning_effort TEXT NOT NULL DEFAULT 'high',
+      is_active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (file_name, config_name)
+    );
+  `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_ai_configs_file_name ON ai_configs(file_name)",
   );
-`);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_ai_configs_active ON ai_configs(file_name, is_active)",
+  );
+}
+
+function normalizeAIDetectActiveFlag(): void {
+  const rows = db
+    .prepare("SELECT DISTINCT file_name FROM ai_configs")
+    .all() as Array<{ file_name: string }>;
+  const countStmt = db.prepare(
+    "SELECT COUNT(1) AS count FROM ai_configs WHERE file_name = ? AND is_active = 1",
+  );
+  const activateLatestStmt = db.prepare(
+    `UPDATE ai_configs
+     SET is_active = CASE
+       WHEN config_name = (
+         SELECT config_name
+         FROM ai_configs
+         WHERE file_name = ?
+         ORDER BY datetime(updated_at) DESC, config_name ASC
+         LIMIT 1
+       ) THEN 1
+       ELSE 0
+     END
+     WHERE file_name = ?`,
+  );
+  const keepLatestActiveStmt = db.prepare(
+    `UPDATE ai_configs
+     SET is_active = CASE
+       WHEN config_name = (
+         SELECT config_name
+         FROM ai_configs
+         WHERE file_name = ? AND is_active = 1
+         ORDER BY datetime(updated_at) DESC, config_name ASC
+         LIMIT 1
+       ) THEN 1
+       ELSE 0
+     END
+     WHERE file_name = ?`,
+  );
+
+  for (const row of rows) {
+    const countRow = countStmt.get(row.file_name) as { count: number };
+    const activeCount = Number(countRow.count);
+    if (activeCount === 0) {
+      activateLatestStmt.run(row.file_name, row.file_name);
+      continue;
+    }
+    if (activeCount > 1) {
+      keepLatestActiveStmt.run(row.file_name, row.file_name);
+    }
+  }
+}
+
+function migrateLegacyAIDetectConfigTable(): void {
+  db.exec("DROP TABLE IF EXISTS ai_configs_legacy");
+  db.exec("ALTER TABLE ai_configs RENAME TO ai_configs_legacy");
+  createAIDetectConfigTable();
+
+  db.prepare(
+    `INSERT INTO ai_configs (
+      file_name,
+      config_name,
+      ai_url,
+      ai_model,
+      api_key,
+      submit_field_keys,
+      prompt,
+      result_field_key,
+      reasoning_effort,
+      is_active,
+      created_at,
+      updated_at
+    )
+    SELECT
+      file_name,
+      ?,
+      ai_url,
+      ai_model,
+      api_key,
+      submit_field_keys,
+      prompt,
+      result_field_key,
+      'high',
+      1,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+    FROM ai_configs_legacy`,
+  ).run(DEFAULT_AI_CONFIG_NAME);
+
+  db.exec("DROP TABLE ai_configs_legacy");
+}
+
+function ensureAIDetectConfigTable(): void {
+  const tableExists = Boolean(
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ai_configs'",
+      )
+      .get(),
+  );
+
+  if (!tableExists) {
+    createAIDetectConfigTable();
+    return;
+  }
+
+  const columns = new Set(getTableColumns("ai_configs"));
+  if (!columns.has("config_name")) {
+    migrateLegacyAIDetectConfigTable();
+    return;
+  }
+
+  if (!columns.has("is_active")) {
+    db.exec(
+      "ALTER TABLE ai_configs ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!columns.has("created_at")) {
+    db.exec("ALTER TABLE ai_configs ADD COLUMN created_at TEXT");
+    db.exec(
+      "UPDATE ai_configs SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL OR created_at = ''",
+    );
+  }
+  if (!columns.has("updated_at")) {
+    db.exec("ALTER TABLE ai_configs ADD COLUMN updated_at TEXT");
+    db.exec(
+      "UPDATE ai_configs SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL OR updated_at = ''",
+    );
+  }
+  if (!columns.has("reasoning_effort")) {
+    db.exec(
+      "ALTER TABLE ai_configs ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'high'",
+    );
+  }
+  db.exec(
+    "UPDATE ai_configs SET reasoning_effort = 'high' WHERE reasoning_effort IS NULL OR trim(reasoning_effort) = ''",
+  );
+
+  createAIDetectConfigTable();
+  normalizeAIDetectActiveFlag();
+}
 
 const tableColumns = db
   .prepare("PRAGMA table_info(column_prefs)")
@@ -64,6 +226,7 @@ if (!hasFieldSignatureColumn) {
 if (!hasEditableKeysColumn) {
   db.exec("ALTER TABLE column_prefs ADD COLUMN editable_keys TEXT");
 }
+ensureAIDetectConfigTable();
 
 export interface ColumnPrefsConfig {
   fieldSignature: string;
@@ -85,6 +248,13 @@ export interface AIDetectConfig {
   submitFieldKeys: string[];
   prompt: string;
   resultFieldKey: string;
+  reasoningEffort: AIReasoningEffort;
+}
+
+export interface NamedAIDetectConfig extends AIDetectConfig {
+  name: string;
+  isActive: boolean;
+  updatedAt: string;
 }
 
 function parseJsonStringArray(value: string | null | undefined): string[] {
@@ -100,6 +270,15 @@ function parseJsonStringArray(value: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+function normalizeReasoningEffort(
+  value: string | null | undefined,
+): AIReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  return "high";
 }
 
 /**
@@ -199,61 +378,160 @@ export function deleteFileState(fileId: string): void {
   db.prepare("DELETE FROM file_states WHERE file_id = ?").run(fileId);
 }
 
-export function getAIDetectConfig(fileName: string): AIDetectConfig | null {
-  const row = db
+function normalizeConfigName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_AI_CONFIG_NAME;
+}
+
+export function listAIDetectConfigs(fileName: string): {
+  configs: NamedAIDetectConfig[];
+  activeConfigName: string;
+} {
+  const rows = db
     .prepare(
-      `SELECT ai_url, ai_model, api_key, submit_field_keys, prompt, result_field_key
+      `SELECT
+         config_name,
+         ai_url,
+         ai_model,
+         api_key,
+         submit_field_keys,
+         prompt,
+         result_field_key,
+         reasoning_effort,
+         is_active,
+         updated_at
        FROM ai_configs
-       WHERE file_name = ?`,
+       WHERE file_name = ?
+       ORDER BY is_active DESC, datetime(updated_at) DESC, config_name ASC`,
     )
-    .get(fileName) as
-    | {
-        ai_url: string;
-        ai_model: string;
-        api_key: string;
-        submit_field_keys: string;
-        prompt: string;
-        result_field_key: string | null;
-      }
-    | undefined;
+    .all(fileName) as Array<{
+    config_name: string;
+    ai_url: string;
+    ai_model: string;
+    api_key: string;
+    submit_field_keys: string;
+    prompt: string;
+    result_field_key: string | null;
+    reasoning_effort: string | null;
+    is_active: number;
+    updated_at: string;
+  }>;
 
-  if (!row) {
-    return null;
-  }
-
-  return {
+  const configs = rows.map((row) => ({
+    name: row.config_name,
     url: row.ai_url,
     model: row.ai_model,
     apiKey: row.api_key,
     submitFieldKeys: parseJsonStringArray(row.submit_field_keys),
     prompt: row.prompt,
     resultFieldKey: row.result_field_key ?? "",
+    reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+    isActive: row.is_active === 1,
+    updatedAt: row.updated_at,
+  }));
+  const activeConfigName =
+    configs.find((config) => config.isActive)?.name ?? configs[0]?.name ?? "";
+
+  return {
+    configs,
+    activeConfigName,
   };
 }
 
 export function saveAIDetectConfig(
   fileName: string,
+  configName: string,
   config: AIDetectConfig,
+  options?: {
+    setActive?: boolean;
+  },
 ): void {
+  const normalizedName = normalizeConfigName(configName);
+  const shouldSetActive = options?.setActive !== false;
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO ai_configs (
+         file_name,
+         config_name,
+         ai_url,
+         ai_model,
+         api_key,
+         submit_field_keys,
+         prompt,
+         result_field_key,
+         reasoning_effort,
+         is_active,
+         created_at,
+         updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT(file_name, config_name) DO UPDATE SET
+         ai_url = excluded.ai_url,
+         ai_model = excluded.ai_model,
+         api_key = excluded.api_key,
+         submit_field_keys = excluded.submit_field_keys,
+         prompt = excluded.prompt,
+         result_field_key = excluded.result_field_key,
+         reasoning_effort = excluded.reasoning_effort,
+         is_active = CASE
+           WHEN excluded.is_active = 1 THEN 1
+           ELSE ai_configs.is_active
+         END,
+         updated_at = CURRENT_TIMESTAMP`,
+    ).run(
+      fileName,
+      normalizedName,
+      config.url,
+      config.model,
+      config.apiKey,
+      JSON.stringify(config.submitFieldKeys),
+      config.prompt,
+      config.resultFieldKey || null,
+      config.reasoningEffort,
+      shouldSetActive ? 1 : 0,
+    );
+
+    const activeCountRow = db
+      .prepare(
+        "SELECT COUNT(1) AS count FROM ai_configs WHERE file_name = ? AND is_active = 1",
+      )
+      .get(fileName) as { count: number };
+    const activeCount = Number(activeCountRow.count);
+    if (shouldSetActive || activeCount === 0) {
+      db.prepare(
+        `UPDATE ai_configs
+         SET is_active = CASE WHEN config_name = ? THEN 1 ELSE 0 END
+         WHERE file_name = ?`,
+      ).run(normalizedName, fileName);
+    }
+  });
+
+  tx();
+}
+
+export function setAIDetectActiveConfig(
+  fileName: string,
+  configName: string,
+): boolean {
+  const normalizedName = normalizeConfigName(configName);
+  const row = db
+    .prepare(
+      "SELECT 1 FROM ai_configs WHERE file_name = ? AND config_name = ? LIMIT 1",
+    )
+    .get(fileName, normalizedName);
+  if (!row) {
+    return false;
+  }
+
   db.prepare(
-    `INSERT INTO ai_configs (file_name, ai_url, ai_model, api_key, submit_field_keys, prompt, result_field_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(file_name) DO UPDATE SET
-       ai_url = excluded.ai_url,
-       ai_model = excluded.ai_model,
-       api_key = excluded.api_key,
-       submit_field_keys = excluded.submit_field_keys,
-       prompt = excluded.prompt,
-       result_field_key = excluded.result_field_key`,
-  ).run(
-    fileName,
-    config.url,
-    config.model,
-    config.apiKey,
-    JSON.stringify(config.submitFieldKeys),
-    config.prompt,
-    config.resultFieldKey || null,
-  );
+    `UPDATE ai_configs
+     SET is_active = CASE WHEN config_name = ? THEN 1 ELSE 0 END,
+         updated_at = CASE WHEN config_name = ? THEN CURRENT_TIMESTAMP ELSE updated_at END
+     WHERE file_name = ?`,
+  ).run(normalizedName, normalizedName, fileName);
+
+  return true;
 }
 
 export default db;
