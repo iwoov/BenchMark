@@ -192,6 +192,64 @@ function normalizeGeminiEndpoint(rawUrl: string, model: string): string {
   }
 }
 
+function stripBearerPrefix(value: string): string {
+  return value
+    .trim()
+    .replace(/^Bearer\s+/i, "")
+    .trim();
+}
+
+function buildGeminiAuthHeaders(
+  endpointUrl: string,
+  apiKeyOrToken: string,
+): {
+  headers: Record<string, string>;
+  mode: "x-goog-api-key" | "authorization-bearer";
+} {
+  const token = stripBearerPrefix(apiKeyOrToken);
+  const baseHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  // Explicit bearer token input always uses Authorization.
+  if (/^Bearer\s+/i.test(apiKeyOrToken.trim())) {
+    return {
+      headers: {
+        ...baseHeaders,
+        Authorization: `Bearer ${token}`,
+      },
+      mode: "authorization-bearer",
+    };
+  }
+
+  try {
+    const parsed = new URL(endpointUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    const shouldUseBearer =
+      pathname.includes("/api/vertex/") || !hostname.endsWith("googleapis.com");
+    if (shouldUseBearer) {
+      return {
+        headers: {
+          ...baseHeaders,
+          Authorization: `Bearer ${token}`,
+        },
+        mode: "authorization-bearer",
+      };
+    }
+  } catch {
+    // Keep fallback branch below.
+  }
+
+  return {
+    headers: {
+      ...baseHeaders,
+      "x-goog-api-key": token,
+    },
+    mode: "x-goog-api-key",
+  };
+}
+
 const LOCAL_IMAGE_API_PATH = "/api/images/local";
 const SUPPORTED_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"] as const;
 const AI_RESPONSE_LOG_MAX_CHARS = 12000;
@@ -1757,9 +1815,17 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       model,
       normalizedReasoningEffort,
     );
+    const geminiAuth = buildGeminiAuthHeaders(
+      normalizedGeminiUrl,
+      normalizedOpenAIApiKey,
+    );
     // eslint-disable-next-line no-console
     console.log(
       `[AIUpstreamConfig][${aiRequestId}] provider=gemini thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[AIUpstreamConfig][${aiRequestId}] provider=gemini authMode=${geminiAuth.mode}`,
     );
     const geminiRequestBody: GeminiGenerateContentRequest = {
       contents: [
@@ -1783,10 +1849,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
         const candidate = await fetch(normalizedGeminiUrl, {
           method: "POST",
           signal: controller.signal,
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": normalizedOpenAIApiKey,
-          },
+          headers: geminiAuth.headers,
           body: JSON.stringify(geminiRequestBody),
         });
         upstreamStatusCode = candidate.status;
