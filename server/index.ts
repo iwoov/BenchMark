@@ -110,7 +110,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 type AIReasoningEffort = "low" | "medium" | "high";
-type AIProvider = "openai" | "vertex";
+type AIProvider = "openai" | "gemini";
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
@@ -120,7 +120,7 @@ function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
 }
 
 function isAIProvider(value: unknown): value is AIProvider {
-  return value === "openai" || value === "vertex";
+  return value === "openai" || value === "gemini";
 }
 
 function isValidAIRetryCount(value: unknown): value is number {
@@ -153,6 +153,43 @@ function normalizeOpenAIUrl(rawUrl: string): string {
     return `${normalized}/chat/completions`;
   }
   return `${normalized}/v1/chat/completions`;
+}
+
+function appendQueryParam(url: URL, key: string, value: string): void {
+  if (!url.searchParams.has(key)) {
+    url.searchParams.set(key, value);
+  }
+}
+
+function normalizeGeminiEndpoint(rawUrl: string, model: string): string {
+  const trimmed = rawUrl.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  const withModel = trimmed.replaceAll("{{model}}", encodeURIComponent(model));
+  let endpoint = withModel;
+  if (!endpoint.includes(":streamGenerateContent")) {
+    if (endpoint.includes("/models/")) {
+      endpoint = endpoint.replace(/\/+$/, "");
+      endpoint = `${endpoint}:streamGenerateContent`;
+    } else {
+      endpoint = endpoint.replace(/\/+$/, "");
+      if (endpoint.endsWith("/v1") || endpoint.endsWith("/v1beta")) {
+        endpoint = `${endpoint}/models/${encodeURIComponent(model)}:streamGenerateContent`;
+      } else {
+        endpoint = `${endpoint}/models/${encodeURIComponent(model)}:streamGenerateContent`;
+      }
+    }
+  }
+
+  try {
+    const parsed = new URL(endpoint);
+    appendQueryParam(parsed, "alt", "sse");
+    return parsed.toString();
+  } catch {
+    return endpoint;
+  }
 }
 
 const LOCAL_IMAGE_API_PATH = "/api/images/local";
@@ -682,7 +719,7 @@ type PromptBuildResult = {
   imageFields: Array<{ title: string; value: string; imageUrl: string }>;
 };
 
-type VertexContentPart =
+type GeminiContentPart =
   | {
       text: string;
     }
@@ -699,75 +736,57 @@ type VertexContentPart =
       };
     };
 
-type VertexGenerateContentRequest = {
+type GeminiGenerateContentRequest = {
   contents: Array<{
     role: "user";
-    parts: VertexContentPart[];
+    parts: GeminiContentPart[];
   }>;
   generationConfig?: {
     thinkingConfig?: {
       includeThoughts?: boolean;
+      thinkingLevel?: "low" | "medium" | "high";
     };
   };
 };
 
-type VertexGenerateContentChunk = {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-        thought?: boolean;
-        type?: string;
-      }>;
-    };
-  }>;
-};
+function isGemini3OrLaterModel(model: string): boolean {
+  const matched = /gemini-(\d+)/i.exec(model);
+  if (!matched?.[1]) {
+    return false;
+  }
+  const major = Number.parseInt(matched[1], 10);
+  return Number.isFinite(major) && major >= 3;
+}
 
-type VertexModelClient = {
-  generateContentStream: (
-    request: VertexGenerateContentRequest,
-  ) => Promise<{ stream: AsyncIterable<VertexGenerateContentChunk> }>;
-};
-
-type VertexAIClient = {
-  getGenerativeModel: (options: { model: string }) => VertexModelClient;
-};
-
-type VertexAIConstructor = new (options: {
-  project: string;
-  location: string;
-}) => VertexAIClient;
-
-async function createVertexModelClient(
-  project: string,
-  location: string,
+function mapReasoningEffortToGeminiThinkingLevel(
   model: string,
-): Promise<VertexModelClient> {
-  const moduleName = "@google-cloud/vertexai";
-  let imported: unknown;
-  try {
-    imported = await import(moduleName);
-  } catch {
-    throw new Error(
-      "未安装 @google-cloud/vertexai，请先执行 pnpm add @google-cloud/vertexai",
-    );
+  effort: AIReasoningEffort,
+): "low" | "medium" | "high" {
+  if (effort === "low") {
+    return "low";
   }
-
-  const moduleRecord = asRecord(imported);
-  const defaultRecord = asRecord(moduleRecord?.default);
-  const maybeCtor = moduleRecord?.VertexAI ?? defaultRecord?.VertexAI;
-  if (typeof maybeCtor !== "function") {
-    throw new Error("Vertex SDK 加载失败，缺少 VertexAI 构造器");
+  if (effort === "high") {
+    return "high";
   }
+  return /flash/i.test(model) ? "medium" : "high";
+}
 
-  const VertexAI = maybeCtor as VertexAIConstructor;
-  const client = new VertexAI({
-    project: project.trim(),
-    location: location.trim(),
-  });
-  return client.getGenerativeModel({
-    model: model.trim(),
-  });
+function buildGeminiThinkingConfig(
+  model: string,
+  effort: AIReasoningEffort,
+): {
+  includeThoughts: true;
+  thinkingLevel?: "low" | "medium" | "high";
+} {
+  if (!isGemini3OrLaterModel(model)) {
+    return {
+      includeThoughts: true,
+    };
+  }
+  return {
+    includeThoughts: true,
+    thinkingLevel: mapReasoningEffortToGeminiThinkingLevel(model, effort),
+  };
 }
 
 function parseBase64DataUrl(value: string): {
@@ -789,10 +808,10 @@ function parseBase64DataUrl(value: string): {
   };
 }
 
-function buildVertexUserParts(
+function buildGeminiUserParts(
   promptContent: PromptBuildResult,
-): VertexContentPart[] {
-  const parts: VertexContentPart[] = [
+): GeminiContentPart[] {
+  const parts: GeminiContentPart[] = [
     {
       text: promptContent.promptText,
     },
@@ -836,7 +855,7 @@ function buildVertexUserParts(
   return parts;
 }
 
-function extractVertexStreamTextPayload(payload: unknown): {
+function extractGeminiStreamTextPayload(payload: unknown): {
   answerText: string;
   thinkingText: string;
 } {
@@ -1136,8 +1155,6 @@ app.get("/api/ai-config/:fileName", (req, res) => {
       url: item.url,
       model: item.model,
       apiKey: item.apiKey,
-      vertexProject: item.vertexProject,
-      vertexLocation: item.vertexLocation,
       submitFieldKeys: item.submitFieldKeys,
       prompt: item.prompt,
       resultFieldKey: item.resultFieldKey,
@@ -1154,8 +1171,6 @@ app.get("/api/ai-config/:fileName", (req, res) => {
           url: activeConfig.url,
           model: activeConfig.model,
           apiKey: activeConfig.apiKey,
-          vertexProject: activeConfig.vertexProject,
-          vertexLocation: activeConfig.vertexLocation,
           submitFieldKeys: activeConfig.submitFieldKeys,
           prompt: activeConfig.prompt,
           resultFieldKey: activeConfig.resultFieldKey,
@@ -1174,8 +1189,6 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     url,
     model,
     apiKey,
-    vertexProject,
-    vertexLocation,
     submitFieldKeys,
     prompt,
     resultFieldKey,
@@ -1188,8 +1201,6 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     url?: unknown;
     model?: unknown;
     apiKey?: unknown;
-    vertexProject?: unknown;
-    vertexLocation?: unknown;
     submitFieldKeys?: unknown;
     prompt?: unknown;
     resultFieldKey?: unknown;
@@ -1200,7 +1211,9 @@ app.put("/api/ai-config/:fileName", (req, res) => {
 
   const normalizedProvider: AIProvider = isAIProvider(provider)
     ? provider
-    : "openai";
+    : provider === "vertex"
+      ? "gemini"
+      : "openai";
 
   if (url !== undefined && typeof url !== "string") {
     return res.status(400).json({ message: "url must be a string" });
@@ -1208,40 +1221,18 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   if (apiKey !== undefined && typeof apiKey !== "string") {
     return res.status(400).json({ message: "apiKey must be a string" });
   }
-  if (vertexProject !== undefined && typeof vertexProject !== "string") {
-    return res.status(400).json({ message: "vertexProject must be a string" });
-  }
-  if (vertexLocation !== undefined && typeof vertexLocation !== "string") {
-    return res.status(400).json({ message: "vertexLocation must be a string" });
-  }
   if (!isNonEmptyString(model)) {
     return res
       .status(400)
       .json({ message: "model must be a non-empty string" });
   }
-  if (normalizedProvider === "openai") {
-    if (!isNonEmptyString(url)) {
-      return res
-        .status(400)
-        .json({ message: "url must be a non-empty string for openai" });
-    }
-    if (!isNonEmptyString(apiKey)) {
-      return res
-        .status(400)
-        .json({ message: "apiKey must be a non-empty string for openai" });
-    }
+  if (!isNonEmptyString(url)) {
+    return res.status(400).json({ message: "url must be a non-empty string" });
   }
-  if (normalizedProvider === "vertex") {
-    if (!isNonEmptyString(vertexProject)) {
-      return res.status(400).json({
-        message: "vertexProject must be a non-empty string for vertex",
-      });
-    }
-    if (!isNonEmptyString(vertexLocation)) {
-      return res.status(400).json({
-        message: "vertexLocation must be a non-empty string for vertex",
-      });
-    }
+  if (!isNonEmptyString(apiKey)) {
+    return res
+      .status(400)
+      .json({ message: "apiKey must be a non-empty string" });
   }
   if (
     !Array.isArray(submitFieldKeys) ||
@@ -1295,8 +1286,6 @@ app.put("/api/ai-config/:fileName", (req, res) => {
       url: typeof url === "string" ? url : "",
       model,
       apiKey: typeof apiKey === "string" ? apiKey : "",
-      vertexProject: typeof vertexProject === "string" ? vertexProject : "",
-      vertexLocation: typeof vertexLocation === "string" ? vertexLocation : "",
       submitFieldKeys,
       prompt,
       resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
@@ -1335,8 +1324,6 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     url,
     model,
     apiKey,
-    vertexProject,
-    vertexLocation,
     prompt,
     fields,
     reasoningEffort,
@@ -1346,8 +1333,6 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     url?: unknown;
     model?: unknown;
     apiKey?: unknown;
-    vertexProject?: unknown;
-    vertexLocation?: unknown;
     prompt?: unknown;
     fields: unknown;
     reasoningEffort?: unknown;
@@ -1355,19 +1340,15 @@ app.post("/api/ai-detect/stream", async (req, res) => {
   };
   const normalizedProvider: AIProvider = isAIProvider(provider)
     ? provider
-    : "openai";
+    : provider === "vertex"
+      ? "gemini"
+      : "openai";
 
   if (url !== undefined && typeof url !== "string") {
     return res.status(400).json({ message: "url must be a string" });
   }
   if (apiKey !== undefined && typeof apiKey !== "string") {
     return res.status(400).json({ message: "apiKey must be a string" });
-  }
-  if (vertexProject !== undefined && typeof vertexProject !== "string") {
-    return res.status(400).json({ message: "vertexProject must be a string" });
-  }
-  if (vertexLocation !== undefined && typeof vertexLocation !== "string") {
-    return res.status(400).json({ message: "vertexLocation must be a string" });
   }
   if (!isNonEmptyString(model)) {
     return res
@@ -1379,29 +1360,13 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       .status(400)
       .json({ message: "prompt must be a non-empty string" });
   }
-  if (normalizedProvider === "openai") {
-    if (!isNonEmptyString(url)) {
-      return res
-        .status(400)
-        .json({ message: "url must be a non-empty string for openai" });
-    }
-    if (!isNonEmptyString(apiKey)) {
-      return res
-        .status(400)
-        .json({ message: "apiKey must be a non-empty string for openai" });
-    }
+  if (!isNonEmptyString(url)) {
+    return res.status(400).json({ message: "url must be a non-empty string" });
   }
-  if (normalizedProvider === "vertex") {
-    if (!isNonEmptyString(vertexProject)) {
-      return res.status(400).json({
-        message: "vertexProject must be a non-empty string for vertex",
-      });
-    }
-    if (!isNonEmptyString(vertexLocation)) {
-      return res.status(400).json({
-        message: "vertexLocation must be a non-empty string for vertex",
-      });
-    }
+  if (!isNonEmptyString(apiKey)) {
+    return res
+      .status(400)
+      .json({ message: "apiKey must be a non-empty string" });
   }
 
   const fieldPayload = toAIDetectFields(fields);
@@ -1426,11 +1391,9 @@ app.post("/api/ai-detect/stream", async (req, res) => {
   const normalizedRetryCount = normalizeAIRetryCount(retryCount);
   const normalizedOpenAIUrl =
     typeof url === "string" ? normalizeOpenAIUrl(url) : "";
+  const normalizedGeminiUrl =
+    typeof url === "string" ? normalizeGeminiEndpoint(url, model) : "";
   const normalizedOpenAIApiKey = typeof apiKey === "string" ? apiKey : "";
-  const normalizedVertexProject =
-    typeof vertexProject === "string" ? vertexProject.trim() : "";
-  const normalizedVertexLocation =
-    typeof vertexLocation === "string" ? vertexLocation.trim() : "";
 
   const aiRequestId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
@@ -1485,6 +1448,12 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       new URL(normalizedOpenAIUrl);
     } catch {
       return res.status(400).json({ message: "url is invalid" });
+    }
+  } else {
+    try {
+      new URL(normalizedGeminiUrl);
+    } catch {
+      return res.status(400).json({ message: "gemini endpoint is invalid" });
     }
   }
 
@@ -1783,39 +1752,68 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       return;
     }
 
-    const vertexParts = buildVertexUserParts(promptContent);
-    let vertexStream: AsyncIterable<VertexGenerateContentChunk> | null = null;
+    const geminiParts = buildGeminiUserParts(promptContent);
+    const geminiThinkingConfig = buildGeminiThinkingConfig(
+      model,
+      normalizedReasoningEffort,
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[AIUpstreamConfig][${aiRequestId}] provider=gemini thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
+    );
+    const geminiRequestBody: GeminiGenerateContentRequest = {
+      contents: [
+        {
+          role: "user",
+          parts: geminiParts,
+        },
+      ],
+      generationConfig: {
+        thinkingConfig: geminiThinkingConfig,
+      },
+    };
+
+    let upstream: Response | null = null;
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
       // eslint-disable-next-line no-console
       console.log(
-        `[AIUpstream][${aiRequestId}] provider=vertex dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} project=${normalizedVertexProject} location=${normalizedVertexLocation}`,
+        `[AIUpstream][${aiRequestId}] provider=gemini dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${normalizedGeminiUrl}`,
       );
       try {
-        const modelClient = await createVertexModelClient(
-          normalizedVertexProject,
-          normalizedVertexLocation,
-          model,
-        );
-        const response = await modelClient.generateContentStream({
-          contents: [
-            {
-              role: "user",
-              parts: vertexParts,
-            },
-          ],
-          generationConfig: {
-            thinkingConfig: {
-              includeThoughts: true,
-            },
+        const candidate = await fetch(normalizedGeminiUrl, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": normalizedOpenAIApiKey,
           },
+          body: JSON.stringify(geminiRequestBody),
         });
-        upstreamStatusCode = 200;
-        vertexStream = response.stream;
+        upstreamStatusCode = candidate.status;
+        const hasBody = Boolean(candidate.body);
         // eslint-disable-next-line no-console
         console.log(
-          `[AIUpstream][${aiRequestId}] provider=vertex connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts}`,
+          `[AIUpstream][${aiRequestId}] provider=gemini connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
         );
-        break;
+
+        if (candidate.status === 200 && hasBody) {
+          upstream = candidate;
+          break;
+        }
+
+        if (candidate.status !== 200) {
+          const rawText = await candidate.text().catch(() => "");
+          lastFailedStatus = candidate.status || 500;
+          lastFailedMessage = parseUpstreamErrorMessage(rawText);
+        } else {
+          lastFailedStatus = 502;
+          lastFailedMessage = "AI 响应流为空";
+        }
+
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamRetry][${aiRequestId}] provider=gemini attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
+        );
       } catch (error) {
         if (controller.signal.aborted) {
           throw error;
@@ -1825,12 +1823,12 @@ app.post("/api/ai-detect/stream", async (req, res) => {
         lastFailedMessage = parsedError.message;
         // eslint-disable-next-line no-console
         console.log(
-          `[AIUpstreamRetry][${aiRequestId}] provider=vertex attempt=${attempt}/${totalAttempts} status=${lastFailedStatus} message=${lastFailedMessage}`,
+          `[AIUpstreamRetry][${aiRequestId}] provider=gemini attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
         );
       }
     }
 
-    if (!vertexStream) {
+    if (!upstream || !upstream.body) {
       // eslint-disable-next-line no-console
       console.log(
         `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
@@ -1845,28 +1843,113 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    for await (const chunk of vertexStream) {
-      if (controller.signal.aborted) {
-        throw new Error("请求已取消");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let rawStreamPreview = "";
+
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
       }
-      const extracted = extractVertexStreamTextPayload(chunk);
-      if (extracted.thinkingText.length > 0) {
-        aiThinkingText += extracted.thinkingText;
-        streamThinkingChunkCount += 1;
-        streamThinkingTextLength += extracted.thinkingText.length;
-        writeAIClientStreamEvent(res, {
-          type: "thinking",
-          text: extracted.thinkingText,
-        });
+      if (!value) {
+        continue;
       }
-      if (extracted.answerText.length > 0) {
-        aiResponseText += extracted.answerText;
-        streamChunkCount += 1;
-        streamTextLength += extracted.answerText.length;
-        writeAIClientStreamEvent(res, {
-          type: "answer",
-          text: extracted.answerText,
-        });
+
+      const current = decoder.decode(value, { stream: true });
+      if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+        rawStreamPreview += current;
+      }
+      buffer += current;
+
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) {
+          continue;
+        }
+
+        const data = trimmed.slice(5).trim();
+        if (data === "[DONE]") {
+          doneByDoneToken = true;
+          logAIResponseById(aiRequestId, aiResponseText);
+          if (aiThinkingText.trim().length > 0) {
+            logAIThinkingById(aiRequestId, aiThinkingText);
+          }
+          writeAIClientStreamEvent(res, { type: "done" });
+          res.end();
+          return;
+        }
+        if (data.length === 0) {
+          continue;
+        }
+
+        try {
+          const payload = JSON.parse(data) as unknown;
+          const extracted = extractGeminiStreamTextPayload(payload);
+          if (extracted.thinkingText.length > 0) {
+            aiThinkingText += extracted.thinkingText;
+            streamThinkingChunkCount += 1;
+            streamThinkingTextLength += extracted.thinkingText.length;
+            writeAIClientStreamEvent(res, {
+              type: "thinking",
+              text: extracted.thinkingText,
+            });
+          }
+          if (extracted.answerText.length > 0) {
+            aiResponseText += extracted.answerText;
+            streamChunkCount += 1;
+            streamTextLength += extracted.answerText.length;
+            writeAIClientStreamEvent(res, {
+              type: "answer",
+              text: extracted.answerText,
+            });
+          }
+        } catch {
+          // Ignore non-JSON stream chunks.
+        }
+      }
+    }
+
+    buffer += decoder.decode();
+    if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+      rawStreamPreview += buffer;
+    }
+
+    if (buffer.length > 0 && buffer.includes("data:")) {
+      const maybeData = buffer
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("data:"));
+      const value = maybeData ? maybeData.slice(5).trim() : "";
+      if (value && value !== "[DONE]") {
+        try {
+          const payload = JSON.parse(value) as unknown;
+          const extracted = extractGeminiStreamTextPayload(payload);
+          if (extracted.thinkingText.length > 0) {
+            aiThinkingText += extracted.thinkingText;
+            streamThinkingChunkCount += 1;
+            streamThinkingTextLength += extracted.thinkingText.length;
+            writeAIClientStreamEvent(res, {
+              type: "thinking",
+              text: extracted.thinkingText,
+            });
+          }
+          if (extracted.answerText.length > 0) {
+            aiResponseText += extracted.answerText;
+            streamChunkCount += 1;
+            streamTextLength += extracted.answerText.length;
+            writeAIClientStreamEvent(res, {
+              type: "answer",
+              text: extracted.answerText,
+            });
+          }
+        } catch {
+          // Ignore trailing invalid chunk.
+        }
       }
     }
 
@@ -1874,6 +1957,12 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     logAIResponseById(aiRequestId, aiResponseText);
     if (aiThinkingText.trim().length > 0) {
       logAIThinkingById(aiRequestId, aiThinkingText);
+    }
+    if (
+      aiResponseText.trim().length === 0 &&
+      rawStreamPreview.trim().length > 0
+    ) {
+      logAIRawResponseById(aiRequestId, rawStreamPreview);
     }
     writeAIClientStreamEvent(res, { type: "done" });
     res.end();

@@ -63,13 +63,19 @@ interface ColumnPrefsConfig {
   editableKeys: string[];
 }
 
+const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
+const DEFAULT_GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse";
+
+function getDefaultAIUrl(provider: AIDetectConfig["provider"]): string {
+  return provider === "openai" ? DEFAULT_OPENAI_URL : DEFAULT_GEMINI_URL;
+}
+
 const DEFAULT_AI_CONFIG: AIDetectConfig = {
   provider: "openai",
-  url: "https://api.openai.com/v1",
+  url: DEFAULT_OPENAI_URL,
   model: "gpt-4.1-mini",
   apiKey: "",
-  vertexProject: "",
-  vertexLocation: "us-central1",
   submitFieldKeys: [],
   prompt:
     "你是一个质检助手。请根据输入字段给出回答结论、问题点和建议。\n输出要求：\n1. 先给出结论（合格/不合格）\n2. 再列出具体问题\n3. 最后给出修改建议\n\n字段内容如下：\n{{fields_json}}",
@@ -81,7 +87,7 @@ const DEFAULT_AI_CONFIG_NAME = "默认配置";
 const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
 const AI_PROVIDER_OPTIONS = [
   { value: "openai", label: "OpenAI兼容接口" },
-  { value: "vertex", label: "Google Vertex 原生" },
+  { value: "gemini", label: "Google Gemini 原生" },
 ] as const;
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
@@ -665,10 +671,13 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
   }
 
   const candidate = value as Partial<AIDetectConfig>;
+  const rawProvider = (value as { provider?: unknown }).provider;
   const provider =
-    candidate.provider === "openai" || candidate.provider === "vertex"
-      ? candidate.provider
-      : DEFAULT_AI_CONFIG.provider;
+    rawProvider === "openai" || rawProvider === "gemini"
+      ? rawProvider
+      : rawProvider === "vertex"
+        ? "gemini"
+        : DEFAULT_AI_CONFIG.provider;
   const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
     ? candidate.submitFieldKeys.filter(
         (item): item is string => typeof item === "string",
@@ -687,21 +696,12 @@ function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
     url:
       typeof candidate.url === "string" && candidate.url.trim().length > 0
         ? candidate.url
-        : DEFAULT_AI_CONFIG.url,
+        : getDefaultAIUrl(provider),
     model:
       typeof candidate.model === "string" && candidate.model.trim().length > 0
         ? candidate.model
         : DEFAULT_AI_CONFIG.model,
     apiKey: typeof candidate.apiKey === "string" ? candidate.apiKey : "",
-    vertexProject:
-      typeof candidate.vertexProject === "string"
-        ? candidate.vertexProject
-        : "",
-    vertexLocation:
-      typeof candidate.vertexLocation === "string" &&
-      candidate.vertexLocation.trim().length > 0
-        ? candidate.vertexLocation
-        : DEFAULT_AI_CONFIG.vertexLocation,
     submitFieldKeys,
     prompt:
       typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
@@ -889,8 +889,6 @@ async function requestAIDetectResult(
     url: string;
     model: string;
     apiKey: string;
-    vertexProject: string;
-    vertexLocation: string;
     prompt: string;
     fields: AIDetectFieldPayload[];
     reasoningEffort: AIDetectConfig["reasoningEffort"];
@@ -2046,13 +2044,13 @@ function App() {
         return;
       }
     }
-    if (nextConfig.provider === "vertex") {
-      if (nextConfig.vertexProject.trim().length === 0) {
-        setAIConfigFormMessage("Vertex Project 不能为空");
+    if (nextConfig.provider === "gemini") {
+      if (nextConfig.url.trim().length === 0) {
+        setAIConfigFormMessage("Gemini 接口 Endpoint 不能为空");
         return;
       }
-      if (nextConfig.vertexLocation.trim().length === 0) {
-        setAIConfigFormMessage("Vertex Location 不能为空");
+      if (nextConfig.apiKey.trim().length === 0) {
+        setAIConfigFormMessage("Gemini API Key 不能为空");
         return;
       }
     }
@@ -2151,13 +2149,13 @@ function App() {
         return;
       }
     }
-    if (normalizedConfig.provider === "vertex") {
-      if (normalizedConfig.vertexProject.trim().length === 0) {
-        setAIResultMessage("请先配置 Vertex Project");
+    if (normalizedConfig.provider === "gemini") {
+      if (normalizedConfig.url.trim().length === 0) {
+        setAIResultMessage("请先配置 Gemini 接口 Endpoint");
         return;
       }
-      if (normalizedConfig.vertexLocation.trim().length === 0) {
-        setAIResultMessage("请先配置 Vertex Location");
+      if (normalizedConfig.apiKey.trim().length === 0) {
+        setAIResultMessage("请先配置 Gemini API Key");
         return;
       }
     }
@@ -2200,8 +2198,6 @@ function App() {
           url: normalizedConfig.url,
           model: normalizedConfig.model,
           apiKey: normalizedConfig.apiKey,
-          vertexProject: normalizedConfig.vertexProject,
-          vertexLocation: normalizedConfig.vertexLocation,
           prompt: normalizedConfig.prompt,
           fields,
           reasoningEffort: normalizedConfig.reasoningEffort,
@@ -2335,13 +2331,13 @@ function App() {
         return;
       }
     }
-    if (normalizedConfig.provider === "vertex") {
-      if (normalizedConfig.vertexProject.trim().length === 0) {
-        setErrorMessage("请先配置 Vertex Project");
+    if (normalizedConfig.provider === "gemini") {
+      if (normalizedConfig.url.trim().length === 0) {
+        setErrorMessage("请先配置 Gemini 接口 Endpoint");
         return;
       }
-      if (normalizedConfig.vertexLocation.trim().length === 0) {
-        setErrorMessage("请先配置 Vertex Location");
+      if (normalizedConfig.apiKey.trim().length === 0) {
+        setErrorMessage("请先配置 Gemini API Key");
         return;
       }
     }
@@ -2444,8 +2440,6 @@ function App() {
               url: normalizedConfig.url,
               model: normalizedConfig.model,
               apiKey: normalizedConfig.apiKey,
-              vertexProject: normalizedConfig.vertexProject,
-              vertexLocation: normalizedConfig.vertexLocation,
               prompt: normalizedConfig.prompt,
               fields,
               reasoningEffort: normalizedConfig.reasoningEffort,
@@ -3804,11 +3798,21 @@ function App() {
                 <select
                   value={draftAIConfig.provider}
                   onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      provider: event.target
-                        .value as AIDetectConfig["provider"],
-                    }))
+                    setDraftAIConfig((previous) => {
+                      const nextProvider = event.target
+                        .value as AIDetectConfig["provider"];
+                      const shouldSwitchToProviderDefaultUrl =
+                        previous.url.trim().length === 0 ||
+                        previous.url.trim() ===
+                          getDefaultAIUrl(previous.provider);
+                      return {
+                        ...previous,
+                        provider: nextProvider,
+                        url: shouldSwitchToProviderDefaultUrl
+                          ? getDefaultAIUrl(nextProvider)
+                          : previous.url,
+                      };
+                    })
                   }
                 >
                   {AI_PROVIDER_OPTIONS.map((option) => (
@@ -3818,54 +3822,28 @@ function App() {
                   ))}
                 </select>
               </label>
-              {draftAIConfig.provider === "openai" ? (
-                <label className="ai-config-field">
-                  <span>OpenAI兼容接口 URL</span>
-                  <input
-                    type="text"
-                    value={draftAIConfig.url}
-                    onChange={(event) =>
-                      setDraftAIConfig((previous) => ({
-                        ...previous,
-                        url: event.target.value,
-                      }))
-                    }
-                    placeholder="例如：https://api.openai.com/v1"
-                  />
-                </label>
-              ) : null}
-              {draftAIConfig.provider === "vertex" ? (
-                <>
-                  <label className="ai-config-field">
-                    <span>Vertex Project</span>
-                    <input
-                      type="text"
-                      value={draftAIConfig.vertexProject}
-                      onChange={(event) =>
-                        setDraftAIConfig((previous) => ({
-                          ...previous,
-                          vertexProject: event.target.value,
-                        }))
-                      }
-                      placeholder="例如：my-gcp-project"
-                    />
-                  </label>
-                  <label className="ai-config-field">
-                    <span>Vertex Location</span>
-                    <input
-                      type="text"
-                      value={draftAIConfig.vertexLocation}
-                      onChange={(event) =>
-                        setDraftAIConfig((previous) => ({
-                          ...previous,
-                          vertexLocation: event.target.value,
-                        }))
-                      }
-                      placeholder="例如：us-central1"
-                    />
-                  </label>
-                </>
-              ) : null}
+              <label className="ai-config-field">
+                <span>
+                  {draftAIConfig.provider === "openai"
+                    ? "OpenAI兼容接口 URL"
+                    : "Gemini 接口 Endpoint"}
+                </span>
+                <input
+                  type="text"
+                  value={draftAIConfig.url}
+                  onChange={(event) =>
+                    setDraftAIConfig((previous) => ({
+                      ...previous,
+                      url: event.target.value,
+                    }))
+                  }
+                  placeholder={
+                    draftAIConfig.provider === "openai"
+                      ? `例如：${DEFAULT_OPENAI_URL}`
+                      : `例如：${DEFAULT_GEMINI_URL}`
+                  }
+                />
+              </label>
               <label className="ai-config-field">
                 <span>模型</span>
                 <input
@@ -3877,7 +3855,11 @@ function App() {
                       model: event.target.value,
                     }))
                   }
-                  placeholder="例如：gpt-4.1-mini"
+                  placeholder={
+                    draftAIConfig.provider === "openai"
+                      ? "例如：gpt-4.1-mini"
+                      : "例如：gemini-2.5-flash"
+                  }
                 />
               </label>
               <label className="ai-config-field">
@@ -3917,22 +3899,24 @@ function App() {
                   }
                 />
               </label>
-              {draftAIConfig.provider === "openai" ? (
-                <label className="ai-config-field">
-                  <span>OpenAI API Key</span>
-                  <input
-                    type="password"
-                    value={draftAIConfig.apiKey}
-                    onChange={(event) =>
-                      setDraftAIConfig((previous) => ({
-                        ...previous,
-                        apiKey: event.target.value,
-                      }))
-                    }
-                    placeholder="请输入 API Key"
-                  />
-                </label>
-              ) : null}
+              <label className="ai-config-field">
+                <span>
+                  {draftAIConfig.provider === "openai"
+                    ? "OpenAI API Key"
+                    : "Gemini API Key"}
+                </span>
+                <input
+                  type="password"
+                  value={draftAIConfig.apiKey}
+                  onChange={(event) =>
+                    setDraftAIConfig((previous) => ({
+                      ...previous,
+                      apiKey: event.target.value,
+                    }))
+                  }
+                  placeholder="请输入 API Key"
+                />
+              </label>
               <label className="ai-config-field">
                 <span>结果保存字段</span>
                 <select

@@ -37,7 +37,7 @@ db.exec(`
 `);
 
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
-type AIProvider = "openai" | "vertex";
+type AIProvider = "openai" | "gemini";
 type AIReasoningEffort = "low" | "medium" | "high";
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
@@ -242,7 +242,10 @@ function ensureAIDetectConfigTable(): void {
     "UPDATE ai_configs SET provider = 'openai' WHERE provider IS NULL OR trim(provider) = ''",
   );
   db.exec(
-    "UPDATE ai_configs SET provider = 'openai' WHERE provider NOT IN ('openai', 'vertex')",
+    "UPDATE ai_configs SET provider = 'gemini' WHERE provider = 'vertex'",
+  );
+  db.exec(
+    "UPDATE ai_configs SET provider = 'openai' WHERE provider NOT IN ('openai', 'gemini')",
   );
   db.exec(
     "UPDATE ai_configs SET vertex_project = '' WHERE vertex_project IS NULL",
@@ -301,8 +304,6 @@ export interface AIDetectConfig {
   url: string;
   model: string;
   apiKey: string;
-  vertexProject: string;
-  vertexLocation: string;
   submitFieldKeys: string[];
   prompt: string;
   resultFieldKey: string;
@@ -341,8 +342,11 @@ function normalizeReasoningEffort(
 }
 
 function normalizeAIProvider(value: string | null | undefined): AIProvider {
-  if (value === "openai" || value === "vertex") {
+  if (value === "openai" || value === "gemini") {
     return value;
+  }
+  if (value === "vertex") {
+    return "gemini";
   }
   return "openai";
 }
@@ -510,8 +514,6 @@ export function listAIDetectConfigs(fileName: string): {
     url: row.ai_url,
     model: row.ai_model,
     apiKey: row.api_key,
-    vertexProject: row.vertex_project ?? "",
-    vertexLocation: row.vertex_location ?? "",
     submitFieldKeys: parseJsonStringArray(row.submit_field_keys),
     prompt: row.prompt,
     resultFieldKey: row.result_field_key ?? "",
@@ -585,8 +587,8 @@ export function saveAIDetectConfig(
       config.url,
       config.model,
       config.apiKey,
-      config.vertexProject,
-      config.vertexLocation,
+      "",
+      "",
       JSON.stringify(config.submitFieldKeys),
       config.prompt,
       config.resultFieldKey || null,
