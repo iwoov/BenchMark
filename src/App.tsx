@@ -11,7 +11,7 @@ import type {
 
 const ALL_FILTER_VALUE = "全部";
 const QUALIFIED_TITLE_ALIASES = ["是否合格"] as const;
-const TIME_TITLE_ALIASES = ["时间"] as const;
+const TIME_TITLE_ALIASES = ["创建时间"] as const;
 const CREATOR_TITLE_ALIASES = ["创建人"] as const;
 const INSPECTOR_TITLE_ALIASES = ["质检员"] as const;
 const FEEDBACK_TITLE_ALIASES = ["业务反馈意见", "质检员业务反馈意见"] as const;
@@ -3339,7 +3339,7 @@ function App() {
             <h2>等待文件导入</h2>
             <p>
               点击右上角「导入
-              Excel」按钮，支持展示/可编辑字段配置、level1/level2/时间筛选、图片展示与导出。
+              Excel」按钮，支持展示/可编辑字段配置、level1/level2/创建时间筛选、图片展示与导出。
             </p>
           </section>
         ) : (
@@ -3381,7 +3381,7 @@ function App() {
                 </select>
               </div>
               <div className="filter-group">
-                <label htmlFor="time-filter">时间</label>
+                <label htmlFor="time-filter">创建时间</label>
                 <select
                   id="time-filter"
                   value={activeFile.timeFilter}
