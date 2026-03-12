@@ -23,7 +23,8 @@ db.exec(`
     file_name TEXT PRIMARY KEY,
     selected_keys TEXT NOT NULL,
     field_signature TEXT,
-    editable_keys TEXT
+    editable_keys TEXT,
+    filter_keys TEXT
   );
 `);
 
@@ -39,6 +40,18 @@ db.exec(`
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
 type AIProvider = "openai" | "gemini";
 type AIReasoningEffort = "low" | "medium" | "high";
+export type AIDetectStageKey =
+  | "precheck"
+  | "context_audit"
+  | "independent_solving"
+  | "final_verdict";
+const AI_STAGE_ORDER: AIDetectStageKey[] = [
+  "precheck",
+  "context_audit",
+  "independent_solving",
+  "final_verdict",
+];
+const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
@@ -66,6 +79,7 @@ function createAIDetectConfigTable(): void {
       result_field_key TEXT,
       reasoning_effort TEXT NOT NULL DEFAULT 'high',
       retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT},
+      stages_json TEXT,
       is_active INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -149,6 +163,7 @@ function migrateLegacyAIDetectConfigTable(): void {
       result_field_key,
       reasoning_effort,
       retry_count,
+      stages_json,
       is_active,
       created_at,
       updated_at
@@ -167,6 +182,7 @@ function migrateLegacyAIDetectConfigTable(): void {
       result_field_key,
       'high',
       ${DEFAULT_AI_RETRY_COUNT},
+      NULL,
       1,
       CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP
@@ -223,6 +239,9 @@ function ensureAIDetectConfigTable(): void {
       `ALTER TABLE ai_configs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT}`,
     );
   }
+  if (!columns.has("stages_json")) {
+    db.exec("ALTER TABLE ai_configs ADD COLUMN stages_json TEXT");
+  }
   if (!columns.has("provider")) {
     db.exec(
       "ALTER TABLE ai_configs ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'",
@@ -277,6 +296,9 @@ const hasFieldSignatureColumn = tableColumns.some(
 const hasEditableKeysColumn = tableColumns.some(
   (column) => column.name === "editable_keys",
 );
+const hasFilterKeysColumn = tableColumns.some(
+  (column) => column.name === "filter_keys",
+);
 
 if (!hasFieldSignatureColumn) {
   db.exec("ALTER TABLE column_prefs ADD COLUMN field_signature TEXT");
@@ -284,12 +306,16 @@ if (!hasFieldSignatureColumn) {
 if (!hasEditableKeysColumn) {
   db.exec("ALTER TABLE column_prefs ADD COLUMN editable_keys TEXT");
 }
+if (!hasFilterKeysColumn) {
+  db.exec("ALTER TABLE column_prefs ADD COLUMN filter_keys TEXT");
+}
 ensureAIDetectConfigTable();
 
 export interface ColumnPrefsConfig {
   fieldSignature: string;
   displayKeys: string[];
   editableKeys: string[];
+  filterKeys?: string[];
 }
 
 export interface PersistedFileState {
@@ -300,6 +326,16 @@ export interface PersistedFileState {
 }
 
 export interface AIDetectConfig {
+  stages: Record<AIDetectStageKey, AIDetectStageConfig>;
+}
+
+export interface NamedAIDetectConfig extends AIDetectConfig {
+  name: string;
+  isActive: boolean;
+  updatedAt: string;
+}
+
+export interface AIDetectStageConfig {
   provider: AIProvider;
   url: string;
   model: string;
@@ -309,12 +345,6 @@ export interface AIDetectConfig {
   resultFieldKey: string;
   reasoningEffort: AIReasoningEffort;
   retryCount: number;
-}
-
-export interface NamedAIDetectConfig extends AIDetectConfig {
-  name: string;
-  isActive: boolean;
-  updatedAt: string;
 }
 
 function parseJsonStringArray(value: string | null | undefined): string[] {
@@ -364,6 +394,117 @@ function normalizeRetryCount(value: number | null | undefined): number {
   return value;
 }
 
+function normalizeStageProvider(
+  value: unknown,
+  fallback: AIProvider,
+): AIProvider {
+  if (value === "openai" || value === "gemini") {
+    return value;
+  }
+  if (value === "vertex") {
+    return "gemini";
+  }
+  return fallback;
+}
+
+function normalizeStageReasoningEffort(
+  value: unknown,
+  fallback: AIReasoningEffort,
+): AIReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizeStageConfig(
+  value: unknown,
+  fallback: AIDetectStageConfig,
+): AIDetectStageConfig {
+  if (!value || typeof value !== "object") {
+    return {
+      ...fallback,
+      submitFieldKeys: [...fallback.submitFieldKeys],
+    };
+  }
+
+  const candidate = value as Partial<AIDetectStageConfig>;
+  const provider = normalizeStageProvider(
+    candidate.provider,
+    fallback.provider,
+  );
+  const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
+    ? candidate.submitFieldKeys.filter(
+        (item): item is string => typeof item === "string",
+      )
+    : [...fallback.submitFieldKeys];
+  const reasoningEffort = normalizeStageReasoningEffort(
+    candidate.reasoningEffort,
+    fallback.reasoningEffort,
+  );
+  const retryCount =
+    typeof candidate.retryCount === "number"
+      ? normalizeRetryCount(candidate.retryCount)
+      : fallback.retryCount;
+
+  return {
+    provider,
+    url:
+      typeof candidate.url === "string" && candidate.url.trim().length > 0
+        ? candidate.url
+        : fallback.url,
+    model:
+      typeof candidate.model === "string" && candidate.model.trim().length > 0
+        ? candidate.model
+        : fallback.model,
+    apiKey:
+      typeof candidate.apiKey === "string" ? candidate.apiKey : fallback.apiKey,
+    submitFieldKeys,
+    prompt:
+      typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
+        ? candidate.prompt
+        : fallback.prompt,
+    resultFieldKey:
+      typeof candidate.resultFieldKey === "string"
+        ? candidate.resultFieldKey
+        : fallback.resultFieldKey,
+    reasoningEffort,
+    retryCount,
+  };
+}
+
+function parseStageConfigMap(
+  value: string | null | undefined,
+  fallback: AIDetectStageConfig,
+): Record<AIDetectStageKey, AIDetectStageConfig> {
+  if (!value) {
+    const stages = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stages[stageKey] = normalizeStageConfig(null, fallback);
+    });
+    return stages;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error("invalid");
+    }
+    const rawStages = parsed as Record<string, unknown>;
+    const stages = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stages[stageKey] = normalizeStageConfig(rawStages[stageKey], fallback);
+    });
+    return stages;
+  } catch {
+    const stages = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stages[stageKey] = normalizeStageConfig(null, fallback);
+    });
+    return stages;
+  }
+}
+
 /**
  * Get saved column preferences for a given file name.
  * Returns null if not found.
@@ -371,13 +512,14 @@ function normalizeRetryCount(value: number | null | undefined): number {
 export function getColumnPrefs(fileName: string): ColumnPrefsConfig | null {
   const row = db
     .prepare(
-      "SELECT selected_keys, field_signature, editable_keys FROM column_prefs WHERE file_name = ?",
+      "SELECT selected_keys, field_signature, editable_keys, filter_keys FROM column_prefs WHERE file_name = ?",
     )
     .get(fileName) as
     | {
         selected_keys: string;
         field_signature: string | null;
         editable_keys: string | null;
+        filter_keys: string | null;
       }
     | undefined;
 
@@ -389,6 +531,10 @@ export function getColumnPrefs(fileName: string): ColumnPrefsConfig | null {
     fieldSignature: row.field_signature ?? "",
     displayKeys: parseJsonStringArray(row.selected_keys),
     editableKeys: parseJsonStringArray(row.editable_keys),
+    filterKeys:
+      row.filter_keys === null || row.filter_keys === undefined
+        ? undefined
+        : parseJsonStringArray(row.filter_keys),
   };
 }
 
@@ -400,17 +546,19 @@ export function saveColumnPrefs(
   config: ColumnPrefsConfig,
 ): void {
   db.prepare(
-    `INSERT INTO column_prefs (file_name, selected_keys, field_signature, editable_keys)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO column_prefs (file_name, selected_keys, field_signature, editable_keys, filter_keys)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(file_name) DO UPDATE SET
        selected_keys = excluded.selected_keys,
        field_signature = excluded.field_signature,
-       editable_keys = excluded.editable_keys`,
+       editable_keys = excluded.editable_keys,
+       filter_keys = excluded.filter_keys`,
   ).run(
     fileName,
     JSON.stringify(config.displayKeys),
     config.fieldSignature,
     JSON.stringify(config.editableKeys),
+    JSON.stringify(config.filterKeys ?? []),
   );
 }
 
@@ -485,6 +633,7 @@ export function listAIDetectConfigs(fileName: string): {
          result_field_key,
          reasoning_effort,
          retry_count,
+         stages_json,
          is_active,
          updated_at
        FROM ai_configs
@@ -504,24 +653,31 @@ export function listAIDetectConfigs(fileName: string): {
     result_field_key: string | null;
     reasoning_effort: string | null;
     retry_count: number | null;
+    stages_json: string | null;
     is_active: number;
     updated_at: string;
   }>;
 
-  const configs = rows.map((row) => ({
-    name: row.config_name,
-    provider: normalizeAIProvider(row.provider),
-    url: row.ai_url,
-    model: row.ai_model,
-    apiKey: row.api_key,
-    submitFieldKeys: parseJsonStringArray(row.submit_field_keys),
-    prompt: row.prompt,
-    resultFieldKey: row.result_field_key ?? "",
-    reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
-    retryCount: normalizeRetryCount(row.retry_count),
-    isActive: row.is_active === 1,
-    updatedAt: row.updated_at,
-  }));
+  const configs = rows.map((row) => {
+    const legacyStageConfig: AIDetectStageConfig = {
+      provider: normalizeAIProvider(row.provider),
+      url: row.ai_url,
+      model: row.ai_model,
+      apiKey: row.api_key,
+      submitFieldKeys: parseJsonStringArray(row.submit_field_keys),
+      prompt: row.prompt,
+      resultFieldKey: row.result_field_key ?? "",
+      reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+      retryCount: normalizeRetryCount(row.retry_count),
+    };
+    const stages = parseStageConfigMap(row.stages_json, legacyStageConfig);
+    return {
+      name: row.config_name,
+      stages,
+      isActive: row.is_active === 1,
+      updatedAt: row.updated_at,
+    };
+  });
   const activeConfigName =
     configs.find((config) => config.isActive)?.name ?? configs[0]?.name ?? "";
 
@@ -541,6 +697,9 @@ export function saveAIDetectConfig(
 ): void {
   const normalizedName = normalizeConfigName(configName);
   const shouldSetActive = options?.setActive !== false;
+  const stagesJson = JSON.stringify(config.stages);
+  const legacyStage =
+    config.stages[LEGACY_STAGE_KEY] ?? config.stages[AI_STAGE_ORDER[0]];
 
   const tx = db.transaction(() => {
     db.prepare(
@@ -558,11 +717,12 @@ export function saveAIDetectConfig(
          result_field_key,
          reasoning_effort,
          retry_count,
+         stages_json,
          is_active,
          created_at,
          updated_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON CONFLICT(file_name, config_name) DO UPDATE SET
          provider = excluded.provider,
          ai_url = excluded.ai_url,
@@ -575,6 +735,7 @@ export function saveAIDetectConfig(
          result_field_key = excluded.result_field_key,
          reasoning_effort = excluded.reasoning_effort,
          retry_count = excluded.retry_count,
+         stages_json = excluded.stages_json,
          is_active = CASE
            WHEN excluded.is_active = 1 THEN 1
            ELSE ai_configs.is_active
@@ -583,17 +744,18 @@ export function saveAIDetectConfig(
     ).run(
       fileName,
       normalizedName,
-      normalizeAIProvider(config.provider),
-      config.url,
-      config.model,
-      config.apiKey,
+      normalizeAIProvider(legacyStage.provider),
+      legacyStage.url,
+      legacyStage.model,
+      legacyStage.apiKey,
       "",
       "",
-      JSON.stringify(config.submitFieldKeys),
-      config.prompt,
-      config.resultFieldKey || null,
-      config.reasoningEffort,
-      normalizeRetryCount(config.retryCount),
+      JSON.stringify(legacyStage.submitFieldKeys),
+      legacyStage.prompt,
+      legacyStage.resultFieldKey || null,
+      legacyStage.reasoningEffort,
+      normalizeRetryCount(legacyStage.retryCount),
+      stagesJson,
       shouldSetActive ? 1 : 0,
     );
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AIDetectConfig,
+  AIDetectStageKey,
   FileViewState,
   NamedAIDetectConfig,
   ParsedCell,
@@ -8,1366 +9,116 @@ import type {
   ParsedFile,
   ParsedRow,
 } from "./types";
-
-const ALL_FILTER_VALUE = "全部";
-const QUALIFIED_TITLE_ALIASES = ["是否合格"] as const;
-const TIME_TITLE_ALIASES = ["创建时间"] as const;
-const CREATOR_TITLE_ALIASES = ["创建人"] as const;
-const INSPECTOR_TITLE_ALIASES = ["质检员"] as const;
-const FEEDBACK_TITLE_ALIASES = ["业务反馈意见", "质检员业务反馈意见"] as const;
-const OPENSOURCE_TITLE_ALIASES = ["是否开源"] as const;
-const AI_RESULT_WITH_CONFIG_COLUMN_KEY = "__ai_result_with_config__";
-const AI_RESULT_WITH_CONFIG_COLUMN_TITLE = "AI解析结果+AI配置名";
-
-function normalizeHeaderTitle(value: string): string {
-  return value.replace(/\s+/g, "").toLowerCase();
-}
-
-function matchesHeaderAlias(
-  title: string,
-  aliases: readonly string[],
-): boolean {
-  const normalizedTitle = normalizeHeaderTitle(title);
-  return aliases.some(
-    (alias) => normalizeHeaderTitle(alias) === normalizedTitle,
-  );
-}
-
-function isQualifiedColumnTitle(columnTitle: string): boolean {
-  return matchesHeaderAlias(columnTitle, QUALIFIED_TITLE_ALIASES);
-}
-
-function isTimeColumnTitle(columnTitle: string): boolean {
-  return matchesHeaderAlias(columnTitle, TIME_TITLE_ALIASES);
-}
-
-function isCreatorColumnTitle(columnTitle: string): boolean {
-  return matchesHeaderAlias(columnTitle, CREATOR_TITLE_ALIASES);
-}
-
-function isInspectorColumnTitle(columnTitle: string): boolean {
-  return matchesHeaderAlias(columnTitle, INSPECTOR_TITLE_ALIASES);
-}
-
-function isFeedbackColumnTitle(columnTitle: string): boolean {
-  return matchesHeaderAlias(columnTitle, FEEDBACK_TITLE_ALIASES);
-}
-
-function isOpensourceColumnTitle(columnTitle: string): boolean {
-  return matchesHeaderAlias(columnTitle, OPENSOURCE_TITLE_ALIASES);
-}
-
-interface ColumnPrefsConfig {
-  fieldSignature: string;
-  displayKeys: string[];
-  editableKeys: string[];
-}
-
-const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
-const DEFAULT_GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse";
-
-function getDefaultAIUrl(provider: AIDetectConfig["provider"]): string {
-  return provider === "openai" ? DEFAULT_OPENAI_URL : DEFAULT_GEMINI_URL;
-}
-
-const DEFAULT_AI_CONFIG: AIDetectConfig = {
-  provider: "openai",
-  url: DEFAULT_OPENAI_URL,
-  model: "gpt-4.1-mini",
-  apiKey: "",
-  submitFieldKeys: [],
-  prompt:
-    "你是一个质检助手。请根据输入字段给出回答结论、问题点和建议。\n输出要求：\n1. 先给出结论（合格/不合格）\n2. 再列出具体问题\n3. 最后给出修改建议\n\n字段内容如下：\n{{fields_json}}",
-  resultFieldKey: "",
-  reasoningEffort: "high",
-  retryCount: 2,
-};
-const DEFAULT_AI_CONFIG_NAME = "默认配置";
-const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
-const AI_PROVIDER_OPTIONS = [
-  { value: "openai", label: "OpenAI兼容接口" },
-  { value: "gemini", label: "Google Gemini 原生" },
-] as const;
-const DEFAULT_AI_RETRY_COUNT = 2;
-const MIN_AI_RETRY_COUNT = 0;
-const MAX_AI_RETRY_COUNT = 10;
-const DEFAULT_AI_BATCH_CONCURRENCY = 4;
-const MIN_AI_BATCH_CONCURRENCY = 1;
-const MAX_AI_BATCH_CONCURRENCY = 32;
-
-interface AIDetectFieldPayload {
-  title: string;
-  type: "text" | "image";
-  value: string;
-  imageUrl?: string;
-  imageUrls?: string[];
-}
-
-interface AIDetectStreamResult {
-  answerText: string;
-  thinkingText: string;
-}
-
-type AIBatchTaskStatus = "idle" | "running" | "completed";
-
-interface AIBatchTaskState {
-  status: AIBatchTaskStatus;
-  fileId: string | null;
-  fileName: string;
-  total: number;
-  completed: number;
-  success: number;
-  failed: number;
-  message: string;
-}
-
-const INITIAL_AI_BATCH_TASK: AIBatchTaskState = {
-  status: "idle",
-  fileId: null,
-  fileName: "",
-  total: 0,
-  completed: 0,
-  success: 0,
-  failed: 0,
-  message: "",
-};
-
-function getAIBatchTaskStatusText(task: AIBatchTaskState): string {
-  if (task.status === "running") {
-    return "运行中";
-  }
-  if (task.status === "completed") {
-    return task.failed > 0 ? "已完成（含失败）" : "已完成";
-  }
-  return "未启动";
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60)
-    .toString()
-    .padStart(2, "0");
-  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${seconds}`;
-}
-
-function normalizeAIBatchConcurrency(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return DEFAULT_AI_BATCH_CONCURRENCY;
-  }
-  const rounded = Math.floor(value);
-  if (rounded < MIN_AI_BATCH_CONCURRENCY) {
-    return MIN_AI_BATCH_CONCURRENCY;
-  }
-  if (rounded > MAX_AI_BATCH_CONCURRENCY) {
-    return MAX_AI_BATCH_CONCURRENCY;
-  }
-  return rounded;
-}
-
-function normalizeAIRetryCount(value: unknown): number {
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    return DEFAULT_AI_RETRY_COUNT;
-  }
-  if (value < MIN_AI_RETRY_COUNT) {
-    return MIN_AI_RETRY_COUNT;
-  }
-  if (value > MAX_AI_RETRY_COUNT) {
-    return MAX_AI_RETRY_COUNT;
-  }
-  return value;
-}
-
-function composeAISaveText(answerText: string, thinkingText: string): string {
-  const answer = answerText.trim();
-  const thinking = thinkingText.trim();
-
-  if (answer.length === 0 && thinking.length === 0) {
-    return "";
-  }
-  if (thinking.length === 0) {
-    return answerText;
-  }
-  if (answer.length === 0) {
-    return `【思考过程】\n${thinkingText}`;
-  }
-  return `【思考过程】\n${thinkingText}\n\n【AI结果】\n${answerText}`;
-}
-
-function composeAISaveTextWithConfigName(
-  answerText: string,
-  thinkingText: string,
-  configName: string,
-): string {
-  const content = composeAISaveText(answerText, thinkingText).trim();
-  if (content.length === 0) {
-    return "";
-  }
-  const normalizedConfigName =
-    configName.trim().length > 0 ? configName.trim() : DEFAULT_AI_CONFIG_NAME;
-  return `【AI配置】${normalizedConfigName}\n${content}`;
-}
-
-function getCellImageSources(cell: ParsedCell | undefined): string[] {
-  if (!cell || cell.type !== "image") {
-    return [];
-  }
-
-  const list = Array.isArray(cell.srcList)
-    ? cell.srcList.filter((item): item is string => typeof item === "string")
-    : [];
-
-  if (list.length > 0) {
-    return Array.from(new Set(list));
-  }
-
-  if (typeof cell.src === "string" && cell.src.length > 0) {
-    return [cell.src];
-  }
-
-  return [];
-}
-
-function logUIImageRenderError(
-  rowId: string,
-  columnTitle: string,
-  src: string,
-): void {
-  // eslint-disable-next-line no-console
-  console.log(
-    `[UIImageRenderError] row=${rowId} column=${columnTitle} src=${src}`,
-  );
-}
-
-function getFileNameFromDisposition(disposition: string | null): string | null {
-  if (!disposition) {
-    return null;
-  }
-
-  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
-  if (utf8Match?.[1]) {
-    try {
-      return decodeURIComponent(utf8Match[1]);
-    } catch {
-      return utf8Match[1];
-    }
-  }
-
-  const plainMatch = /filename="?([^";]+)"?/i.exec(disposition);
-  return plainMatch?.[1] ?? null;
-}
-
-function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.style.display = "none";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-const AUTO_BLOCK_FORMULA_LENGTH = 24;
-
-function getPureInlineFormulaBody(value: string): string | null {
-  const trimmed = value.trim();
-
-  if (trimmed.startsWith("$$") && trimmed.endsWith("$$")) {
-    return null;
-  }
-  if (trimmed.startsWith("\\[") && trimmed.endsWith("\\]")) {
-    return null;
-  }
-
-  if (trimmed.startsWith("$") && trimmed.endsWith("$")) {
-    const body = trimmed.slice(1, -1);
-    if (!body.includes("$")) {
-      return body.trim();
-    }
-  }
-
-  if (trimmed.startsWith("\\(") && trimmed.endsWith("\\)")) {
-    return trimmed.slice(2, -2).trim();
-  }
-
-  return null;
-}
-
-function shouldAutoDisplayLatex(value: string): boolean {
-  const formulaBody = getPureInlineFormulaBody(value);
-  return (
-    formulaBody !== null && formulaBody.length >= AUTO_BLOCK_FORMULA_LENGTH
-  );
-}
-
-function toDisplayMathIfNeeded(value: string, forceDisplay: boolean): string {
-  if (!forceDisplay) {
-    return value;
-  }
-  const formulaBody = getPureInlineFormulaBody(value);
-  if (formulaBody === null) {
-    return value;
-  }
-  return `\\[${formulaBody}\\]`;
-}
-
-function deduplicateKeys(keys: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const key of keys) {
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(key);
-    }
-  }
-  return result;
-}
-
-function getAllColumnKeys(columns: ParsedColumn[]): string[] {
-  return columns.map((column) => column.key);
-}
-
-function isAIResultWithConfigColumn(column: ParsedColumn): boolean {
-  if (column.key === AI_RESULT_WITH_CONFIG_COLUMN_KEY) {
-    return true;
-  }
-  return (
-    normalizeHeaderTitle(column.title) ===
-    normalizeHeaderTitle(AI_RESULT_WITH_CONFIG_COLUMN_TITLE)
-  );
-}
-
-function getAIResultWithConfigColumn(
-  columns: ParsedColumn[],
-): ParsedColumn | null {
-  return columns.find((column) => isAIResultWithConfigColumn(column)) ?? null;
-}
-
-function ensureAIResultWithConfigColumn(parsed: ParsedFile): ParsedFile {
-  const existingColumn = getAIResultWithConfigColumn(parsed.columns);
-  const targetColumn =
-    existingColumn ??
-    ({
-      key: AI_RESULT_WITH_CONFIG_COLUMN_KEY,
-      title: AI_RESULT_WITH_CONFIG_COLUMN_TITLE,
-      editable: true,
-      required: false,
-    } as ParsedColumn);
-  const columns = existingColumn
-    ? parsed.columns
-    : [...parsed.columns, targetColumn];
-  const targetKey = targetColumn.key;
-  const rows = parsed.rows.map((row) => {
-    if (row.values[targetKey]) {
-      return row;
-    }
-    return {
-      ...row,
-      values: {
-        ...row.values,
-        [targetKey]: {
-          type: "text",
-          value: "",
-        } as ParsedCell,
-      },
-    };
-  });
-
-  if (
-    columns === parsed.columns &&
-    rows.every((row, index) => row === parsed.rows[index])
-  ) {
-    return parsed;
-  }
-  return {
-    ...parsed,
-    columns,
-    rows,
-  };
-}
-
-function isFilterColumnTitle(columnTitle: string): boolean {
-  const normalized = normalizeHeaderTitle(columnTitle);
-  return normalized === "level1" || normalized === "level2";
-}
-
-function getFieldSignature(columns: ParsedColumn[]): string {
-  return columns
-    .filter((column) => !isAIResultWithConfigColumn(column))
-    .map((column) => normalizeHeaderTitle(column.title))
-    .join("|");
-}
-
-function normalizeColumnSelection(
-  columns: ParsedColumn[],
-  selectedDisplayColumnKeys?: string[],
-  selectedEditableColumnKeys?: string[],
-): {
-  displayKeys: string[];
-  editableKeys: string[];
-} {
-  const allColumnKeys = getAllColumnKeys(columns);
-  const allowedKeys = new Set(allColumnKeys);
-
-  let editableKeys = deduplicateKeys(selectedEditableColumnKeys ?? []).filter(
-    (key) => allowedKeys.has(key),
-  );
-  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
-  if (
-    aiResultWithConfigColumn &&
-    !editableKeys.includes(aiResultWithConfigColumn.key)
-  ) {
-    editableKeys = [...editableKeys, aiResultWithConfigColumn.key];
-  }
-
-  const displaySourceKeys = selectedDisplayColumnKeys ?? allColumnKeys;
-  const displaySet = new Set(
-    deduplicateKeys(displaySourceKeys).filter((key) => allowedKeys.has(key)),
-  );
-  editableKeys.forEach((key) => displaySet.add(key));
-
-  return {
-    displayKeys: allColumnKeys.filter((key) => displaySet.has(key)),
-    editableKeys,
-  };
-}
-
-function applyEditableConfig(
-  columns: ParsedColumn[],
-  editableKeys: string[],
-): ParsedColumn[] {
-  const editableSet = new Set(editableKeys);
-  return columns.map((column) => ({
-    ...column,
-    editable: editableSet.has(column.key),
-    required: isFilterColumnTitle(column.title) || editableSet.has(column.key),
-  }));
-}
-
-function toViewState(
-  parsed: ParsedFile,
-  selectedDisplayColumnKeys?: string[],
-  selectedEditableColumnKeys?: string[],
-): FileViewState {
-  const nextParsed = ensureAIResultWithConfigColumn(parsed);
-  const normalized = normalizeColumnSelection(
-    nextParsed.columns,
-    selectedDisplayColumnKeys,
-    selectedEditableColumnKeys,
-  );
-  return {
-    ...nextParsed,
-    columns: applyEditableConfig(nextParsed.columns, normalized.editableKeys),
-    selectedDisplayColumnKeys: normalized.displayKeys,
-    selectedEditableColumnKeys: normalized.editableKeys,
-    level1Filter: ALL_FILTER_VALUE,
-    level2Filter: ALL_FILTER_VALUE,
-    timeFilter: ALL_FILTER_VALUE,
-  };
-}
-
-function applyColumnConfigToFile(
-  file: FileViewState,
-  selectedDisplayColumnKeys: string[],
-  selectedEditableColumnKeys: string[],
-): FileViewState {
-  const normalized = normalizeColumnSelection(
-    file.columns,
-    selectedDisplayColumnKeys,
-    selectedEditableColumnKeys,
-  );
-
-  return {
-    ...file,
-    columns: applyEditableConfig(file.columns, normalized.editableKeys),
-    selectedDisplayColumnKeys: normalized.displayKeys,
-    selectedEditableColumnKeys: normalized.editableKeys,
-  };
-}
-
-function toSafeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((item): item is string => typeof item === "string");
-}
-
-function normalizeLoadedCell(value: unknown): ParsedCell {
-  if (!value || typeof value !== "object") {
-    return { type: "text", value: "" };
-  }
-
-  const cell = value as Partial<ParsedCell>;
-  const cellValue = typeof cell.value === "string" ? cell.value : "";
-  if (cell.type === "image") {
-    const srcList = Array.isArray(cell.srcList)
-      ? cell.srcList.filter((item): item is string => typeof item === "string")
-      : [];
-    const fallbackSrc = typeof cell.src === "string" ? cell.src : "";
-    const nextSrcList =
-      srcList.length > 0
-        ? Array.from(new Set(srcList))
-        : fallbackSrc
-          ? [fallbackSrc]
-          : [];
-    const nextSrc = nextSrcList[0];
-
-    if (nextSrc) {
-      return cellValue.length > 0
-        ? {
-            type: "image",
-            src: nextSrc,
-            srcList: nextSrcList,
-            value: cellValue,
-          }
-        : { type: "image", src: nextSrc, srcList: nextSrcList };
-    }
-  }
-
-  return { type: "text", value: cellValue };
-}
-
-function getDistinctOptions(rows: ParsedRow[], columnKey?: string): string[] {
-  if (!columnKey) {
-    return [];
-  }
-  const unique = new Set<string>();
-  rows.forEach((row) => {
-    const value = row.values[columnKey]?.value?.trim();
-    if (value) {
-      unique.add(value);
-    }
-  });
-  return Array.from(unique);
-}
-
-function normalizeLoadedFileState(value: unknown): FileViewState | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const candidate = value as Partial<FileViewState> & {
-    selectedOptionalColumnKeys?: unknown;
-  };
-  if (
-    typeof candidate.fileId !== "string" ||
-    typeof candidate.fileName !== "string"
-  ) {
-    return null;
-  }
-  if (!Array.isArray(candidate.columns) || !Array.isArray(candidate.rows)) {
-    return null;
-  }
-
-  const columns: ParsedColumn[] = candidate.columns
-    .map((column) => {
-      if (!column || typeof column !== "object") {
-        return null;
-      }
-      const item = column as Partial<ParsedColumn>;
-      if (typeof item.key !== "string" || typeof item.title !== "string") {
-        return null;
-      }
-      return {
-        key: item.key,
-        title: item.title,
-        editable: item.editable === true,
-        required: item.required === true,
-      };
-    })
-    .filter((column): column is ParsedColumn => column !== null);
-
-  if (columns.length === 0) {
-    return null;
-  }
-
-  const rows: ParsedRow[] = candidate.rows
-    .map((row) => {
-      if (!row || typeof row !== "object") {
-        return null;
-      }
-      const item = row as Partial<ParsedRow>;
-      if (typeof item.rowId !== "string") {
-        return null;
-      }
-      const rawValues =
-        item.values && typeof item.values === "object"
-          ? (item.values as Record<string, unknown>)
-          : {};
-
-      const values: Record<string, ParsedCell> = {};
-      columns.forEach((column) => {
-        values[column.key] = normalizeLoadedCell(rawValues[column.key]);
-      });
-
-      return {
-        rowId: item.rowId,
-        values,
-      };
-    })
-    .filter((row): row is ParsedRow => row !== null);
-
-  const parsed: ParsedFile = {
-    fileId: candidate.fileId,
-    fileName: candidate.fileName,
-    columns,
-    rows,
-    level1Options: toSafeStringArray(candidate.level1Options),
-    level2Options: toSafeStringArray(candidate.level2Options),
-  };
-
-  const level1Key = getLevelColumnKey(columns, "level1");
-  const level2Key = getLevelColumnKey(columns, "level2");
-  if (parsed.level1Options.length === 0) {
-    parsed.level1Options = getDistinctOptions(rows, level1Key);
-  }
-  if (parsed.level2Options.length === 0) {
-    parsed.level2Options = getDistinctOptions(rows, level2Key);
-  }
-
-  const hasDisplayKeys = Array.isArray(candidate.selectedDisplayColumnKeys);
-  const hasEditableKeys = Array.isArray(candidate.selectedEditableColumnKeys);
-  const hasLegacyOptionalKeys = Array.isArray(
-    candidate.selectedOptionalColumnKeys,
-  );
-
-  const displayKeysFromState = hasDisplayKeys
-    ? toSafeStringArray(candidate.selectedDisplayColumnKeys)
-    : hasLegacyOptionalKeys
-      ? toSafeStringArray(candidate.selectedOptionalColumnKeys)
-      : undefined;
-  const editableKeysFromState = hasEditableKeys
-    ? toSafeStringArray(candidate.selectedEditableColumnKeys)
-    : columns.filter((column) => column.editable).map((column) => column.key);
-
-  const normalized = toViewState(
-    parsed,
-    displayKeysFromState,
-    editableKeysFromState,
-  );
-  return {
-    ...normalized,
-    level1Filter:
-      typeof candidate.level1Filter === "string"
-        ? candidate.level1Filter
-        : ALL_FILTER_VALUE,
-    level2Filter:
-      typeof candidate.level2Filter === "string"
-        ? candidate.level2Filter
-        : ALL_FILTER_VALUE,
-    timeFilter:
-      typeof candidate.timeFilter === "string"
-        ? candidate.timeFilter
-        : ALL_FILTER_VALUE,
-  };
-}
-
-function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
-  if (!value || typeof value !== "object") {
-    return { ...DEFAULT_AI_CONFIG };
-  }
-
-  const candidate = value as Partial<AIDetectConfig>;
-  const rawProvider = (value as { provider?: unknown }).provider;
-  const provider =
-    rawProvider === "openai" || rawProvider === "gemini"
-      ? rawProvider
-      : rawProvider === "vertex"
-        ? "gemini"
-        : DEFAULT_AI_CONFIG.provider;
-  const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
-    ? candidate.submitFieldKeys.filter(
-        (item): item is string => typeof item === "string",
-      )
-    : [];
-  const reasoningEffort =
-    candidate.reasoningEffort === "low" ||
-    candidate.reasoningEffort === "medium" ||
-    candidate.reasoningEffort === "high"
-      ? candidate.reasoningEffort
-      : DEFAULT_AI_CONFIG.reasoningEffort;
-  const retryCount = normalizeAIRetryCount(candidate.retryCount);
-
-  return {
-    provider,
-    url:
-      typeof candidate.url === "string" && candidate.url.trim().length > 0
-        ? candidate.url
-        : getDefaultAIUrl(provider),
-    model:
-      typeof candidate.model === "string" && candidate.model.trim().length > 0
-        ? candidate.model
-        : DEFAULT_AI_CONFIG.model,
-    apiKey: typeof candidate.apiKey === "string" ? candidate.apiKey : "",
-    submitFieldKeys,
-    prompt:
-      typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
-        ? candidate.prompt
-        : DEFAULT_AI_CONFIG.prompt,
-    resultFieldKey:
-      typeof candidate.resultFieldKey === "string"
-        ? candidate.resultFieldKey
-        : "",
-    reasoningEffort,
-    retryCount,
-  };
-}
-
-function normalizeAIConfigName(value: unknown): string {
-  if (typeof value !== "string") {
-    return DEFAULT_AI_CONFIG_NAME;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : DEFAULT_AI_CONFIG_NAME;
-}
-
-function normalizeLoadedNamedAIDetectConfigs(
-  value: unknown,
-): NamedAIDetectConfig[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const usedNames = new Set<string>();
-  const result: NamedAIDetectConfig[] = [];
-
-  value.forEach((item) => {
-    if (!item || typeof item !== "object") {
-      return;
-    }
-    const candidate = item as {
-      name?: unknown;
-      config?: unknown;
-    };
-    const name =
-      typeof candidate.name === "string" ? candidate.name.trim() : "";
-    if (name.length === 0 || usedNames.has(name)) {
-      return;
-    }
-
-    const config = normalizeLoadedAIDetectConfig(
-      candidate.config && typeof candidate.config === "object"
-        ? candidate.config
-        : item,
-    );
-    usedNames.add(name);
-    result.push({
-      name,
-      config,
-    });
-  });
-
-  return result;
-}
-
-function normalizeNamedAIDetectConfigsForColumns(
-  configs: NamedAIDetectConfig[],
-  columns: ParsedColumn[],
-): NamedAIDetectConfig[] {
-  return configs.map((item) => ({
-    name: item.name,
-    config: normalizeAIDetectConfigForColumns(item.config, columns),
-  }));
-}
-
-function pickAIConfigName(
-  configs: NamedAIDetectConfig[],
-  preferredName: unknown,
-): string {
-  if (configs.length === 0) {
-    return DEFAULT_AI_CONFIG_NAME;
-  }
-  if (typeof preferredName === "string") {
-    const trimmed = preferredName.trim();
-    if (trimmed.length > 0 && configs.some((item) => item.name === trimmed)) {
-      return trimmed;
-    }
-  }
-  return configs[0].name;
-}
-
-function getDefaultResultFieldKey(columns: ParsedColumn[]): string {
-  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
-  if (aiResultWithConfigColumn) {
-    return aiResultWithConfigColumn.key;
-  }
-  const feedbackEditable = columns.find(
-    (column) => column.editable && isFeedbackColumnTitle(column.title),
-  );
-  if (feedbackEditable) {
-    return feedbackEditable.key;
-  }
-  const firstEditable = columns.find((column) => column.editable);
-  return firstEditable?.key ?? "";
-}
-
-function isLegacyAIDetectResultColumnTitle(columnTitle: string): boolean {
-  return (
-    isOpensourceColumnTitle(columnTitle) ||
-    isQualifiedColumnTitle(columnTitle) ||
-    isInspectorColumnTitle(columnTitle) ||
-    isFeedbackColumnTitle(columnTitle)
-  );
-}
-
-function normalizeAIDetectConfigForColumns(
-  config: AIDetectConfig,
-  columns: ParsedColumn[],
-): AIDetectConfig {
-  const keySet = new Set(columns.map((column) => column.key));
-  const submitFieldKeys = config.submitFieldKeys.filter((key) =>
-    keySet.has(key),
-  );
-  const editableKeySet = new Set(
-    columns.filter((column) => column.editable).map((column) => column.key),
-  );
-  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
-  const currentResultColumn = columns.find(
-    (column) => column.key === config.resultFieldKey,
-  );
-  const shouldMigrateLegacyResultField =
-    aiResultWithConfigColumn !== null &&
-    currentResultColumn !== undefined &&
-    isLegacyAIDetectResultColumnTitle(currentResultColumn.title);
-  const nextResultFieldKey = shouldMigrateLegacyResultField
-    ? aiResultWithConfigColumn.key
-    : editableKeySet.has(config.resultFieldKey)
-      ? config.resultFieldKey
-      : getDefaultResultFieldKey(columns);
-
-  return {
-    ...config,
-    submitFieldKeys,
-    resultFieldKey: nextResultFieldKey,
-    retryCount: normalizeAIRetryCount(config.retryCount),
-  };
-}
-
-function buildAIDetectFieldsForRow(
-  columns: ParsedColumn[],
-  row: ParsedRow,
-  submitFieldKeys: string[],
-): AIDetectFieldPayload[] {
-  const fieldMap = new Map(columns.map((column) => [column.key, column]));
-  const fields: AIDetectFieldPayload[] = [];
-
-  submitFieldKeys.forEach((key) => {
-    const column = fieldMap.get(key);
-    if (!column) {
-      return;
-    }
-
-    const cell = row.values[key];
-    const imageSources = getCellImageSources(cell);
-    if (cell?.type === "image" && imageSources.length > 0) {
-      fields.push({
-        title: column.title,
-        type: "image",
-        value: cell.value ?? "",
-        imageUrl: imageSources[0],
-        imageUrls: imageSources,
-      });
-      return;
-    }
-
-    fields.push({
-      title: column.title,
-      type: "text",
-      value: cell?.value ?? "",
-    });
-  });
-
-  return fields;
-}
-
-async function requestAIDetectResult(
-  payload: {
-    provider: AIDetectConfig["provider"];
-    url: string;
-    model: string;
-    apiKey: string;
-    prompt: string;
-    fields: AIDetectFieldPayload[];
-    reasoningEffort: AIDetectConfig["reasoningEffort"];
-    retryCount: number;
-  },
-  options?: {
-    signal?: AbortSignal;
-    onAnswerChunk?: (chunk: string) => void;
-    onThinkingChunk?: (chunk: string) => void;
-    onChunk?: (chunk: string) => void;
-  },
-): Promise<AIDetectStreamResult> {
-  const response = await fetch("/api/ai-detect/stream", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    signal: options?.signal,
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as {
-      message?: string;
-    };
-    throw new Error(payload.message ?? "AI 回答失败");
-  }
-  if (!response.body) {
-    throw new Error("AI 响应流为空");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-  let answerText = "";
-  let thinkingText = "";
-
-  if (contentType.includes("application/x-ndjson")) {
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        buffer += decoder.decode();
-        break;
-      }
-      if (!value) {
-        continue;
-      }
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) {
-          continue;
-        }
-
-        try {
-          const event = JSON.parse(line) as {
-            type?: string;
-            text?: string;
-          };
-          if (event.type === "answer" && typeof event.text === "string") {
-            answerText += event.text;
-            options?.onAnswerChunk?.(event.text);
-            options?.onChunk?.(event.text);
-            continue;
-          }
-          if (event.type === "thinking" && typeof event.text === "string") {
-            thinkingText += event.text;
-            options?.onThinkingChunk?.(event.text);
-            continue;
-          }
-          if (event.type === "done") {
-            continue;
-          }
-        } catch {
-          // Compatibility fallback: treat unknown lines as answer text.
-          answerText += rawLine;
-          options?.onAnswerChunk?.(rawLine);
-          options?.onChunk?.(rawLine);
-        }
-      }
-    }
-
-    const rest = buffer.trim();
-    if (rest.length > 0) {
-      try {
-        const event = JSON.parse(rest) as {
-          type?: string;
-          text?: string;
-        };
-        if (event.type === "answer" && typeof event.text === "string") {
-          answerText += event.text;
-          options?.onAnswerChunk?.(event.text);
-          options?.onChunk?.(event.text);
-        } else if (
-          event.type === "thinking" &&
-          typeof event.text === "string"
-        ) {
-          thinkingText += event.text;
-          options?.onThinkingChunk?.(event.text);
-        }
-      } catch {
-        answerText += rest;
-        options?.onAnswerChunk?.(rest);
-        options?.onChunk?.(rest);
-      }
-    }
-  } else {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        const flushText = decoder.decode();
-        if (flushText.length > 0) {
-          answerText += flushText;
-          options?.onAnswerChunk?.(flushText);
-          options?.onChunk?.(flushText);
-        }
-        break;
-      }
-      if (!value) {
-        continue;
-      }
-      const chunkText = decoder.decode(value, { stream: true });
-      if (chunkText.length > 0) {
-        answerText += chunkText;
-        options?.onAnswerChunk?.(chunkText);
-        options?.onChunk?.(chunkText);
-      }
-    }
-  }
-
-  return {
-    answerText,
-    thinkingText,
-  };
-}
-
-function getLevelColumnKey(
-  columns: ParsedColumn[],
-  title: string,
-): string | undefined {
-  return columns.find((column) => normalizeHeaderTitle(column.title) === title)
-    ?.key;
-}
-
-function getCellText(row: ParsedRow, columnKey: string): string {
-  return row.values[columnKey]?.value ?? "";
-}
-
-const LATEX_PATTERN =
-  /(\$\$[\s\S]+?\$\$)|((^|[^\\])\$[^$\n]+?\$)|(\\\([\s\S]+?\\\))|(\\\[[\s\S]+?\\\])|(\\(?:frac|sqrt|sum|int|left|right|begin|end|alpha|beta|gamma|delta|theta|lambda|pi|times|cdot|pm|leq|geq|neq|ce|pu)\b)/;
-
-function hasLatexSyntax(value: string): boolean {
-  return LATEX_PATTERN.test(value.trim());
-}
-
-function hasMathDelimiter(value: string): boolean {
-  const trimmed = value.trim();
-  return (
-    (trimmed.startsWith("$$") && trimmed.endsWith("$$")) ||
-    (trimmed.startsWith("\\[") && trimmed.endsWith("\\]")) ||
-    (trimmed.startsWith("$") && trimmed.endsWith("$")) ||
-    (trimmed.startsWith("\\(") && trimmed.endsWith("\\)"))
-  );
-}
-
-function toMathJaxSource(value: string, forceDisplay: boolean): string {
-  const normalized = toDisplayMathIfNeeded(value, forceDisplay);
-  if (hasMathDelimiter(normalized)) {
-    return normalized;
-  }
-
-  const trimmed = normalized.trim();
-  if (trimmed.length > 0 && hasLatexSyntax(trimmed)) {
-    return `\\(${trimmed}\\)`;
-  }
-
-  return normalized;
-}
-
-type MathJaxConfig = {
-  loader?: {
-    load?: string[];
-  };
-  tex?: {
-    inlineMath?: Array<[string, string]>;
-    displayMath?: Array<[string, string]>;
-    packages?: Record<string, string[]>;
-  };
-  options?: {
-    skipHtmlTags?: string[];
-  };
-  svg?: {
-    fontCache?: string;
-  };
-  startup?: {
-    promise?: Promise<unknown>;
-  };
-  typesetPromise?: (elements?: Element[]) => Promise<unknown>;
-};
-
-declare global {
-  interface Window {
-    MathJax?: MathJaxConfig;
-  }
-}
-
-let mathJaxLoadPromise: Promise<void> | null = null;
-
-async function ensureMathJaxLoaded(): Promise<MathJaxConfig | null> {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  if (window.MathJax?.typesetPromise) {
-    return window.MathJax;
-  }
-
-  if (!mathJaxLoadPromise) {
-    mathJaxLoadPromise = new Promise<void>((resolve, reject) => {
-      const existingScript = document.querySelector<HTMLScriptElement>(
-        "script[data-mathjax-loader='true']",
-      );
-
-      if (existingScript) {
-        if (window.MathJax?.typesetPromise) {
-          resolve();
-          return;
-        }
-        existingScript.addEventListener("load", () => resolve(), {
-          once: true,
-        });
-        existingScript.addEventListener(
-          "error",
-          () => reject(new Error("MathJax 脚本加载失败")),
-          { once: true },
-        );
-        return;
-      }
-
-      window.MathJax = window.MathJax ?? {};
-      const currentLoader = window.MathJax.loader ?? {};
-      const currentLoaderLoads = currentLoader.load ?? [];
-      window.MathJax.loader = {
-        ...currentLoader,
-        load: Array.from(new Set([...currentLoaderLoads, "[tex]/mhchem"])),
-      };
-
-      const currentTex = window.MathJax.tex ?? {};
-      const currentPackages = currentTex.packages ?? {};
-      const extraPackages = currentPackages["[+]"] ?? [];
-      window.MathJax.tex = {
-        ...currentTex,
-        inlineMath: currentTex.inlineMath ?? [
-          ["$", "$"],
-          ["\\(", "\\)"],
-        ],
-        displayMath: currentTex.displayMath ?? [
-          ["$$", "$$"],
-          ["\\[", "\\]"],
-        ],
-        packages: {
-          ...currentPackages,
-          "[+]": Array.from(new Set([...extraPackages, "mhchem"])),
-        },
-      };
-      window.MathJax.options = window.MathJax.options ?? {
-        skipHtmlTags: [
-          "script",
-          "noscript",
-          "style",
-          "textarea",
-          "pre",
-          "code",
-        ],
-      };
-      window.MathJax.svg = window.MathJax.svg ?? {
-        fontCache: "global",
-      };
-
-      const script = document.createElement("script");
-      script.src = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js";
-      script.async = true;
-      script.defer = true;
-      script.setAttribute("data-mathjax-loader", "true");
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error("MathJax 脚本加载失败"));
-      document.head.appendChild(script);
-    }).catch((error) => {
-      mathJaxLoadPromise = null;
-      throw error;
-    });
-  }
-
-  await mathJaxLoadPromise;
-  return window.MathJax ?? null;
-}
-
-function LatexRenderer({
-  value,
-  forceDisplay = false,
-}: {
-  value: string;
-  forceDisplay?: boolean;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [renderFailed, setRenderFailed] = useState(false);
-
-  useEffect(() => {
-    let disposed = false;
-
-    const render = async () => {
-      const container = containerRef.current;
-      if (!container) {
-        return;
-      }
-
-      container.textContent = toMathJaxSource(value, forceDisplay);
-      setRenderFailed(false);
-
-      try {
-        const mathJax = await ensureMathJaxLoaded();
-        if (disposed || !mathJax?.typesetPromise || !containerRef.current) {
-          return;
-        }
-
-        if (mathJax.startup?.promise) {
-          await mathJax.startup.promise;
-        }
-        await mathJax.typesetPromise([containerRef.current]);
-      } catch {
-        if (!disposed) {
-          setRenderFailed(true);
-        }
-      }
-    };
-
-    void render();
-    return () => {
-      disposed = true;
-    };
-  }, [value, forceDisplay]);
-
-  if (renderFailed) {
-    return <div className="latex-plain">{value}</div>;
-  }
-
-  return (
-    <div
-      className={`latex-rendered ${forceDisplay ? "latex-rendered-display" : "latex-rendered-inline"}`}
-      ref={containerRef}
-    />
-  );
-}
-
-/* ─── SVG Icons ─── */
-const IconUpload = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <polyline points="17 8 12 3 7 8" />
-    <line x1="12" y1="3" x2="12" y2="15" />
-  </svg>
-);
-
-const IconDownload = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <polyline points="7 10 12 15 17 10" />
-    <line x1="12" y1="15" x2="12" y2="3" />
-  </svg>
-);
-
-const IconFile = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-    <polyline points="14 2 14 8 20 8" />
-  </svg>
-);
-
-const IconChevron = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <polyline points="9 18 15 12 9 6" />
-  </svg>
-);
-
-const IconSun = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <circle cx="12" cy="12" r="5" />
-    <line x1="12" y1="1" x2="12" y2="3" />
-    <line x1="12" y1="21" x2="12" y2="23" />
-    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-    <line x1="1" y1="12" x2="3" y2="12" />
-    <line x1="21" y1="12" x2="23" y2="12" />
-    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-  </svg>
-);
-
-const IconMoon = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-  </svg>
-);
+import {
+  ALL_FILTER_VALUE,
+  AI_STAGE_LABELS,
+  AI_STAGE_ORDER,
+  DEFAULT_AI_BATCH_CONCURRENCY,
+  DEFAULT_AI_CONFIG_NAME,
+  INITIAL_AI_BATCH_TASK,
+  LIST_PAGE_SIZE_OPTIONS,
+  MAX_AI_BATCH_CONCURRENCY,
+  MIN_AI_BATCH_CONCURRENCY,
+} from "./app/constants";
+import {
+  applyColumnConfigToFile,
+  downloadBlob,
+  getAllColumnKeys,
+  getCellText,
+  getDistinctOptions,
+  getFieldSignature,
+  getFileNameFromDisposition,
+  isFeedbackColumnTitle,
+  isInspectorColumnTitle,
+  isOpensourceColumnTitle,
+  isQualifiedColumnTitle,
+  isAIResultWithConfigColumn,
+  logUIImageRenderError,
+  normalizeFilterSelection,
+  normalizeColumnSelection,
+  normalizeLoadedFileState,
+  toViewState,
+} from "./app/file-helpers";
+import {
+  buildAIDetectFieldsForRow,
+  cloneAIDetectConfig,
+  composeAISaveText,
+  composeAISaveTextWithConfigName,
+  createDefaultAIDetectConfig,
+  formatDuration,
+  normalizeAIBatchConcurrency,
+  normalizeAIDetectConfigForColumns,
+  normalizeLoadedAIDetectConfig,
+  normalizeAIConfigName,
+  normalizeLoadedNamedAIDetectConfigs,
+  normalizeNamedAIDetectConfigsForColumns,
+  pickAIConfigName,
+  requestAIDetectResult,
+} from "./app/ai-helpers";
+import { IconFile } from "./app/icons";
+import {
+  LatexRenderer,
+  hasLatexSyntax,
+  shouldAutoDisplayLatex,
+} from "./app/latex";
+import { buildHashRoute, parseHashRoute } from "./app/routes";
+import type {
+  AIBatchTaskState,
+  ColumnPrefsConfig,
+  MainSection,
+  RouteState,
+  SettingsSection,
+} from "./app/types";
+import { HeaderBar } from "./app/components/HeaderBar";
+import { WorkspaceSidebar } from "./app/components/WorkspaceSidebar";
+import { ListPage } from "./app/components/ListPage";
+import { DetailPage } from "./app/components/DetailPage";
+import { SettingsPage } from "./app/components/SettingsPage";
+import { ColumnConfigModal } from "./app/components/ColumnConfigModal";
+import { AIProfileModal } from "./app/components/AIProfileModal";
+import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
+import { AIRunModal } from "./app/components/AIRunModal";
+import { ImageLightbox } from "./app/components/ImageLightbox";
 
 function App() {
   type PendingConfigMode = "import" | "edit";
+  const initialRoute: RouteState =
+    typeof window !== "undefined"
+      ? parseHashRoute(window.location.hash)
+      : { section: "list", settingsSection: "fields" };
   const [files, setFiles] = useState<FileViewState[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
-  const [isAIConfigModalOpen, setIsAIConfigModalOpen] = useState(false);
+  const [isAIStageConfigModalOpen, setIsAIStageConfigModalOpen] =
+    useState(false);
+  const [isAIProfileModalOpen, setIsAIProfileModalOpen] = useState(false);
   const [aiConfigLoading, setAIConfigLoading] = useState(false);
   const [aiConfigSaving, setAIConfigSaving] = useState(false);
-  const [aiConfigList, setAIConfigList] = useState<NamedAIDetectConfig[]>([
-    {
-      name: DEFAULT_AI_CONFIG_NAME,
-      config: { ...DEFAULT_AI_CONFIG },
+  const [aiConfigList, setAIConfigList] = useState<NamedAIDetectConfig[]>(
+    () => {
+      const config = createDefaultAIDetectConfig();
+      return [
+        {
+          name: DEFAULT_AI_CONFIG_NAME,
+          config,
+        },
+      ];
     },
-  ]);
+  );
   const [selectedAIConfigName, setSelectedAIConfigName] = useState<string>(
     DEFAULT_AI_CONFIG_NAME,
   );
   const [draftAIConfigName, setDraftAIConfigName] = useState<string>(
     DEFAULT_AI_CONFIG_NAME,
   );
-  const [aiConfig, setAIConfig] = useState<AIDetectConfig>({
-    ...DEFAULT_AI_CONFIG,
-  });
-  const [draftAIConfig, setDraftAIConfig] = useState<AIDetectConfig>({
-    ...DEFAULT_AI_CONFIG,
-  });
+  const [aiConfig, setAIConfig] = useState<AIDetectConfig>(() =>
+    createDefaultAIDetectConfig(),
+  );
+  const [draftAIConfig, setDraftAIConfig] = useState<AIDetectConfig>(() =>
+    createDefaultAIDetectConfig(),
+  );
   const [aiConfigFormMessage, setAIConfigFormMessage] = useState("");
   const [isAIDetecting, setIsAIDetecting] = useState(false);
   const [aiThinkingText, setAIThinkingText] = useState("");
@@ -1376,8 +127,11 @@ function App() {
     DEFAULT_AI_CONFIG_NAME,
   );
   const [aiResultMessage, setAIResultMessage] = useState("");
+  const [activeAIStageKey, setActiveAIStageKey] =
+    useState<AIDetectStageKey>("precheck");
   const [aiDetectElapsedMs, setAIDetectElapsedMs] = useState(0);
   const [isSavingAIResult, setIsSavingAIResult] = useState(false);
+  const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [aiBatchTask, setAIBatchTask] = useState<AIBatchTaskState>(
     INITIAL_AI_BATCH_TASK,
   );
@@ -1390,6 +144,9 @@ function App() {
   const [pendingSelectedDisplayKeys, setPendingSelectedDisplayKeys] = useState<
     string[]
   >([]);
+  const [pendingSelectedFilterKeys, setPendingSelectedFilterKeys] = useState<
+    string[]
+  >([]);
   const [pendingEditableColumnKeys, setPendingEditableColumnKeys] = useState<
     string[]
   >([]);
@@ -1397,6 +154,16 @@ function App() {
   const [pendingConfigMode, setPendingConfigMode] =
     useState<PendingConfigMode>("import");
   const [showHiddenFields, setShowHiddenFields] = useState(false);
+  const [activeSection, setActiveSection] = useState<MainSection>(
+    initialRoute.section,
+  );
+  const [activeSettingsSection, setActiveSettingsSection] =
+    useState<SettingsSection>(initialRoute.settingsSection);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState<number>(
+    LIST_PAGE_SIZE_OPTIONS[1],
+  );
   const [latexRenderOverrides, setLatexRenderOverrides] = useState<
     Record<string, boolean>
   >({});
@@ -1484,14 +251,60 @@ function App() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
 
+  const navigateToSection = (
+    section: MainSection,
+    settingsSection: SettingsSection = activeSettingsSection,
+    options?: { replace?: boolean },
+  ) => {
+    const nextHash = buildHashRoute(section, settingsSection);
+    if (typeof window !== "undefined" && window.location.hash !== nextHash) {
+      if (options?.replace) {
+        window.history.replaceState(null, "", nextHash);
+        setActiveSection(section);
+        setActiveSettingsSection(settingsSection);
+      } else {
+        window.location.hash = nextHash;
+      }
+      return;
+    }
+
+    setActiveSection(section);
+    setActiveSettingsSection(settingsSection);
+  };
+
   const activeFile = useMemo(
     () => files.find((item) => item.fileId === activeFileId) ?? null,
     [files, activeFileId],
   );
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncRouteState = () => {
+      const nextRoute = parseHashRoute(window.location.hash);
+      setActiveSection(nextRoute.section);
+      setActiveSettingsSection(nextRoute.settingsSection);
+    };
+
+    window.addEventListener("hashchange", syncRouteState);
+    syncRouteState();
+
+    return () => {
+      window.removeEventListener("hashchange", syncRouteState);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeFile) {
-      const nextConfig = { ...DEFAULT_AI_CONFIG };
+      navigateToSection("list", activeSettingsSection, { replace: true });
+    }
+  }, [activeFile]);
+
+  useEffect(() => {
+    if (!activeFile) {
+      const nextConfig = createDefaultAIDetectConfig();
       setAIConfigList([
         {
           name: DEFAULT_AI_CONFIG_NAME,
@@ -1501,7 +314,7 @@ function App() {
       setSelectedAIConfigName(DEFAULT_AI_CONFIG_NAME);
       setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
       setAIConfig(nextConfig);
-      setDraftAIConfig(nextConfig);
+      setDraftAIConfig(cloneAIDetectConfig(nextConfig));
       setAIConfigFormMessage("");
       setAIThinkingText("");
       setAIResultText("");
@@ -1511,7 +324,8 @@ function App() {
       aiDetectStartedAtRef.current = null;
       setAIDetectElapsedMs(0);
       setAIConfigLoading(false);
-      setIsAIConfigModalOpen(false);
+      setIsAIStageConfigModalOpen(false);
+      setIsAIProfileModalOpen(false);
       return;
     }
 
@@ -1565,7 +379,7 @@ function App() {
         setSelectedAIConfigName(activeConfigName);
         setDraftAIConfigName(activeConfigName);
         setAIConfig(activeConfig);
-        setDraftAIConfig(activeConfig);
+        setDraftAIConfig(cloneAIDetectConfig(activeConfig));
         setAIResultConfigName(activeConfigName);
         setAIConfigFormMessage("");
       } catch {
@@ -1573,7 +387,7 @@ function App() {
           return;
         }
         const fallbackConfig = normalizeAIDetectConfigForColumns(
-          { ...DEFAULT_AI_CONFIG },
+          createDefaultAIDetectConfig(),
           activeFile.columns,
         );
         setAIConfigList([
@@ -1585,7 +399,7 @@ function App() {
         setSelectedAIConfigName(DEFAULT_AI_CONFIG_NAME);
         setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
         setAIConfig(fallbackConfig);
-        setDraftAIConfig(fallbackConfig);
+        setDraftAIConfig(cloneAIDetectConfig(fallbackConfig));
         setAIResultConfigName(DEFAULT_AI_CONFIG_NAME);
         setAIConfigFormMessage("");
       } finally {
@@ -1618,7 +432,7 @@ function App() {
             {
               name: DEFAULT_AI_CONFIG_NAME,
               config: normalizeAIDetectConfigForColumns(
-                { ...DEFAULT_AI_CONFIG },
+                createDefaultAIDetectConfig(),
                 activeFile.columns,
               ),
             },
@@ -1671,19 +485,24 @@ function App() {
     setIsSavingAIResult(false);
   }, [activeFileId, selectedRowId]);
 
-  const level1ColumnKey = activeFile
-    ? getLevelColumnKey(activeFile.columns, "level1")
-    : undefined;
-  const level2ColumnKey = activeFile
-    ? getLevelColumnKey(activeFile.columns, "level2")
-    : undefined;
-  const timeColumnKey = activeFile
-    ? activeFile.columns.find((column) => isTimeColumnTitle(column.title))?.key
-    : undefined;
-  const timeOptions = useMemo(
-    () => getDistinctOptions(activeFile?.rows ?? [], timeColumnKey),
-    [activeFile?.rows, timeColumnKey],
-  );
+  const filterColumns = useMemo(() => {
+    if (!activeFile) {
+      return [];
+    }
+    return activeFile.selectedFilterColumnKeys
+      .map((key) => activeFile.columns.find((column) => column.key === key))
+      .filter((column): column is ParsedColumn => Boolean(column));
+  }, [activeFile]);
+  const filterOptionsMap = useMemo(() => {
+    if (!activeFile) {
+      return new Map<string, string[]>();
+    }
+    const map = new Map<string, string[]>();
+    filterColumns.forEach((column) => {
+      map.set(column.key, getDistinctOptions(activeFile.rows, column.key));
+    });
+    return map;
+  }, [activeFile, filterColumns]);
 
   const displayColumns = useMemo(() => {
     if (!activeFile) {
@@ -1721,12 +540,24 @@ function App() {
     [activeFile],
   );
 
+  const activeStageConfig = useMemo(
+    () => aiConfig.stages[activeAIStageKey],
+    [aiConfig, activeAIStageKey],
+  );
+  const activeProfile = useMemo(() => {
+    const profiles = aiConfig.profiles ?? [];
+    const matched = profiles.find(
+      (item) => item.name === activeStageConfig?.profileName,
+    );
+    return matched ?? profiles[0] ?? null;
+  }, [aiConfig.profiles, activeStageConfig?.profileName]);
+
   const aiResultFieldTitle = useMemo(() => {
     const matched = aiResultFieldColumns.find(
-      (column) => column.key === aiConfig.resultFieldKey,
+      (column) => column.key === activeStageConfig?.resultFieldKey,
     );
     return matched?.title ?? "";
-  }, [aiResultFieldColumns, aiConfig.resultFieldKey]);
+  }, [aiResultFieldColumns, activeStageConfig?.resultFieldKey]);
 
   const isAIBatchRunning = aiBatchTask.status === "running";
   const aiBatchProgressPercent =
@@ -1750,30 +581,44 @@ function App() {
     }
 
     return activeFile.rows.filter((row) => {
-      if (level1ColumnKey && activeFile.level1Filter !== ALL_FILTER_VALUE) {
-        const value = getCellText(row, level1ColumnKey).trim();
-        if (value !== activeFile.level1Filter) {
+      for (const column of filterColumns) {
+        const filterValue =
+          activeFile.columnFilterValues[column.key] ?? ALL_FILTER_VALUE;
+        if (filterValue === ALL_FILTER_VALUE) {
+          continue;
+        }
+        const value = getCellText(row, column.key).trim();
+        if (value !== filterValue) {
           return false;
         }
       }
-
-      if (level2ColumnKey && activeFile.level2Filter !== ALL_FILTER_VALUE) {
-        const value = getCellText(row, level2ColumnKey).trim();
-        if (value !== activeFile.level2Filter) {
-          return false;
-        }
-      }
-
-      if (timeColumnKey && activeFile.timeFilter !== ALL_FILTER_VALUE) {
-        const value = getCellText(row, timeColumnKey).trim();
-        if (value !== activeFile.timeFilter) {
-          return false;
-        }
-      }
-
       return true;
     });
-  }, [activeFile, level1ColumnKey, level2ColumnKey, timeColumnKey]);
+  }, [activeFile, filterColumns]);
+
+  const totalListPages = Math.max(
+    1,
+    Math.ceil(visibleRows.length / listPageSize) || 1,
+  );
+  const paginatedRows = useMemo(() => {
+    const start = (listPage - 1) * listPageSize;
+    return visibleRows.slice(start, start + listPageSize);
+  }, [visibleRows, listPage, listPageSize]);
+
+  useEffect(() => {
+    setListPage(1);
+  }, [
+    activeFile?.fileId,
+    activeFile?.selectedFilterColumnKeys,
+    activeFile?.columnFilterValues,
+    listPageSize,
+  ]);
+
+  useEffect(() => {
+    if (listPage > totalListPages) {
+      setListPage(totalListPages);
+    }
+  }, [listPage, totalListPages]);
 
   useEffect(() => {
     if (!activeFile || visibleRows.length === 0) {
@@ -1793,6 +638,54 @@ function App() {
     () => visibleRows.find((row) => row.rowId === selectedRowId) ?? null,
     [visibleRows, selectedRowId],
   );
+  const aiRequestPreview = useMemo(() => {
+    if (!activeFile || !selectedRow) {
+      return "";
+    }
+    const fields = buildAIDetectFieldsForRow(
+      activeFile.columns,
+      selectedRow,
+      activeStageConfig?.submitFieldKeys ?? [],
+    );
+    return JSON.stringify(
+      {
+        configName: selectedAIConfigName,
+        stageKey: activeAIStageKey,
+        stageTitle: AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "",
+        profileName: activeProfile?.name ?? "",
+        provider: activeProfile?.profile.provider,
+        model: activeProfile?.profile.model,
+        reasoningEffort: activeProfile?.profile.reasoningEffort,
+        retryCount: activeProfile?.profile.retryCount,
+        prompt: activeStageConfig?.prompt,
+        fields,
+      },
+      null,
+      2,
+    );
+  }, [
+    activeFile,
+    selectedRow,
+    activeStageConfig,
+    activeAIStageKey,
+    activeProfile,
+    selectedAIConfigName,
+  ]);
+
+  const openRowDetail = (rowId: string) => {
+    setSelectedRowId(rowId);
+    navigateToSection("detail");
+  };
+
+  const activeRowIndex = selectedRow
+    ? visibleRows.findIndex((row) => row.rowId === selectedRow.rowId)
+    : -1;
+  const previousRow =
+    activeRowIndex > 0 ? visibleRows[activeRowIndex - 1] : null;
+  const nextRow =
+    activeRowIndex >= 0 && activeRowIndex < visibleRows.length - 1
+      ? visibleRows[activeRowIndex + 1]
+      : null;
 
   useEffect(() => {
     if (!activeFile) {
@@ -1805,36 +698,6 @@ function App() {
       previous.filter((rowId) => visibleIdSet.has(rowId)),
     );
   }, [activeFile?.fileId, visibleRows]);
-
-  const rowPreviewColumns = useMemo(() => {
-    if (!activeFile) {
-      return [];
-    }
-
-    const preferred = activeFile.columns.filter(
-      (column) =>
-        isFilterColumnTitle(column.title) ||
-        isQualifiedColumnTitle(column.title) ||
-        isTimeColumnTitle(column.title) ||
-        isCreatorColumnTitle(column.title),
-    );
-    const merged = [...preferred, ...displayColumns];
-    const uniqueMap = new Map<string, ParsedColumn>();
-    merged.forEach((column) => {
-      if (!isFeedbackColumnTitle(column.title)) {
-        uniqueMap.set(column.key, column);
-      }
-    });
-    return Array.from(uniqueMap.values()).slice(0, 5);
-  }, [activeFile, displayColumns]);
-
-  const getRowPreviewText = (row: ParsedRow): string =>
-    rowPreviewColumns
-      .map((column) => {
-        const value = row.values[column.key]?.value?.trim();
-        return `${column.title}: ${value || "-"}`;
-      })
-      .join(" ｜ ");
 
   const persistFileState = (file: FileViewState) => {
     fetch(`/api/files/${encodeURIComponent(file.fileId)}/state`, {
@@ -1896,6 +759,7 @@ function App() {
         fieldSignature: getFieldSignature(file.columns),
         displayKeys: file.selectedDisplayColumnKeys,
         editableKeys: file.selectedEditableColumnKeys,
+        filterKeys: file.selectedFilterColumnKeys,
       }),
     }).catch(() => {});
   };
@@ -1903,6 +767,7 @@ function App() {
   const resetPendingConfigState = () => {
     setPendingFile(null);
     setPendingSelectedDisplayKeys([]);
+    setPendingSelectedFilterKeys([]);
     setPendingEditableColumnKeys([]);
     setPendingConfigNotice("");
     setPendingConfigMode("import");
@@ -1914,9 +779,11 @@ function App() {
     }
     setPendingFile(activeFile);
     setPendingSelectedDisplayKeys(activeFile.selectedDisplayColumnKeys);
+    setPendingSelectedFilterKeys(activeFile.selectedFilterColumnKeys);
     setPendingEditableColumnKeys(activeFile.selectedEditableColumnKeys);
     setPendingConfigNotice("");
     setPendingConfigMode("edit");
+    navigateToSection("settings", "fields");
   };
 
   const syncActiveAIConfigState = (nextConfig: AIDetectConfig) => {
@@ -1958,9 +825,9 @@ function App() {
           : item,
       ),
     );
-    if (!isAIConfigModalOpen) {
+    if (!isAIStageConfigModalOpen && !isAIProfileModalOpen) {
       setDraftAIConfigName(configName);
-      setDraftAIConfig(normalized);
+      setDraftAIConfig(cloneAIDetectConfig(normalized));
     }
     setAIConfigFormMessage("");
 
@@ -1975,41 +842,89 @@ function App() {
     }).catch(() => {});
   };
 
-  const onOpenAIConfigModal = () => {
+  const prepareDraftAIConfig = () => {
     if (!activeFile) {
-      return;
+      return false;
     }
     setDraftAIConfig(
-      normalizeAIDetectConfigForColumns(aiConfig, activeFile.columns),
+      cloneAIDetectConfig(
+        normalizeAIDetectConfigForColumns(aiConfig, activeFile.columns),
+      ),
     );
     setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
-    setIsAIConfigModalOpen(true);
+    return true;
   };
 
-  const onCancelAIConfigModal = () => {
-    setDraftAIConfig(aiConfig);
+  const onOpenAIStageConfigModal = () => {
+    if (!prepareDraftAIConfig()) {
+      return;
+    }
+    setIsAIStageConfigModalOpen(true);
+    setIsAIProfileModalOpen(false);
+    navigateToSection("settings", "ai");
+  };
+
+  const onOpenAIProfileModal = () => {
+    if (!prepareDraftAIConfig()) {
+      return;
+    }
+    setIsAIProfileModalOpen(true);
+    setIsAIStageConfigModalOpen(false);
+    navigateToSection("settings", "ai");
+  };
+
+  const onCancelAIStageConfigModal = () => {
+    setDraftAIConfig(cloneAIDetectConfig(aiConfig));
     setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
-    setIsAIConfigModalOpen(false);
+    setIsAIStageConfigModalOpen(false);
   };
 
-  const onToggleDraftAISubmitField = (columnKey: string) => {
-    setDraftAIConfig((previous) => {
-      const exists = previous.submitFieldKeys.includes(columnKey);
+  const onCancelAIProfileModal = () => {
+    setDraftAIConfig(cloneAIDetectConfig(aiConfig));
+    setDraftAIConfigName(selectedAIConfigName);
+    setAIConfigFormMessage("");
+    setIsAIProfileModalOpen(false);
+  };
+
+  const updateDraftStageConfig = (
+    stageKey: AIDetectStageKey,
+    updater: (
+      stage: AIDetectConfig["stages"][AIDetectStageKey],
+    ) => AIDetectConfig["stages"][AIDetectStageKey],
+  ) => {
+    setDraftAIConfig((previous) => ({
+      ...previous,
+      stages: {
+        ...previous.stages,
+        [stageKey]: updater(previous.stages[stageKey]),
+      },
+    }));
+  };
+
+  const onToggleDraftAISubmitField = (
+    stageKey: AIDetectStageKey,
+    columnKey: string,
+  ) => {
+    updateDraftStageConfig(stageKey, (stage) => {
+      const exists = stage.submitFieldKeys.includes(columnKey);
       const submitFieldKeys = exists
-        ? previous.submitFieldKeys.filter((key) => key !== columnKey)
-        : [...previous.submitFieldKeys, columnKey];
+        ? stage.submitFieldKeys.filter((key) => key !== columnKey)
+        : [...stage.submitFieldKeys, columnKey];
       return {
-        ...previous,
+        ...stage,
         submitFieldKeys,
       };
     });
   };
 
-  const onChangeDraftResultField = (columnKey: string) => {
-    setDraftAIConfig((previous) => ({
-      ...previous,
+  const onChangeDraftResultField = (
+    stageKey: AIDetectStageKey,
+    columnKey: string,
+  ) => {
+    updateDraftStageConfig(stageKey, (stage) => ({
+      ...stage,
       resultFieldKey: columnKey,
     }));
   };
@@ -2030,44 +945,77 @@ function App() {
       activeFile.columns,
     );
 
-    if (nextConfig.model.trim().length === 0) {
-      setAIConfigFormMessage("模型不能为空");
+    if (!nextConfig.profiles || nextConfig.profiles.length === 0) {
+      setAIConfigFormMessage("请至少配置一个接口");
       return;
     }
-    if (nextConfig.provider === "openai") {
-      if (nextConfig.url.trim().length === 0) {
-        setAIConfigFormMessage("OpenAI 兼容接口 URL 不能为空");
+
+    const profileNameSet = new Set<string>();
+    for (const profileItem of nextConfig.profiles) {
+      const profileName = profileItem.name.trim();
+      if (profileName.length === 0) {
+        setAIConfigFormMessage("接口配置名称不能为空");
         return;
       }
-      if (nextConfig.apiKey.trim().length === 0) {
-        setAIConfigFormMessage("OpenAI API Key 不能为空");
+      if (profileNameSet.has(profileName)) {
+        setAIConfigFormMessage(`接口配置名称重复：${profileName}`);
         return;
       }
-    }
-    if (nextConfig.provider === "gemini") {
-      if (nextConfig.url.trim().length === 0) {
-        setAIConfigFormMessage("Gemini 接口 Endpoint 不能为空");
+      profileNameSet.add(profileName);
+      const profile = profileItem.profile;
+      if (profile.model.trim().length === 0) {
+        setAIConfigFormMessage(`【${profileName}】模型不能为空`);
         return;
       }
-      if (nextConfig.apiKey.trim().length === 0) {
-        setAIConfigFormMessage("Gemini API Key 不能为空");
-        return;
+      if (profile.provider === "openai") {
+        if (profile.url.trim().length === 0) {
+          setAIConfigFormMessage(
+            `【${profileName}】OpenAI 兼容接口 URL 不能为空`,
+          );
+          return;
+        }
+        if (profile.apiKey.trim().length === 0) {
+          setAIConfigFormMessage(`【${profileName}】OpenAI API Key 不能为空`);
+          return;
+        }
+      }
+      if (profile.provider === "gemini") {
+        if (profile.url.trim().length === 0) {
+          setAIConfigFormMessage(
+            `【${profileName}】Gemini 接口 Endpoint 不能为空`,
+          );
+          return;
+        }
+        if (profile.apiKey.trim().length === 0) {
+          setAIConfigFormMessage(`【${profileName}】Gemini API Key 不能为空`);
+          return;
+        }
       }
     }
-    if (nextConfig.submitFieldKeys.length === 0) {
-      setAIConfigFormMessage("请至少选择一个提交回答字段");
-      return;
-    }
-    if (nextConfig.prompt.trim().length === 0) {
-      setAIConfigFormMessage("Prompt 不能为空");
-      return;
-    }
-    if (
-      aiResultFieldColumns.length > 0 &&
-      nextConfig.resultFieldKey.trim().length === 0
-    ) {
-      setAIConfigFormMessage("请选择 AI 结果保存字段");
-      return;
+
+    for (const stageKey of AI_STAGE_ORDER) {
+      const stageConfig = nextConfig.stages[stageKey];
+      const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey;
+
+      if (!profileNameSet.has(stageConfig.profileName)) {
+        setAIConfigFormMessage(`【${stageLabel}】请选择有效的接口配置`);
+        return;
+      }
+      if (stageConfig.submitFieldKeys.length === 0) {
+        setAIConfigFormMessage(`【${stageLabel}】请至少选择一个提交回答字段`);
+        return;
+      }
+      if (stageConfig.prompt.trim().length === 0) {
+        setAIConfigFormMessage(`【${stageLabel}】Prompt 不能为空`);
+        return;
+      }
+      if (
+        aiResultFieldColumns.length > 0 &&
+        stageConfig.resultFieldKey.trim().length === 0
+      ) {
+        setAIConfigFormMessage(`【${stageLabel}】请选择 AI 结果保存字段`);
+        return;
+      }
     }
 
     setAIConfigSaving(true);
@@ -2084,7 +1032,8 @@ function App() {
           },
           body: JSON.stringify({
             name: nextConfigName,
-            ...nextConfig,
+            profiles: nextConfig.profiles,
+            stages: nextConfig.stages,
             setActive: true,
           }),
         },
@@ -2107,9 +1056,10 @@ function App() {
       setSelectedAIConfigName(nextConfigName);
       setAIConfig(nextConfig);
       setDraftAIConfigName(nextConfigName);
-      setDraftAIConfig(nextConfig);
+      setDraftAIConfig(cloneAIDetectConfig(nextConfig));
       setAIConfigFormMessage("");
-      setIsAIConfigModalOpen(false);
+      setIsAIStageConfigModalOpen(false);
+      setIsAIProfileModalOpen(false);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "保存 AI 配置失败";
@@ -2134,36 +1084,47 @@ function App() {
     );
     syncActiveAIConfigState(normalizedConfig);
     const runningConfigName = selectedAIConfigName;
+    const stageConfig = normalizedConfig.stages[activeAIStageKey];
+    const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
+    const profileItem =
+      normalizedConfig.profiles.find(
+        (item) => item.name === stageConfig.profileName,
+      ) ?? normalizedConfig.profiles[0];
+    const profile = profileItem?.profile ?? null;
 
-    if (normalizedConfig.model.trim().length === 0) {
+    if (!profile) {
+      setAIResultMessage("请先配置接口");
+      return;
+    }
+    if (profile.model.trim().length === 0) {
       setAIResultMessage("请先配置模型");
       return;
     }
-    if (normalizedConfig.provider === "openai") {
-      if (normalizedConfig.url.trim().length === 0) {
+    if (profile.provider === "openai") {
+      if (profile.url.trim().length === 0) {
         setAIResultMessage("请先配置 OpenAI 兼容接口 URL");
         return;
       }
-      if (normalizedConfig.apiKey.trim().length === 0) {
+      if (profile.apiKey.trim().length === 0) {
         setAIResultMessage("请先配置 OpenAI API Key");
         return;
       }
     }
-    if (normalizedConfig.provider === "gemini") {
-      if (normalizedConfig.url.trim().length === 0) {
+    if (profile.provider === "gemini") {
+      if (profile.url.trim().length === 0) {
         setAIResultMessage("请先配置 Gemini 接口 Endpoint");
         return;
       }
-      if (normalizedConfig.apiKey.trim().length === 0) {
+      if (profile.apiKey.trim().length === 0) {
         setAIResultMessage("请先配置 Gemini API Key");
         return;
       }
     }
-    if (normalizedConfig.submitFieldKeys.length === 0) {
+    if (stageConfig.submitFieldKeys.length === 0) {
       setAIResultMessage("请先在 AI 配置中选择提交回答字段");
       return;
     }
-    if (normalizedConfig.prompt.trim().length === 0) {
+    if (stageConfig.prompt.trim().length === 0) {
       setAIResultMessage("请先配置 Prompt");
       return;
     }
@@ -2171,7 +1132,7 @@ function App() {
     const fields = buildAIDetectFieldsForRow(
       activeFile.columns,
       selectedRow,
-      normalizedConfig.submitFieldKeys,
+      stageConfig.submitFieldKeys,
     );
 
     if (fields.length === 0) {
@@ -2194,14 +1155,14 @@ function App() {
     try {
       const streamResult = await requestAIDetectResult(
         {
-          provider: normalizedConfig.provider,
-          url: normalizedConfig.url,
-          model: normalizedConfig.model,
-          apiKey: normalizedConfig.apiKey,
-          prompt: normalizedConfig.prompt,
+          provider: profile.provider,
+          url: profile.url,
+          model: profile.model,
+          apiKey: profile.apiKey,
+          prompt: stageConfig.prompt,
           fields,
-          reasoningEffort: normalizedConfig.reasoningEffort,
-          retryCount: normalizedConfig.retryCount,
+          reasoningEffort: profile.reasoningEffort,
+          retryCount: profile.retryCount,
         },
         {
           signal: controller.signal,
@@ -2222,7 +1183,7 @@ function App() {
         setAIResultMessage("AI 返回为空");
       } else {
         setAIResultMessage(
-          `AI 回答完成（配置：${runningConfigName}），可直接保存到目标字段`,
+          `AI 回答完成（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}），可直接保存到目标字段`,
         );
       }
     } catch (error) {
@@ -2316,47 +1277,57 @@ function App() {
     );
     syncActiveAIConfigState(normalizedConfig);
     const runningConfigName = selectedAIConfigName;
+    const stageConfig = normalizedConfig.stages[activeAIStageKey];
+    const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
+    const profileItem =
+      normalizedConfig.profiles.find(
+        (item) => item.name === stageConfig.profileName,
+      ) ?? normalizedConfig.profiles[0];
+    const profile = profileItem?.profile ?? null;
 
-    if (normalizedConfig.model.trim().length === 0) {
+    if (!profile) {
+      setErrorMessage("请先配置接口");
+      return;
+    }
+    if (profile.model.trim().length === 0) {
       setErrorMessage("请先配置模型");
       return;
     }
-    if (normalizedConfig.provider === "openai") {
-      if (normalizedConfig.url.trim().length === 0) {
+    if (profile.provider === "openai") {
+      if (profile.url.trim().length === 0) {
         setErrorMessage("请先配置 OpenAI 兼容接口 URL");
         return;
       }
-      if (normalizedConfig.apiKey.trim().length === 0) {
+      if (profile.apiKey.trim().length === 0) {
         setErrorMessage("请先配置 OpenAI API Key");
         return;
       }
     }
-    if (normalizedConfig.provider === "gemini") {
-      if (normalizedConfig.url.trim().length === 0) {
+    if (profile.provider === "gemini") {
+      if (profile.url.trim().length === 0) {
         setErrorMessage("请先配置 Gemini 接口 Endpoint");
         return;
       }
-      if (normalizedConfig.apiKey.trim().length === 0) {
+      if (profile.apiKey.trim().length === 0) {
         setErrorMessage("请先配置 Gemini API Key");
         return;
       }
     }
-    if (normalizedConfig.submitFieldKeys.length === 0) {
+    if (stageConfig.submitFieldKeys.length === 0) {
       setErrorMessage("请先在 AI 配置中选择提交回答字段");
       return;
     }
-    if (normalizedConfig.prompt.trim().length === 0) {
+    if (stageConfig.prompt.trim().length === 0) {
       setErrorMessage("请先配置 Prompt");
       return;
     }
-    if (normalizedConfig.resultFieldKey.trim().length === 0) {
+    if (stageConfig.resultFieldKey.trim().length === 0) {
       setErrorMessage("请先在 AI 配置中设置结果保存字段");
       return;
     }
 
     const targetResultColumn = activeFile.columns.find(
-      (column) =>
-        column.key === normalizedConfig.resultFieldKey && column.editable,
+      (column) => column.key === stageConfig.resultFieldKey && column.editable,
     );
     if (!targetResultColumn) {
       setErrorMessage("结果保存字段无效，请重新配置");
@@ -2428,7 +1399,7 @@ function App() {
           const fields = buildAIDetectFieldsForRow(
             targetColumns,
             row,
-            normalizedConfig.submitFieldKeys,
+            stageConfig.submitFieldKeys,
           );
           if (fields.length === 0) {
             throw new Error("没有可提交的回答字段");
@@ -2436,14 +1407,14 @@ function App() {
 
           const streamResult = await requestAIDetectResult(
             {
-              provider: normalizedConfig.provider,
-              url: normalizedConfig.url,
-              model: normalizedConfig.model,
-              apiKey: normalizedConfig.apiKey,
-              prompt: normalizedConfig.prompt,
+              provider: profile.provider,
+              url: profile.url,
+              model: profile.model,
+              apiKey: profile.apiKey,
+              prompt: stageConfig.prompt,
               fields,
-              reasoningEffort: normalizedConfig.reasoningEffort,
-              retryCount: normalizedConfig.retryCount,
+              reasoningEffort: profile.reasoningEffort,
+              retryCount: profile.retryCount,
             },
             { signal: controller.signal },
           );
@@ -2484,14 +1455,14 @@ function App() {
 
       applyBatchAIResultsToFile(
         targetFileId,
-        normalizedConfig.resultFieldKey,
+        stageConfig.resultFieldKey,
         resultMap,
       );
 
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
-        message: `结果已写入字段：${targetResultColumn.title}（配置：${runningConfigName}）`,
+        message: `结果已写入字段：${targetResultColumn.title}（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}）`,
       }));
       setErrorMessage("");
     } catch (error) {
@@ -2533,7 +1504,7 @@ function App() {
       return;
     }
 
-    const resultFieldKey = aiConfig.resultFieldKey;
+    const resultFieldKey = activeStageConfig?.resultFieldKey ?? "";
     if (resultFieldKey.trim().length === 0) {
       setAIResultMessage("请先在 AI 配置中设置结果保存字段");
       return;
@@ -2549,14 +1520,15 @@ function App() {
 
     setIsSavingAIResult(true);
     try {
+      const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
       onEditCell(selectedRow.rowId, resultFieldKey, composedText);
       if (aiThinkingText.trim().length > 0) {
         setAIResultMessage(
-          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}，含思考过程）`,
+          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}${stageLabel ? ` / ${stageLabel}` : ""}，含思考过程）`,
         );
       } else {
         setAIResultMessage(
-          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}）`,
+          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}${stageLabel ? ` / ${stageLabel}` : ""}）`,
         );
       }
     } finally {
@@ -2685,6 +1657,7 @@ function App() {
       const defaultDisplayKeys = getAllColumnKeys(parsed.columns);
       let initialDisplayKeys = defaultDisplayKeys;
       let initialEditableKeys: string[] = [];
+      let initialFilterKeys = normalizeFilterSelection(parsed.columns);
       let shouldShowColumnModal = true;
       let nextPendingNotice = "";
 
@@ -2702,12 +1675,17 @@ function App() {
               prefsData.config.displayKeys,
               prefsData.config.editableKeys,
             );
+            const normalizedFilterKeys = normalizeFilterSelection(
+              parsed.columns,
+              prefsData.config.filterKeys,
+            );
             const currentSignature = getFieldSignature(parsed.columns);
             if (prefsData.config.fieldSignature === currentSignature) {
               const nextFile = toViewState(
                 parsed,
                 normalizedSaved.displayKeys,
                 normalizedSaved.editableKeys,
+                normalizedFilterKeys,
               );
               setFiles((previous) => [...previous, nextFile]);
               setActiveFileId(nextFile.fileId);
@@ -2718,6 +1696,7 @@ function App() {
                 "检测到该 Excel 字段与已保存配置不一致，请重新选择并保存新配置。";
               initialDisplayKeys = normalizedSaved.displayKeys;
               initialEditableKeys = normalizedSaved.editableKeys;
+              initialFilterKeys = normalizedFilterKeys;
             }
           }
         }
@@ -2728,6 +1707,7 @@ function App() {
       if (shouldShowColumnModal) {
         setPendingFile(parsed);
         setPendingSelectedDisplayKeys(initialDisplayKeys);
+        setPendingSelectedFilterKeys(initialFilterKeys);
         setPendingEditableColumnKeys(initialEditableKeys);
         setPendingConfigNotice(nextPendingNotice);
         setPendingConfigMode("import");
@@ -2796,6 +1776,18 @@ function App() {
     });
   };
 
+  const onTogglePendingFilterColumn = (columnKey: string) => {
+    if (!pendingFile) {
+      return;
+    }
+    setPendingSelectedFilterKeys((previous) => {
+      const exists = previous.includes(columnKey);
+      return exists
+        ? previous.filter((key) => key !== columnKey)
+        : [...previous, columnKey];
+    });
+  };
+
   const onPendingSelectAllDisplayColumns = () => {
     if (!pendingFile) {
       return;
@@ -2810,6 +1802,10 @@ function App() {
 
   const onPendingClearEditableColumns = () => {
     setPendingEditableColumnKeys([]);
+  };
+
+  const onPendingClearFilterColumns = () => {
+    setPendingSelectedFilterKeys([]);
   };
 
   const onCancelPendingFile = () => {
@@ -2827,6 +1823,7 @@ function App() {
           file,
           pendingSelectedDisplayKeys,
           pendingEditableColumnKeys,
+          pendingSelectedFilterKeys,
         );
         persistColumnPrefs(nextFile);
         return nextFile;
@@ -2839,6 +1836,7 @@ function App() {
       pendingFile,
       pendingSelectedDisplayKeys,
       pendingEditableColumnKeys,
+      pendingSelectedFilterKeys,
     );
     setFiles((previous) => [...previous, nextFile]);
     setActiveFileId(nextFile.fileId);
@@ -2867,21 +1865,21 @@ function App() {
         ...file,
         selectedDisplayColumnKeys: normalized.displayKeys,
         selectedEditableColumnKeys: normalized.editableKeys,
+        selectedFilterColumnKeys: file.selectedFilterColumnKeys,
+        columnFilterValues: file.columnFilterValues,
       };
       persistColumnPrefs(nextFile);
       return nextFile;
     });
   };
 
-  const onFilterChange = (
-    type: "level1" | "level2" | "time",
-    value: string,
-  ) => {
+  const onColumnFilterChange = (columnKey: string, value: string) => {
     patchActiveFile((file) => ({
       ...file,
-      level1Filter: type === "level1" ? value : file.level1Filter,
-      level2Filter: type === "level2" ? value : file.level2Filter,
-      timeFilter: type === "time" ? value : file.timeFilter,
+      columnFilterValues: {
+        ...file.columnFilterValues,
+        [columnKey]: value,
+      },
     }));
   };
 
@@ -2940,7 +1938,7 @@ function App() {
     const key = getLatexToggleKey(columnKey);
     setLatexRenderOverrides((previous) => ({
       ...previous,
-      [key]: !(previous[key] ?? true),
+      [key]: !(previous[key] ?? false),
     }));
   };
 
@@ -3123,7 +2121,7 @@ function App() {
       hasLatexSyntax(cell.value);
     const latexToggleKey = getLatexToggleKey(column.key);
     const isLatexRenderingEnabled =
-      latexRenderOverrides[latexToggleKey] ?? true;
+      latexRenderOverrides[latexToggleKey] ?? false;
 
     return (
       <div
@@ -3180,849 +2178,433 @@ function App() {
     );
   };
 
+  const renderListReadonlyCell = (row: ParsedRow, column: ParsedColumn) =>
+    renderReadonlyCell(
+      row,
+      {
+        ...column,
+        editable: false,
+      },
+      row.values[column.key],
+      false,
+    );
+  const getListCellTitle = (row: ParsedRow, column: ParsedColumn) =>
+    getCellText(row, column.key).trim();
+
+  const listRangeStart =
+    visibleRows.length === 0 ? 0 : (listPage - 1) * listPageSize + 1;
+  const listRangeEnd = Math.min(listPage * listPageSize, visibleRows.length);
+  const routePathLabel = buildHashRoute(activeSection, activeSettingsSection);
+  const pageTitle =
+    activeSection === "list"
+      ? "题目列表"
+      : activeSection === "detail"
+        ? "题目详情"
+        : activeSettingsSection === "ai"
+          ? "AI 设置"
+          : "字段设置";
+  const pageDescription =
+    activeSection === "list"
+      ? `当前文件共 ${visibleRows.length} 条，正在展示 ${listRangeStart}-${listRangeEnd} 条。`
+      : activeSection === "detail"
+        ? selectedRow
+          ? `当前查看第 ${activeRowIndex + 1} 条，支持字段编辑与 AI 回答。`
+          : "请先在题目列表中选择一条记录。"
+        : activeSettingsSection === "ai"
+          ? "管理接口配置与阶段任务配置，控制提示词与结果保存字段。"
+          : "管理详情页字段展示和可编辑字段。";
+
   return (
     <div className="app-shell">
-      {/* ─── Header Bar ─── */}
-      <header className="header-bar">
-        <div className="header-inner">
-          <div className="header-brand">
-            <div className="brand-icon">
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M9 2L4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H9zm0 0v5H4m4 4h8m-8 4h8m-8 4h4"
-                  fill="none"
-                  stroke="white"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-            <h1>质检工作台</h1>
-          </div>
-
-          {/* ─── File Tabs ─── */}
-          <div className="file-tabs">
-            {files.map((file) => (
-              <div
-                key={file.fileId}
-                className={`file-tab ${file.fileId === activeFileId ? "active" : ""}`}
-              >
-                <button
-                  type="button"
-                  style={{
-                    all: "unset",
-                    cursor: "pointer",
-                    display: "contents",
-                  }}
-                  onClick={() => setActiveFileId(file.fileId)}
-                >
-                  {file.fileName}
-                </button>
-                <span className="tab-badge">{file.rows.length}</span>
-                <button
-                  type="button"
-                  className="tab-close"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemoveFile(file.fileId);
-                  }}
-                  title="关闭"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-
-          {/* ─── Header Actions ─── */}
-          <div className="header-actions">
-            {errorMessage ? (
-              <span className="error-text">{errorMessage}</span>
-            ) : null}
-            {aiBatchTask.total > 0 ? (
-              <div
-                className={`ai-batch-status ${isAIBatchRunning ? "running" : "completed"}`}
-              >
-                <div className="ai-batch-status-head">
-                  <span>{getAIBatchTaskStatusText(aiBatchTask)}</span>
-                  <strong>
-                    {aiBatchTask.completed}/{aiBatchTask.total}
-                  </strong>
-                </div>
-                <div className="ai-batch-progress">
-                  <div
-                    className="ai-batch-progress-bar"
-                    style={{ width: `${aiBatchProgressPercent}%` }}
-                  />
-                </div>
-                <div className="ai-batch-counts">
-                  <span className="ai-batch-success">
-                    成功 {aiBatchTask.success}
-                  </span>
-                  <span className="ai-batch-failed">
-                    失败 {aiBatchTask.failed}
-                  </span>
-                  <span>{aiBatchProgressPercent}%</span>
-                </div>
-                {aiBatchTask.fileName ? (
-                  <div
-                    className="ai-batch-file"
-                    title={aiBatchTask.fileName}
-                  >{`任务文件：${aiBatchTask.fileName}`}</div>
-                ) : null}
-                {aiBatchTask.message ? (
-                  <div className="ai-batch-message">{aiBatchTask.message}</div>
-                ) : null}
-              </div>
-            ) : null}
-            <button
-              type="button"
-              className="theme-toggle"
-              onClick={toggleTheme}
-              title={theme === "dark" ? "切换浅色主题" : "切换深色主题"}
-            >
-              {theme === "dark" ? <IconSun /> : <IconMoon />}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={onOpenActiveFileConfig}
-              disabled={!activeFile}
-            >
-              字段配置
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={onOpenAIConfigModal}
-              disabled={!activeFile || aiConfigLoading}
-            >
-              AI回答配置
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={onExportFile}
-              disabled={isExporting || !activeFile}
-            >
-              <IconDownload />
-              {isExporting ? "导出中..." : "导出 Excel"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={onUploadClick}
-              disabled={isUploading}
-            >
-              <IconUpload />
-              {isUploading ? "解析中..." : "导入 Excel"}
-            </button>
-            <input
-              ref={uploadInputRef}
-              type="file"
-              accept=".xls,.xlsx"
-              className="hidden-input"
-              onChange={onUploadFile}
-            />
-          </div>
-        </div>
-      </header>
+      <HeaderBar
+        files={files}
+        activeFileId={activeFileId}
+        onSelectFile={setActiveFileId}
+        onRemoveFile={onRemoveFile}
+        errorMessage={errorMessage}
+        aiBatchTask={aiBatchTask}
+        aiBatchProgressPercent={aiBatchProgressPercent}
+        isAIBatchRunning={isAIBatchRunning}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenAIStageConfigModal={onOpenAIStageConfigModal}
+        onExportFile={onExportFile}
+        onUploadClick={onUploadClick}
+        uploadInputRef={uploadInputRef}
+        onUploadFile={onUploadFile}
+        isExporting={isExporting}
+        isUploading={isUploading}
+        aiConfigLoading={aiConfigLoading}
+        activeFile={activeFile}
+      />
 
       {/* ─── Main Content ─── */}
-      <main className="main-content">
-        {!activeFile ? (
-          <section className="placeholder">
-            <div className="placeholder-icon">
-              <IconFile />
-            </div>
-            <h2>等待文件导入</h2>
-            <p>
-              点击右上角「导入
-              Excel」按钮，支持展示/可编辑字段配置、level1/level2/创建时间筛选、图片展示与导出。
-            </p>
-          </section>
-        ) : (
-          <>
-            {/* ─── Toolbar ─── */}
-            <section className="toolbar">
-              <div className="filter-group">
-                <label htmlFor="level1-filter">level1</label>
-                <select
-                  id="level1-filter"
-                  value={activeFile.level1Filter}
-                  onChange={(event) =>
-                    onFilterChange("level1", event.target.value)
-                  }
-                >
-                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
-                  {activeFile.level1Options.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="filter-group">
-                <label htmlFor="level2-filter">level2</label>
-                <select
-                  id="level2-filter"
-                  value={activeFile.level2Filter}
-                  onChange={(event) =>
-                    onFilterChange("level2", event.target.value)
-                  }
-                >
-                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
-                  {activeFile.level2Options.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="filter-group">
-                <label htmlFor="time-filter">创建时间</label>
-                <select
-                  id="time-filter"
-                  value={activeFile.timeFilter}
-                  onChange={(event) =>
-                    onFilterChange("time", event.target.value)
-                  }
-                >
-                  <option value={ALL_FILTER_VALUE}>{ALL_FILTER_VALUE}</option>
-                  {timeOptions.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="stats">
-                <strong>{visibleRows.length}</strong>
-                <span>可选条目</span>
-              </div>
-              <div className="stats">
-                <strong>{batchSelectedRowIds.length}</strong>
-                <span>已勾选条目</span>
-              </div>
-            </section>
+      <main
+        className={`main-content main-workspace ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}
+      >
+        <WorkspaceSidebar
+          isCollapsed={isSidebarCollapsed}
+          activeSection={activeSection}
+          activeSettingsSection={activeSettingsSection}
+          activeFile={activeFile}
+          onToggle={() => setIsSidebarCollapsed((previous) => !previous)}
+          onNavigate={navigateToSection}
+        />
 
-            <section className="batch-answer-layout batch-answer-inline">
-              <div className="batch-answer-header">
-                <h3>AI批量回答</h3>
-                <p>
-                  在列表中勾选后执行批量回答，点击记录可在右侧查看字段详情。
-                </p>
+        <section className="workspace-main">
+          {!activeFile ? (
+            <section className="placeholder workspace-placeholder">
+              <div className="placeholder-icon">
+                <IconFile />
               </div>
-              <div className="batch-answer-actions">
-                <label className="ai-run-config">
-                  <span>运行配置</span>
-                  <select
-                    value={selectedAIConfigName}
-                    onChange={(event) =>
-                      onSelectAIConfigForRun(event.target.value)
-                    }
-                    disabled={
-                      aiConfigLoading || isAIDetecting || isAIBatchRunning
-                    }
-                  >
-                    {aiConfigList.map((item) => (
-                      <option key={item.name} value={item.name}>
-                        {item.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="ai-run-config">
-                  <span>并发数</span>
-                  <input
-                    type="number"
-                    min={MIN_AI_BATCH_CONCURRENCY}
-                    max={MAX_AI_BATCH_CONCURRENCY}
-                    step={1}
-                    value={aiBatchConcurrency}
-                    onChange={(event) =>
-                      setAIBatchConcurrency(
-                        normalizeAIBatchConcurrency(Number(event.target.value)),
-                      )
-                    }
-                    disabled={isAIBatchRunning}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={onSelectAllBatchRows}
-                  disabled={visibleRows.length === 0 || isAIBatchRunning}
-                >
-                  全选可见
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={onClearBatchRows}
-                  disabled={
-                    batchSelectedRowIds.length === 0 || isAIBatchRunning
-                  }
-                >
-                  清空勾选
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={onRunSelectedBatchAIAnswer}
-                  disabled={
-                    aiConfigLoading ||
-                    isAIDetecting ||
-                    isAIBatchRunning ||
-                    batchSelectedRowIds.length === 0
-                  }
-                >
-                  {isAIBatchRunning
-                    ? "AI批量回答中..."
-                    : `批量回答已选 ${batchSelectedRowIds.length} 条`}
-                </button>
-                <div className="ai-result-target">
-                  <span>保存字段：</span>
-                  <strong>{aiResultFieldTitle || "未配置"}</strong>
-                  <span className="ai-target-sep">|</span>
-                  <span>重试：</span>
-                  <strong className="ai-retry-count">
-                    {aiConfig.retryCount}次
-                  </strong>
-                </div>
-              </div>
+              <h2>等待文件导入</h2>
+              <p>
+                点击右上角「导入
+                Excel」按钮，导入后可在左侧切换列表、详情与设置。
+              </p>
             </section>
-
-            {/* ─── Detail Layout ─── */}
-            <section
-              className={`detail-layout ${selectedRow ? "with-detail" : "list-only"}`}
-            >
-              {/* ─── Record List ─── */}
-              <aside className="record-list">
-                <div className="record-list-header">
-                  <h3>数据列表</h3>
-                  <p>
-                    {selectedRow
-                      ? "左侧为列表，右侧为当前记录详情"
-                      : "默认列表模式，点击任意记录后右侧展开字段详情"}
-                  </p>
+          ) : (
+            <>
+              <section className="workspace-topbar">
+                <div className="workspace-topbar-head">
+                  <div className="workspace-topbar-copy">
+                    <span className="workspace-route">{routePathLabel}</span>
+                    <h2>{pageTitle}</h2>
+                    <p>{pageDescription}</p>
+                  </div>
+                  <div className="workspace-topbar-meta">
+                    <span>{activeFile.fileName}</span>
+                    {activeSection === "list" ? (
+                      <>
+                        <span>字段 {activeFile.columns.length}</span>
+                        <span>已勾选 {batchSelectedRowIds.length}</span>
+                      </>
+                    ) : null}
+                    {activeSection === "detail" ? (
+                      <>
+                        <span>展示字段 {displayColumns.length}</span>
+                        <span>隐藏字段 {hiddenColumns.length}</span>
+                      </>
+                    ) : null}
+                    {activeSection === "settings" ? (
+                      <>
+                        <span>
+                          当前分区{" "}
+                          {activeSettingsSection === "ai" ? "AI" : "字段"}
+                        </span>
+                        <span>当前配置 {selectedAIConfigName}</span>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
-                {visibleRows.length === 0 ? (
-                  <div className="record-list-empty">当前筛选条件下无数据</div>
-                ) : (
-                  <div className="record-list-items">
-                    {visibleRows.map((row, index) => {
-                      const checked = batchSelectedRowIdSet.has(row.rowId);
-                      return (
-                        <div
-                          key={row.rowId}
-                          role="button"
-                          tabIndex={0}
-                          className={`record-item ${selectedRowId === row.rowId ? "active" : ""} ${checked ? "batch-selected" : ""}`}
-                          onClick={() =>
-                            setSelectedRowId((previous) =>
-                              previous === row.rowId ? null : row.rowId,
-                            )
-                          }
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              setSelectedRowId((previous) =>
-                                previous === row.rowId ? null : row.rowId,
-                              );
-                            }
-                          }}
-                        >
-                          <div className="record-item-head">
-                            <label
-                              className="record-item-check"
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  onToggleBatchRowSelection(row.rowId)
-                                }
-                              />
+
+                <div className="toolbar page-toolbar">
+                  {activeSection !== "settings"
+                    ? filterColumns.map((column) => {
+                        const options = filterOptionsMap.get(column.key) ?? [];
+                        return (
+                          <div className="filter-group" key={column.key}>
+                            <label htmlFor={`filter-${column.key}`}>
+                              {column.title}
                             </label>
-                            <strong>第 {index + 1} 条</strong>
+                            <select
+                              id={`filter-${column.key}`}
+                              value={
+                                activeFile.columnFilterValues[column.key] ??
+                                ALL_FILTER_VALUE
+                              }
+                              onChange={(event) =>
+                                onColumnFilterChange(
+                                  column.key,
+                                  event.target.value,
+                                )
+                              }
+                            >
+                              <option value={ALL_FILTER_VALUE}>
+                                {ALL_FILTER_VALUE}
+                              </option>
+                              {options.map((item) => (
+                                <option key={item} value={item}>
+                                  {item}
+                                </option>
+                              ))}
+                            </select>
                           </div>
-                          <span>{getRowPreviewText(row)}</span>
+                        );
+                      })
+                    : null}
+                  <div className="toolbar-spacer" />
+                  {activeSection === "list" ? (
+                    <div className="toolbar-actions">
+                      <div className="batch-toolbar">
+                        <label className="batch-control">
+                          <span>批量并发</span>
+                          <input
+                            type="number"
+                            min={MIN_AI_BATCH_CONCURRENCY}
+                            max={MAX_AI_BATCH_CONCURRENCY}
+                            step={1}
+                            value={aiBatchConcurrency}
+                            onChange={(event) =>
+                              setAIBatchConcurrency(
+                                normalizeAIBatchConcurrency(
+                                  Number(event.target.value),
+                                ),
+                              )
+                            }
+                            disabled={isAIBatchRunning}
+                          />
+                        </label>
+                        <div className="batch-buttons">
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={onSelectAllBatchRows}
+                            disabled={
+                              visibleRows.length === 0 || isAIBatchRunning
+                            }
+                          >
+                            {batchSelectedRowIds.length ===
+                              visibleRows.length && visibleRows.length > 0
+                              ? "取消全选"
+                              : "全选可见"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={onClearBatchRows}
+                            disabled={
+                              batchSelectedRowIds.length === 0 ||
+                              isAIBatchRunning
+                            }
+                          >
+                            清空勾选
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={onRunSelectedBatchAIAnswer}
+                            disabled={
+                              aiConfigLoading ||
+                              isAIDetecting ||
+                              isAIBatchRunning ||
+                              batchSelectedRowIds.length === 0
+                            }
+                          >
+                            {isAIBatchRunning
+                              ? "AI批量回答中..."
+                              : `批量回答已选 ${batchSelectedRowIds.length} 条`}
+                          </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </aside>
-
-              {/* ─── Record Detail ─── */}
-              {selectedRow ? (
-                <section className="record-detail">
-                  <div className="record-detail-header">
-                    <h3>字段详情</h3>
-                    <span>点击字段左侧勾选框可控制显示/隐藏</span>
-                  </div>
-                  <div className="record-detail-ai-toolbar">
-                    <div className="record-detail-ai-actions">
-                      <label className="ai-run-config">
-                        <span>运行配置</span>
-                        <select
-                          value={selectedAIConfigName}
-                          onChange={(event) =>
-                            onSelectAIConfigForRun(event.target.value)
-                          }
-                          disabled={
-                            aiConfigLoading || isAIDetecting || isAIBatchRunning
-                          }
-                        >
-                          {aiConfigList.map((item) => (
-                            <option key={item.name} value={item.name}>
-                              {item.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      </div>
+                    </div>
+                  ) : null}
+                  {activeSection === "detail" ? (
+                    <div className="toolbar-actions">
                       <button
                         type="button"
-                        className="btn btn-primary"
-                        onClick={onRunAIDetect}
-                        disabled={
-                          !selectedRow ||
-                          isAIDetecting ||
-                          aiConfigLoading ||
-                          isAIBatchRunning
-                        }
+                        className="btn"
+                        onClick={() => navigateToSection("list")}
                       >
-                        {isAIDetecting
-                          ? `AI回答中 ${aiDetectElapsedText}`
-                          : "发送AI回答"}
+                        返回列表
                       </button>
                       <button
                         type="button"
                         className="btn"
-                        onClick={onSaveAIResult}
-                        disabled={
-                          !selectedRow ||
-                          isAIDetecting ||
-                          isAIBatchRunning ||
-                          isSavingAIResult ||
-                          !hasAISaveContent ||
-                          aiConfig.resultFieldKey.trim().length === 0
+                        onClick={() =>
+                          previousRow && openRowDetail(previousRow.rowId)
                         }
+                        disabled={!previousRow}
                       >
-                        {isSavingAIResult ? "保存中..." : "保存AI回答"}
+                        上一题
                       </button>
-                      <div className="ai-result-target">
-                        <span>保存字段：</span>
-                        <strong>{aiResultFieldTitle || "未配置"}</strong>
-                        <span className="ai-target-sep">|</span>
-                        <span>重试：</span>
-                        <strong className="ai-retry-count">
-                          {aiConfig.retryCount}次
-                        </strong>
-                      </div>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => nextRow && openRowDetail(nextRow.rowId)}
+                        disabled={!nextRow}
+                      >
+                        下一题
+                      </button>
                     </div>
-                    <div className="ai-stream-group">
-                      <label className="ai-stream-label">
-                        AI响应（流式，含思考过程）
-                      </label>
-                      <textarea
-                        className="ai-stream-input ai-stream-input-large"
-                        value={aiMergedStreamText}
-                        onChange={(event) => {
-                          // After manual edit, treat the merged text as final answer body.
-                          setAIThinkingText("");
-                          setAIResultText(event.target.value);
-                        }}
-                        placeholder="点击“发送AI回答”后，这里会流式展示模型输出（思考+回答），可手动编辑后再保存。"
-                      />
+                  ) : null}
+                  {activeSection === "settings" ? (
+                    <div className="settings-tabs">
+                      <button
+                        type="button"
+                        className={`btn ${activeSettingsSection === "fields" ? "btn-primary" : ""}`}
+                        onClick={() => navigateToSection("settings", "fields")}
+                      >
+                        字段设置
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn ${activeSettingsSection === "ai" ? "btn-primary" : ""}`}
+                        onClick={() => navigateToSection("settings", "ai")}
+                      >
+                        AI 设置
+                      </button>
                     </div>
-                    {aiResultMessage ? (
-                      <div className="ai-stream-message">{aiResultMessage}</div>
-                    ) : null}
-                  </div>
-                  <div className="detail-fields">
-                    {displayColumns.map((column) =>
-                      renderDetailField(column, false),
-                    )}
-                    {hiddenColumns.length > 0 ? (
-                      <div className="hidden-fields-section">
-                        <button
-                          type="button"
-                          className={`hidden-fields-toggle ${showHiddenFields ? "expanded" : ""}`}
-                          onClick={() => setShowHiddenFields(!showHiddenFields)}
-                        >
-                          <IconChevron />
-                          <span>{hiddenColumns.length} 个已隐藏字段</span>
-                        </button>
-                        {showHiddenFields ? (
-                          <div className="hidden-fields-list">
-                            {hiddenColumns.map((column) =>
-                              renderDetailField(column, true),
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </section>
-              ) : null}
-            </section>
-          </>
-        )}
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="workspace-view">
+                {activeSection === "list" ? (
+                  <section className="page-panel">
+                    <ListPage
+                      activeFile={activeFile}
+                      visibleRows={visibleRows}
+                      paginatedRows={paginatedRows}
+                      listPage={listPage}
+                      listPageSize={listPageSize}
+                      totalListPages={totalListPages}
+                      listPageSizeOptions={LIST_PAGE_SIZE_OPTIONS}
+                      batchSelectedRowIdSet={batchSelectedRowIdSet}
+                      selectedRowId={selectedRowId}
+                      onToggleBatchRowSelection={onToggleBatchRowSelection}
+                      onOpenRowDetail={openRowDetail}
+                      onPageChange={setListPage}
+                      onPageSizeChange={setListPageSize}
+                      getCellTitle={getListCellTitle}
+                      renderListReadonlyCell={renderListReadonlyCell}
+                    />
+                  </section>
+                ) : null}
+
+                {activeSection === "detail" ? (
+                  <section className="page-panel detail-page-panel">
+                    <DetailPage
+                      selectedRow={selectedRow}
+                      displayColumns={displayColumns}
+                      hiddenColumns={hiddenColumns}
+                      showHiddenFields={showHiddenFields}
+                      onToggleHiddenFields={() =>
+                        setShowHiddenFields((previous) => !previous)
+                      }
+                      onOpenAIRunModal={() => setIsAIRunModalOpen(true)}
+                      renderDetailField={renderDetailField}
+                    />
+                  </section>
+                ) : null}
+
+                {activeSection === "settings" ? (
+                  <section className="page-panel settings-page-panel">
+                    <SettingsPage
+                      activeSettingsSection={activeSettingsSection}
+                      activeFile={activeFile}
+                      displayColumns={displayColumns}
+                      aiConfigList={aiConfigList}
+                      selectedAIConfigName={selectedAIConfigName}
+                      aiConfig={aiConfig}
+                      onOpenActiveFileConfig={onOpenActiveFileConfig}
+                      onOpenAIStageConfigModal={onOpenAIStageConfigModal}
+                      onOpenAIProfileModal={onOpenAIProfileModal}
+                    />
+                  </section>
+                ) : null}
+              </section>
+            </>
+          )}
+        </section>
       </main>
-
       {/* ─── Column Selection Modal ─── */}
-      {pendingFile ? (
-        <div className="column-modal-mask">
-          <div className="column-modal">
-            <h3>
-              {pendingConfigMode === "edit"
-                ? "编辑字段展示与可编辑"
-                : "配置字段展示与可编辑"}
-            </h3>
-            <p>{pendingFile.fileName}</p>
-            {pendingConfigNotice ? (
-              <div className="column-modal-notice">{pendingConfigNotice}</div>
-            ) : null}
-            <div className="column-modal-actions">
-              <button
-                type="button"
-                className="btn"
-                onClick={onPendingSelectAllDisplayColumns}
-              >
-                全选展示
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={onPendingClearDisplayColumns}
-              >
-                清空展示
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={onPendingClearEditableColumns}
-              >
-                清空可编辑
-              </button>
-            </div>
-            <div className="column-modal-list">
-              {pendingFile.columns.map((column) => {
-                const checkedDisplay = pendingSelectedDisplayKeys.includes(
-                  column.key,
-                );
-                const checkedEditable = pendingEditableColumnKeys.includes(
-                  column.key,
-                );
-                return (
-                  <div
-                    key={column.key}
-                    className={`column-config-row ${checkedEditable ? "editable-column-row" : ""}`}
-                  >
-                    <span className="column-config-name">{column.title}</span>
-                    <label className="column-config-switch">
-                      <input
-                        type="checkbox"
-                        checked={checkedDisplay}
-                        onChange={() =>
-                          onTogglePendingDisplayColumn(column.key)
-                        }
-                      />
-                      <span>展示</span>
-                    </label>
-                    <label className="column-config-switch">
-                      <input
-                        type="checkbox"
-                        checked={checkedEditable}
-                        onChange={() =>
-                          onTogglePendingEditableColumn(column.key)
-                        }
-                      />
-                      <span>可编辑</span>
-                    </label>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="column-modal-footer">
-              <button
-                type="button"
-                className="btn"
-                onClick={onCancelPendingFile}
-              >
-                取消导入
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={onConfirmPendingFile}
-              >
-                {pendingConfigMode === "edit" ? "保存配置" : "确认并保存配置"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ColumnConfigModal
+        pendingFile={pendingFile}
+        pendingConfigMode={pendingConfigMode}
+        pendingConfigNotice={pendingConfigNotice}
+        pendingSelectedDisplayKeys={pendingSelectedDisplayKeys}
+        pendingSelectedFilterKeys={pendingSelectedFilterKeys}
+        pendingEditableColumnKeys={pendingEditableColumnKeys}
+        onPendingSelectAllDisplayColumns={onPendingSelectAllDisplayColumns}
+        onPendingClearDisplayColumns={onPendingClearDisplayColumns}
+        onPendingClearFilterColumns={onPendingClearFilterColumns}
+        onPendingClearEditableColumns={onPendingClearEditableColumns}
+        onTogglePendingDisplayColumn={onTogglePendingDisplayColumn}
+        onTogglePendingFilterColumn={onTogglePendingFilterColumn}
+        onTogglePendingEditableColumn={onTogglePendingEditableColumn}
+        onCancelPendingFile={onCancelPendingFile}
+        onConfirmPendingFile={onConfirmPendingFile}
+      />
 
-      {/* ─── AI Config Modal ─── */}
-      {isAIConfigModalOpen && activeFile ? (
-        <div className="column-modal-mask">
-          <div className="column-modal ai-config-modal">
-            <h3>AI回答配置</h3>
-            <p>{activeFile.fileName}</p>
-            {aiConfigFormMessage ? (
-              <div className="column-modal-notice">{aiConfigFormMessage}</div>
-            ) : null}
-            <div className="ai-config-form">
-              <label className="ai-config-field">
-                <span>配置名称（输入新名称即新增）</span>
-                <input
-                  type="text"
-                  value={draftAIConfigName}
-                  onChange={(event) => setDraftAIConfigName(event.target.value)}
-                  placeholder="例如：默认配置 / 低成本模型 / 高质量模型"
-                  list="ai-config-name-options"
-                />
-              </label>
-              <datalist id="ai-config-name-options">
-                {aiConfigList.map((item) => (
-                  <option key={item.name} value={item.name} />
-                ))}
-              </datalist>
-              <label className="ai-config-field">
-                <span>接口类型</span>
-                <select
-                  value={draftAIConfig.provider}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => {
-                      const nextProvider = event.target
-                        .value as AIDetectConfig["provider"];
-                      const shouldSwitchToProviderDefaultUrl =
-                        previous.url.trim().length === 0 ||
-                        previous.url.trim() ===
-                          getDefaultAIUrl(previous.provider);
-                      return {
-                        ...previous,
-                        provider: nextProvider,
-                        url: shouldSwitchToProviderDefaultUrl
-                          ? getDefaultAIUrl(nextProvider)
-                          : previous.url,
-                      };
-                    })
-                  }
-                >
-                  {AI_PROVIDER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="ai-config-field">
-                <span>
-                  {draftAIConfig.provider === "openai"
-                    ? "OpenAI兼容接口 URL"
-                    : "Gemini 接口 Endpoint"}
-                </span>
-                <input
-                  type="text"
-                  value={draftAIConfig.url}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      url: event.target.value,
-                    }))
-                  }
-                  placeholder={
-                    draftAIConfig.provider === "openai"
-                      ? `例如：${DEFAULT_OPENAI_URL}`
-                      : `例如：${DEFAULT_GEMINI_URL}`
-                  }
-                />
-              </label>
-              <label className="ai-config-field">
-                <span>模型</span>
-                <input
-                  type="text"
-                  value={draftAIConfig.model}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      model: event.target.value,
-                    }))
-                  }
-                  placeholder={
-                    draftAIConfig.provider === "openai"
-                      ? "例如：gpt-4.1-mini"
-                      : "例如：gemini-2.5-flash"
-                  }
-                />
-              </label>
-              <label className="ai-config-field">
-                <span>Reasoning 级别</span>
-                <select
-                  value={draftAIConfig.reasoningEffort}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      reasoningEffort: event.target
-                        .value as AIDetectConfig["reasoningEffort"],
-                    }))
-                  }
-                >
-                  {AI_REASONING_EFFORT_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="ai-config-field">
-                <span>失败重试次数（后端）</span>
-                <input
-                  type="number"
-                  min={MIN_AI_RETRY_COUNT}
-                  max={MAX_AI_RETRY_COUNT}
-                  step={1}
-                  value={draftAIConfig.retryCount}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      retryCount: normalizeAIRetryCount(
-                        Number(event.target.value),
-                      ),
-                    }))
-                  }
-                />
-              </label>
-              <label className="ai-config-field">
-                <span>
-                  {draftAIConfig.provider === "openai"
-                    ? "OpenAI API Key"
-                    : "Gemini API Key"}
-                </span>
-                <input
-                  type="password"
-                  value={draftAIConfig.apiKey}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      apiKey: event.target.value,
-                    }))
-                  }
-                  placeholder="请输入 API Key"
-                />
-              </label>
-              <label className="ai-config-field">
-                <span>结果保存字段</span>
-                <select
-                  value={draftAIConfig.resultFieldKey}
-                  onChange={(event) =>
-                    onChangeDraftResultField(event.target.value)
-                  }
-                >
-                  <option value="">请选择</option>
-                  {aiResultFieldColumns.map((column) => (
-                    <option key={column.key} value={column.key}>
-                      {column.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="ai-config-section">
-                <div className="ai-config-section-title">
-                  提交回答字段（可多选）
-                </div>
-                <div className="ai-config-fields">
-                  {aiSubmitFieldColumns.map((column) => {
-                    const checked = draftAIConfig.submitFieldKeys.includes(
-                      column.key,
-                    );
-                    return (
-                      <label key={column.key} className="ai-config-field-item">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() =>
-                            onToggleDraftAISubmitField(column.key)
-                          }
-                        />
-                        <span>{column.title}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              <label className="ai-config-field ai-config-prompt-field">
-                <span>
-                  Prompt（支持变量 <code>{"{{fields_json}}"}</code> /{" "}
-                  <code>{"{{fields_text}}"}</code> /{" "}
-                  <code>{"{{image_fields}}"}</code>）
-                </span>
-                <textarea
-                  value={draftAIConfig.prompt}
-                  onChange={(event) =>
-                    setDraftAIConfig((previous) => ({
-                      ...previous,
-                      prompt: event.target.value,
-                    }))
-                  }
-                  placeholder="请输入提示词"
-                />
-              </label>
-            </div>
-            <div className="column-modal-footer">
-              <button
-                type="button"
-                className="btn"
-                onClick={onCancelAIConfigModal}
-                disabled={aiConfigSaving}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={onSaveAIConfig}
-                disabled={aiConfigSaving}
-              >
-                {aiConfigSaving ? "保存中..." : "保存AI回答配置"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {/* ─── AI Stage Config Modal ─── */}
+      <AIStageConfigModal
+        isOpen={isAIStageConfigModalOpen}
+        activeFile={activeFile}
+        aiConfigFormMessage={aiConfigFormMessage}
+        aiConfigList={aiConfigList}
+        draftAIConfigName={draftAIConfigName}
+        setDraftAIConfigName={setDraftAIConfigName}
+        draftAIConfig={draftAIConfig}
+        setDraftAIConfig={setDraftAIConfig}
+        aiResultFieldColumns={aiResultFieldColumns}
+        aiSubmitFieldColumns={aiSubmitFieldColumns}
+        aiConfigSaving={aiConfigSaving}
+        onToggleDraftAISubmitField={onToggleDraftAISubmitField}
+        onChangeDraftResultField={onChangeDraftResultField}
+        onCancel={onCancelAIStageConfigModal}
+        onSave={onSaveAIConfig}
+      />
+      {/* ─── AI Profile Modal ─── */}
+      <AIProfileModal
+        isOpen={isAIProfileModalOpen}
+        activeFile={activeFile}
+        aiConfigFormMessage={aiConfigFormMessage}
+        aiConfigList={aiConfigList}
+        draftAIConfigName={draftAIConfigName}
+        setDraftAIConfigName={setDraftAIConfigName}
+        draftAIConfig={draftAIConfig}
+        setDraftAIConfig={setDraftAIConfig}
+        aiConfigSaving={aiConfigSaving}
+        onCancel={onCancelAIProfileModal}
+        onSave={onSaveAIConfig}
+      />
+      <AIRunModal
+        isOpen={isAIRunModalOpen}
+        rowId={selectedRow?.rowId}
+        aiConfigList={aiConfigList}
+        selectedAIConfigName={selectedAIConfigName}
+        onSelectAIConfigForRun={onSelectAIConfigForRun}
+        aiStageKey={activeAIStageKey}
+        onSelectAIStage={setActiveAIStageKey}
+        aiConfigLoading={aiConfigLoading}
+        isAIDetecting={isAIDetecting}
+        isAIBatchRunning={isAIBatchRunning}
+        aiDetectElapsedText={aiDetectElapsedText}
+        canRunAIDetect={
+          Boolean(selectedRow) &&
+          !isAIDetecting &&
+          !aiConfigLoading &&
+          !isAIBatchRunning
+        }
+        onRunAIDetect={onRunAIDetect}
+        onSaveAIResult={onSaveAIResult}
+        canSaveAIResult={
+          Boolean(selectedRow) &&
+          !isAIDetecting &&
+          !isAIBatchRunning &&
+          !isSavingAIResult &&
+          hasAISaveContent &&
+          (activeStageConfig?.resultFieldKey ?? "").trim().length > 0
+        }
+        isSavingAIResult={isSavingAIResult}
+        aiResultFieldTitle={aiResultFieldTitle}
+        aiRetryCount={activeProfile?.profile.retryCount ?? 0}
+        aiMergedStreamText={aiMergedStreamText}
+        onAIResultTextChange={(value) => {
+          setAIThinkingText("");
+          setAIResultText(value);
+        }}
+        aiResultMessage={aiResultMessage}
+        aiRequestPreview={aiRequestPreview}
+        onClose={() => setIsAIRunModalOpen(false)}
+      />
 
       {/* ─── Image Lightbox ─── */}
-      {previewImageSrc ? (
-        <div
-          className="lightbox-mask"
-          onClick={() => setPreviewImageSrc(null)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setPreviewImageSrc(null);
-          }}
-          role="button"
-          tabIndex={0}
-        >
-          <img
-            className="lightbox-image"
-            src={previewImageSrc}
-            alt="预览大图"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <button
-            type="button"
-            className="lightbox-close"
-            onClick={() => setPreviewImageSrc(null)}
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
+      <ImageLightbox
+        src={previewImageSrc}
+        onClose={() => setPreviewImageSrc(null)}
+      />
     </div>
   );
 }

@@ -31,21 +31,45 @@ export interface ParsedFile {
 export interface FileViewState extends ParsedFile {
   selectedDisplayColumnKeys: string[];
   selectedEditableColumnKeys: string[];
-  level1Filter: string;
-  level2Filter: string;
-  timeFilter: string;
+  selectedFilterColumnKeys: string[];
+  columnFilterValues: Record<string, string>;
 }
 
-export interface AIDetectConfig {
+export type AIDetectStageKey =
+  | "precheck"
+  | "context_audit"
+  | "independent_solving"
+  | "final_verdict";
+
+export interface AIDetectProfile {
   provider: "openai" | "gemini";
   url: string;
   model: string;
   apiKey: string;
+  reasoningEffort: "low" | "medium" | "high";
+  retryCount: number;
+}
+
+export interface NamedAIDetectProfile {
+  name: string;
+  profile: AIDetectProfile;
+}
+
+export interface AIDetectStageConfig {
+  profileName: string;
   submitFieldKeys: string[];
   prompt: string;
   resultFieldKey: string;
-  reasoningEffort: "low" | "medium" | "high";
-  retryCount: number;
+}
+
+export type AIDetectStageConfigMap = Record<
+  AIDetectStageKey,
+  AIDetectStageConfig
+>;
+
+export interface AIDetectConfig {
+  profiles: NamedAIDetectProfile[];
+  stages: AIDetectStageConfigMap;
 }
 
 export interface NamedAIDetectConfig {

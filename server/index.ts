@@ -111,6 +111,34 @@ function isNonEmptyString(value: unknown): value is string {
 
 type AIReasoningEffort = "low" | "medium" | "high";
 type AIProvider = "openai" | "gemini";
+type AIDetectStageKey =
+  | "precheck"
+  | "context_audit"
+  | "independent_solving"
+  | "final_verdict";
+type AIDetectStageConfig = {
+  provider: AIProvider;
+  url: string;
+  model: string;
+  apiKey: string;
+  submitFieldKeys: string[];
+  prompt: string;
+  resultFieldKey: string;
+  reasoningEffort: AIReasoningEffort;
+  retryCount: number;
+};
+const AI_STAGE_ORDER: AIDetectStageKey[] = [
+  "precheck",
+  "context_audit",
+  "independent_solving",
+  "final_verdict",
+];
+const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
+  precheck: "Pre-check",
+  context_audit: "Context Audit",
+  independent_solving: "Independent Solving",
+  final_verdict: "Final Verdict",
+};
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
@@ -1159,11 +1187,13 @@ app.get("/api/column-prefs/:fileName", (req, res) => {
 
 app.put("/api/column-prefs/:fileName", (req, res) => {
   const { fileName } = req.params;
-  const { fieldSignature, displayKeys, editableKeys } = req.body as {
-    fieldSignature: unknown;
-    displayKeys: unknown;
-    editableKeys: unknown;
-  };
+  const { fieldSignature, displayKeys, editableKeys, filterKeys } =
+    req.body as {
+      fieldSignature: unknown;
+      displayKeys: unknown;
+      editableKeys: unknown;
+      filterKeys?: unknown;
+    };
 
   if (
     typeof fieldSignature !== "string" ||
@@ -1189,11 +1219,21 @@ app.put("/api/column-prefs/:fileName", (req, res) => {
       .status(400)
       .json({ message: "editableKeys must be a string array" });
   }
+  if (
+    filterKeys !== undefined &&
+    (!Array.isArray(filterKeys) ||
+      !filterKeys.every((item) => typeof item === "string"))
+  ) {
+    return res
+      .status(400)
+      .json({ message: "filterKeys must be a string array" });
+  }
 
   saveColumnPrefs(decodeURIComponent(fileName), {
     fieldSignature,
     displayKeys,
     editableKeys,
+    filterKeys: Array.isArray(filterKeys) ? filterKeys : [],
   });
   return res.json({ ok: true });
 });
@@ -1206,34 +1246,30 @@ app.get("/api/ai-config/:fileName", (req, res) => {
     decodeURIComponent(fileName),
   );
   const activeConfig = configs.find((item) => item.name === activeConfigName);
+  const legacyStage =
+    activeConfig?.stages.independent_solving ??
+    activeConfig?.stages.precheck ??
+    null;
   return res.json({
     configs: configs.map((item) => ({
       name: item.name,
-      provider: item.provider,
-      url: item.url,
-      model: item.model,
-      apiKey: item.apiKey,
-      submitFieldKeys: item.submitFieldKeys,
-      prompt: item.prompt,
-      resultFieldKey: item.resultFieldKey,
-      reasoningEffort: item.reasoningEffort,
-      retryCount: item.retryCount,
+      stages: item.stages,
       isActive: item.isActive,
       updatedAt: item.updatedAt,
     })),
     activeConfigName,
     // Keep compatibility with legacy frontend that only reads one config.
-    config: activeConfig
+    config: legacyStage
       ? {
-          provider: activeConfig.provider,
-          url: activeConfig.url,
-          model: activeConfig.model,
-          apiKey: activeConfig.apiKey,
-          submitFieldKeys: activeConfig.submitFieldKeys,
-          prompt: activeConfig.prompt,
-          resultFieldKey: activeConfig.resultFieldKey,
-          reasoningEffort: activeConfig.reasoningEffort,
-          retryCount: activeConfig.retryCount,
+          provider: legacyStage.provider,
+          url: legacyStage.url,
+          model: legacyStage.model,
+          apiKey: legacyStage.apiKey,
+          submitFieldKeys: legacyStage.submitFieldKeys,
+          prompt: legacyStage.prompt,
+          resultFieldKey: legacyStage.resultFieldKey,
+          reasoningEffort: legacyStage.reasoningEffort,
+          retryCount: legacyStage.retryCount,
         }
       : null,
   });
@@ -1243,6 +1279,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   const { fileName } = req.params;
   const {
     name,
+    stages,
     provider,
     url,
     model,
@@ -1265,49 +1302,9 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     reasoningEffort?: unknown;
     retryCount?: unknown;
     setActive?: unknown;
+    stages?: unknown;
   };
 
-  const normalizedProvider: AIProvider = isAIProvider(provider)
-    ? provider
-    : provider === "vertex"
-      ? "gemini"
-      : "openai";
-
-  if (url !== undefined && typeof url !== "string") {
-    return res.status(400).json({ message: "url must be a string" });
-  }
-  if (apiKey !== undefined && typeof apiKey !== "string") {
-    return res.status(400).json({ message: "apiKey must be a string" });
-  }
-  if (!isNonEmptyString(model)) {
-    return res
-      .status(400)
-      .json({ message: "model must be a non-empty string" });
-  }
-  if (!isNonEmptyString(url)) {
-    return res.status(400).json({ message: "url must be a non-empty string" });
-  }
-  if (!isNonEmptyString(apiKey)) {
-    return res
-      .status(400)
-      .json({ message: "apiKey must be a non-empty string" });
-  }
-  if (
-    !Array.isArray(submitFieldKeys) ||
-    !submitFieldKeys.every((item) => typeof item === "string")
-  ) {
-    return res
-      .status(400)
-      .json({ message: "submitFieldKeys must be a string array" });
-  }
-  if (!isNonEmptyString(prompt)) {
-    return res
-      .status(400)
-      .json({ message: "prompt must be a non-empty string" });
-  }
-  if (resultFieldKey !== undefined && typeof resultFieldKey !== "string") {
-    return res.status(400).json({ message: "resultFieldKey must be a string" });
-  }
   if (name !== undefined && typeof name !== "string") {
     return res.status(400).json({ message: "name must be a string" });
   }
@@ -1317,38 +1314,219 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   if (setActive !== undefined && typeof setActive !== "boolean") {
     return res.status(400).json({ message: "setActive must be a boolean" });
   }
-  if (reasoningEffort !== undefined && !isAIReasoningEffort(reasoningEffort)) {
-    return res
-      .status(400)
-      .json({ message: "reasoningEffort must be low, medium or high" });
-  }
-  if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
-    return res.status(400).json({
-      message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
-    });
-  }
 
   const configName =
     typeof name === "string" && name.trim().length > 0
       ? name.trim()
       : DEFAULT_AI_CONFIG_NAME;
-  const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
-    ? reasoningEffort
-    : "high";
-  const normalizedRetryCount = normalizeAIRetryCount(retryCount);
+
+  let normalizedStages: Record<AIDetectStageKey, AIDetectStageConfig> | null =
+    null;
+
+  if (stages && typeof stages === "object") {
+    const rawStages = stages as Record<string, unknown>;
+    const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+
+    for (const stageKey of AI_STAGE_ORDER) {
+      const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
+      const stageValue = rawStages[stageKey];
+      if (!stageValue || typeof stageValue !== "object") {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} config must be an object` });
+      }
+      const stage = stageValue as {
+        provider?: unknown;
+        url?: unknown;
+        model?: unknown;
+        apiKey?: unknown;
+        submitFieldKeys?: unknown;
+        prompt?: unknown;
+        resultFieldKey?: unknown;
+        reasoningEffort?: unknown;
+        retryCount?: unknown;
+      };
+
+      const normalizedProvider: AIProvider = isAIProvider(stage.provider)
+        ? stage.provider
+        : stage.provider === "vertex"
+          ? "gemini"
+          : "openai";
+
+      if (stage.url !== undefined && typeof stage.url !== "string") {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} url must be a string` });
+      }
+      if (stage.apiKey !== undefined && typeof stage.apiKey !== "string") {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} apiKey must be a string` });
+      }
+      if (!isNonEmptyString(stage.model)) {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} model must be a non-empty string` });
+      }
+      if (!isNonEmptyString(stage.url)) {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} url must be a non-empty string` });
+      }
+      if (!isNonEmptyString(stage.apiKey)) {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} apiKey must be a non-empty string` });
+      }
+      if (
+        !Array.isArray(stage.submitFieldKeys) ||
+        !stage.submitFieldKeys.every((item) => typeof item === "string")
+      ) {
+        return res.status(400).json({
+          message: `${stageLabel} submitFieldKeys must be a string array`,
+        });
+      }
+      if (!isNonEmptyString(stage.prompt)) {
+        return res
+          .status(400)
+          .json({ message: `${stageLabel} prompt must be a non-empty string` });
+      }
+      if (
+        stage.resultFieldKey !== undefined &&
+        typeof stage.resultFieldKey !== "string"
+      ) {
+        return res.status(400).json({
+          message: `${stageLabel} resultFieldKey must be a string`,
+        });
+      }
+      if (
+        stage.reasoningEffort !== undefined &&
+        !isAIReasoningEffort(stage.reasoningEffort)
+      ) {
+        return res.status(400).json({
+          message: `${stageLabel} reasoningEffort must be low, medium or high`,
+        });
+      }
+      if (
+        stage.retryCount !== undefined &&
+        !isValidAIRetryCount(stage.retryCount)
+      ) {
+        return res.status(400).json({
+          message: `${stageLabel} retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+        });
+      }
+
+      stageMap[stageKey] = {
+        provider: normalizedProvider,
+        url: stage.url as string,
+        model: stage.model as string,
+        apiKey: stage.apiKey as string,
+        submitFieldKeys: stage.submitFieldKeys as string[],
+        prompt: stage.prompt as string,
+        resultFieldKey:
+          typeof stage.resultFieldKey === "string" ? stage.resultFieldKey : "",
+        reasoningEffort: isAIReasoningEffort(stage.reasoningEffort)
+          ? stage.reasoningEffort
+          : "high",
+        retryCount: normalizeAIRetryCount(stage.retryCount),
+      };
+    }
+
+    normalizedStages = stageMap;
+  } else {
+    const normalizedProvider: AIProvider = isAIProvider(provider)
+      ? provider
+      : provider === "vertex"
+        ? "gemini"
+        : "openai";
+
+    if (url !== undefined && typeof url !== "string") {
+      return res.status(400).json({ message: "url must be a string" });
+    }
+    if (apiKey !== undefined && typeof apiKey !== "string") {
+      return res.status(400).json({ message: "apiKey must be a string" });
+    }
+    if (!isNonEmptyString(model)) {
+      return res
+        .status(400)
+        .json({ message: "model must be a non-empty string" });
+    }
+    if (!isNonEmptyString(url)) {
+      return res
+        .status(400)
+        .json({ message: "url must be a non-empty string" });
+    }
+    if (!isNonEmptyString(apiKey)) {
+      return res
+        .status(400)
+        .json({ message: "apiKey must be a non-empty string" });
+    }
+    if (
+      !Array.isArray(submitFieldKeys) ||
+      !submitFieldKeys.every((item) => typeof item === "string")
+    ) {
+      return res
+        .status(400)
+        .json({ message: "submitFieldKeys must be a string array" });
+    }
+    if (!isNonEmptyString(prompt)) {
+      return res
+        .status(400)
+        .json({ message: "prompt must be a non-empty string" });
+    }
+    if (resultFieldKey !== undefined && typeof resultFieldKey !== "string") {
+      return res
+        .status(400)
+        .json({ message: "resultFieldKey must be a string" });
+    }
+    if (
+      reasoningEffort !== undefined &&
+      !isAIReasoningEffort(reasoningEffort)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "reasoningEffort must be low, medium or high" });
+    }
+    if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
+      return res.status(400).json({
+        message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+      });
+    }
+
+    const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
+      ? reasoningEffort
+      : "high";
+    const normalizedRetryCount = normalizeAIRetryCount(retryCount);
+    const baseStage: AIDetectStageConfig = {
+      provider: normalizedProvider,
+      url: typeof url === "string" ? url : "",
+      model: model as string,
+      apiKey: typeof apiKey === "string" ? apiKey : "",
+      submitFieldKeys: submitFieldKeys as string[],
+      prompt: prompt as string,
+      resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
+      reasoningEffort: normalizedReasoningEffort,
+      retryCount: normalizedRetryCount,
+    };
+    const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stageMap[stageKey] = {
+        ...baseStage,
+        submitFieldKeys: [...baseStage.submitFieldKeys],
+      };
+    });
+    normalizedStages = stageMap;
+  }
+
+  if (!normalizedStages) {
+    return res.status(400).json({ message: "stages is required" });
+  }
+
   saveAIDetectConfig(
     decodeURIComponent(fileName),
     configName,
     {
-      provider: normalizedProvider,
-      url: typeof url === "string" ? url : "",
-      model,
-      apiKey: typeof apiKey === "string" ? apiKey : "",
-      submitFieldKeys,
-      prompt,
-      resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
-      reasoningEffort: normalizedReasoningEffort,
-      retryCount: normalizedRetryCount,
+      stages: normalizedStages,
     },
     {
       setActive: setActive !== false,
