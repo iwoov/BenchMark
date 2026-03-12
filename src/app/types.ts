@@ -11,6 +11,7 @@ export type SettingsSection = "fields" | "ai";
 export interface RouteState {
   section: MainSection;
   settingsSection: SettingsSection;
+  rowId?: string | null;
 }
 
 export interface AIDetectFieldPayload {

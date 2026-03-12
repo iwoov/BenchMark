@@ -83,7 +83,7 @@ function App() {
   const initialRoute: RouteState =
     typeof window !== "undefined"
       ? parseHashRoute(window.location.hash)
-      : { section: "list", settingsSection: "fields" };
+      : { section: "list", settingsSection: "fields", rowId: null };
   const [files, setFiles] = useState<FileViewState[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -132,7 +132,10 @@ function App() {
   const [aiBatchConcurrency, setAIBatchConcurrency] = useState<number>(
     DEFAULT_AI_BATCH_CONCURRENCY,
   );
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(
+    initialRoute.rowId ?? null,
+  );
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [batchSelectedRowIds, setBatchSelectedRowIds] = useState<string[]>([]);
   const [pendingFile, setPendingFile] = useState<ParsedFile | null>(null);
   const [pendingSelectedDisplayKeys, setPendingSelectedDisplayKeys] = useState<
@@ -190,6 +193,7 @@ function App() {
           signal: controller.signal,
         });
         if (!response.ok) {
+          setInitialLoadComplete(true);
           return;
         }
 
@@ -199,7 +203,12 @@ function App() {
           .map((item) => normalizeLoadedFileState(item))
           .filter((item): item is FileViewState => item !== null);
 
-        if (disposed || restoredFiles.length === 0) {
+        if (disposed) {
+          return;
+        }
+
+        if (restoredFiles.length === 0) {
+          setInitialLoadComplete(true);
           return;
         }
 
@@ -214,8 +223,12 @@ function App() {
           return Array.from(merged.values());
         });
         setActiveFileId((previous) => previous ?? restoredFiles[0].fileId);
+        setInitialLoadComplete(true);
       } catch {
         // Ignore load errors and keep empty startup state.
+        if (!disposed) {
+          setInitialLoadComplete(true);
+        }
       }
     };
 
@@ -248,9 +261,10 @@ function App() {
   const navigateToSection = (
     section: MainSection,
     settingsSection: SettingsSection = activeSettingsSection,
+    rowId?: string | null,
     options?: { replace?: boolean },
   ) => {
-    const nextHash = buildHashRoute(section, settingsSection);
+    const nextHash = buildHashRoute(section, settingsSection, rowId);
     if (typeof window !== "undefined" && window.location.hash !== nextHash) {
       if (options?.replace) {
         window.history.replaceState(null, "", nextHash);
@@ -280,6 +294,10 @@ function App() {
       const nextRoute = parseHashRoute(window.location.hash);
       setActiveSection(nextRoute.section);
       setActiveSettingsSection(nextRoute.settingsSection);
+      // Restore row ID from URL for detail page
+      if (nextRoute.section === "detail" && nextRoute.rowId) {
+        setSelectedRowId(nextRoute.rowId);
+      }
     };
 
     window.addEventListener("hashchange", syncRouteState);
@@ -291,10 +309,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!activeFile) {
-      navigateToSection("list", activeSettingsSection, { replace: true });
+    // Only redirect to list after initial load completes and there's still no activeFile
+    if (initialLoadComplete && !activeFile) {
+      navigateToSection("list", activeSettingsSection, null, { replace: true });
     }
-  }, [activeFile]);
+  }, [activeFile, initialLoadComplete]);
 
   useEffect(() => {
     if (!activeFile) {
@@ -589,11 +608,12 @@ function App() {
   }, [listPage, totalListPages]);
 
   useEffect(() => {
+    // Don't clear selectedRowId if file hasn't loaded yet (preserves URL state)
     if (!activeFile || visibleRows.length === 0) {
-      setSelectedRowId(null);
       return;
     }
 
+    // Only clear selectedRowId if it's not found in the loaded rows
     if (
       selectedRowId !== null &&
       !visibleRows.some((row) => row.rowId === selectedRowId)
@@ -642,7 +662,7 @@ function App() {
 
   const openRowDetail = (rowId: string) => {
     setSelectedRowId(rowId);
-    navigateToSection("detail");
+    navigateToSection("detail", activeSettingsSection, rowId);
   };
 
   const activeRowIndex = selectedRow
@@ -672,7 +692,10 @@ function App() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ state: file }),
-    }).catch(() => {});
+    }).catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error("[PersistFileState] Failed to save file state:", error);
+    });
   };
 
   const cancelScheduledPersist = (fileId: string) => {
@@ -784,7 +807,8 @@ function App() {
     );
 
     if (nextFileToPersist) {
-      schedulePersistFileState(nextFileToPersist);
+      // Persist AI results immediately (no delay) to ensure data is saved
+      persistFileState(nextFileToPersist);
     }
   };
 
@@ -1158,11 +1182,34 @@ function App() {
       return;
     }
 
+    // For final_verdict stage, check if independent_solving result exists
+    if (activeAIStageKey === "final_verdict") {
+      const independentSolvingResult =
+        selectedRow.aiResults?.independent_solving?.trim() ?? "";
+      if (independentSolvingResult.length === 0) {
+        setAIResultMessage(
+          "请先执行第三阶段（Independent Solving），Final Verdict 需要依赖其结果",
+        );
+        return;
+      }
+    }
+
     const fields = buildAIDetectFieldsForRow(
       activeFile.columns,
       selectedRow,
       stageConfig.submitFieldKeys,
     );
+
+    // For final_verdict, add the independent_solving result as a field
+    if (activeAIStageKey === "final_verdict") {
+      const independentSolvingResult =
+        selectedRow.aiResults?.independent_solving ?? "";
+      fields.push({
+        title: "AI独立解题结果（第三阶段）",
+        type: "text",
+        value: independentSolvingResult,
+      });
+    }
 
     if (fields.length === 0) {
       setAIResultMessage("当前记录没有可提交的回答字段");
@@ -1280,7 +1327,8 @@ function App() {
     );
 
     if (nextFileToPersist) {
-      schedulePersistFileState(nextFileToPersist);
+      // Persist batch AI results immediately to ensure data is saved
+      persistFileState(nextFileToPersist);
     }
   };
 
@@ -1341,6 +1389,21 @@ function App() {
     if (stageConfig.prompt.trim().length === 0) {
       setErrorMessage("请先配置 Prompt");
       return;
+    }
+
+    // For final_verdict batch, check if independent_solving results exist
+    if (activeAIStageKey === "final_verdict") {
+      const rowsWithoutIndependentSolving = activeFile.rows.filter(
+        (row) =>
+          !row.aiResults?.independent_solving ||
+          row.aiResults.independent_solving.trim().length === 0,
+      );
+      if (rowsWithoutIndependentSolving.length > 0) {
+        setErrorMessage(
+          `有 ${rowsWithoutIndependentSolving.length} 条记录缺少第三阶段（Independent Solving）结果，请先执行第三阶段`,
+        );
+        return;
+      }
     }
 
     const rowIdSet = new Set(activeFile.rows.map((row) => row.rowId));
@@ -1410,6 +1473,18 @@ function App() {
             row,
             stageConfig.submitFieldKeys,
           );
+
+          // For final_verdict, add the independent_solving result as a field
+          if (activeAIStageKey === "final_verdict") {
+            const independentSolvingResult =
+              row.aiResults?.independent_solving ?? "";
+            fields.push({
+              title: "AI独立解题结果（第三阶段）",
+              type: "text",
+              value: independentSolvingResult,
+            });
+          }
+
           if (fields.length === 0) {
             throw new Error("没有可提交的回答字段");
           }
@@ -2106,10 +2181,15 @@ function App() {
 
   const renderListReadonlyCell = (row: ParsedRow, column: ParsedColumn) => {
     const cell = row.values[column.key];
-    // Hide filename text for image columns on list page (show "-" instead)
+    // For image columns, show filename text only (no image rendering)
     const isImageColumn = /图片/.test(column.title);
-    if (isImageColumn && cell?.type === "text") {
-      return <span className="empty-text">-</span>;
+    if (isImageColumn) {
+      const textValue = cell?.value?.trim() || "";
+      return textValue ? (
+        <div className="plain-text-value">{textValue}</div>
+      ) : (
+        <span className="empty-text">-</span>
+      );
     }
     return renderReadonlyCell(
       row,
