@@ -304,7 +304,12 @@ function getImageSearchRoots(): string[] {
   const cwd = process.cwd();
   roots.push(cwd);
 
-  const home = process.env.HOME?.trim();
+  const home =
+    process.env.HOME?.trim() ||
+    process.env.USERPROFILE?.trim() ||
+    (process.env.HOMEDRIVE && process.env.HOMEPATH
+      ? path.join(process.env.HOMEDRIVE, process.env.HOMEPATH)
+      : "");
   if (home) {
     roots.push(path.resolve(home, "Downloads"));
     roots.push(path.resolve(home, "Desktop"));
@@ -410,6 +415,12 @@ function normalizeHyperlinkToAbsolutePath(
       hyperlinkPathCache.set(trimmed, null);
       return null;
     }
+  }
+
+  const normalizedWindowsPath = normalizeWindowsDrivePath(trimmed);
+  if (normalizedWindowsPath) {
+    hyperlinkPathCache.set(trimmed, normalizedWindowsPath);
+    return normalizedWindowsPath;
   }
 
   if (path.isAbsolute(trimmed) || /^[a-zA-Z]:[\\/]/.test(trimmed)) {

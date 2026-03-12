@@ -18,10 +18,6 @@ interface AIRunModalProps {
   aiDetectElapsedText: string;
   canRunAIDetect: boolean;
   onRunAIDetect: () => void;
-  onSaveAIResult: () => void;
-  canSaveAIResult: boolean;
-  isSavingAIResult: boolean;
-  aiResultFieldTitle: string;
   aiRetryCount: number;
   aiMergedStreamText: string;
   onAIResultTextChange: (value: string) => void;
@@ -44,10 +40,6 @@ export function AIRunModal({
   aiDetectElapsedText,
   canRunAIDetect,
   onRunAIDetect,
-  onSaveAIResult,
-  canSaveAIResult,
-  isSavingAIResult,
-  aiResultFieldTitle,
   aiRetryCount,
   aiMergedStreamText,
   onAIResultTextChange,
@@ -124,18 +116,7 @@ export function AIRunModal({
           >
             {isAIDetecting ? `AI回答中 ${aiDetectElapsedText}` : "运行AI阶段"}
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={onSaveAIResult}
-            disabled={!canSaveAIResult}
-          >
-            {isSavingAIResult ? "保存中..." : "保存AI回答"}
-          </button>
           <div className="ai-result-target">
-            <span>保存字段：</span>
-            <strong>{aiResultFieldTitle || "未配置"}</strong>
-            <span className="ai-target-sep">|</span>
             <span>重试：</span>
             <strong className="ai-retry-count">{aiRetryCount}次</strong>
           </div>
@@ -164,7 +145,7 @@ export function AIRunModal({
               className="ai-preview-textarea"
               value={aiMergedStreamText}
               onChange={(event) => onAIResultTextChange(event.target.value)}
-              placeholder="点击“运行AI检测”后，这里会显示响应内容，可编辑后保存。"
+              placeholder="点击“运行AI阶段”后，这里会显示响应内容，可手动复制。"
             />
           ) : (
             <pre className="ai-preview-content">

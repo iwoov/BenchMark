@@ -4,10 +4,9 @@ import type {
   ParsedColumn,
   ParsedFile,
   ParsedRow,
+  AIDetectStageKey,
 } from "../types";
 import {
-  AI_RESULT_WITH_CONFIG_COLUMN_KEY,
-  AI_RESULT_WITH_CONFIG_COLUMN_TITLE,
   ALL_FILTER_VALUE,
   CREATOR_TITLE_ALIASES,
   FEEDBACK_TITLE_ALIASES,
@@ -15,7 +14,11 @@ import {
   OPENSOURCE_TITLE_ALIASES,
   QUALIFIED_TITLE_ALIASES,
   TIME_TITLE_ALIASES,
+  AI_STAGE_ORDER,
 } from "./constants";
+
+const LEGACY_AI_RESULT_WITH_CONFIG_KEY = "__ai_result_with_config__";
+const LEGACY_AI_RESULT_WITH_CONFIG_TITLE = "AI解析结果+AI配置名";
 
 export function normalizeHeaderTitle(value: string): string {
   return value.replace(/\s+/g, "").toLowerCase();
@@ -29,6 +32,45 @@ function matchesHeaderAlias(
   return aliases.some(
     (alias) => normalizeHeaderTitle(alias) === normalizedTitle,
   );
+}
+
+function isLegacyAIResultColumn(column: ParsedColumn): boolean {
+  if (column.key === LEGACY_AI_RESULT_WITH_CONFIG_KEY) {
+    return true;
+  }
+  return (
+    normalizeHeaderTitle(column.title) ===
+    normalizeHeaderTitle(LEGACY_AI_RESULT_WITH_CONFIG_TITLE)
+  );
+}
+
+function stripLegacyAIResultColumn(parsed: ParsedFile): ParsedFile {
+  const legacyColumns = parsed.columns.filter((column) =>
+    isLegacyAIResultColumn(column),
+  );
+  if (legacyColumns.length === 0) {
+    return parsed;
+  }
+  const removedKeys = new Set(legacyColumns.map((column) => column.key));
+  const columns = parsed.columns.filter(
+    (column) => !removedKeys.has(column.key),
+  );
+  const rows = parsed.rows.map((row) => {
+    const nextValues = { ...row.values };
+    let changed = false;
+    removedKeys.forEach((key) => {
+      if (key in nextValues) {
+        delete nextValues[key];
+        changed = true;
+      }
+    });
+    return changed ? { ...row, values: nextValues } : row;
+  });
+  return {
+    ...parsed,
+    columns,
+    rows,
+  };
 }
 
 export function isQualifiedColumnTitle(columnTitle: string): boolean {
@@ -133,75 +175,13 @@ export function getAllColumnKeys(columns: ParsedColumn[]): string[] {
   return columns.map((column) => column.key);
 }
 
-export function isAIResultWithConfigColumn(column: ParsedColumn): boolean {
-  if (column.key === AI_RESULT_WITH_CONFIG_COLUMN_KEY) {
-    return true;
-  }
-  return (
-    normalizeHeaderTitle(column.title) ===
-    normalizeHeaderTitle(AI_RESULT_WITH_CONFIG_COLUMN_TITLE)
-  );
-}
-
-export function getAIResultWithConfigColumn(
-  columns: ParsedColumn[],
-): ParsedColumn | null {
-  return columns.find((column) => isAIResultWithConfigColumn(column)) ?? null;
-}
-
-function ensureAIResultWithConfigColumn(parsed: ParsedFile): ParsedFile {
-  const existingColumn = getAIResultWithConfigColumn(parsed.columns);
-  const targetColumn =
-    existingColumn ??
-    ({
-      key: AI_RESULT_WITH_CONFIG_COLUMN_KEY,
-      title: AI_RESULT_WITH_CONFIG_COLUMN_TITLE,
-      editable: true,
-      required: false,
-    } as ParsedColumn);
-  const columns = existingColumn
-    ? parsed.columns
-    : [...parsed.columns, targetColumn];
-  const targetKey = targetColumn.key;
-  const rows = parsed.rows.map((row) => {
-    if (row.values[targetKey]) {
-      return row;
-    }
-    return {
-      ...row,
-      values: {
-        ...row.values,
-        [targetKey]: {
-          type: "text",
-          value: "",
-        } as ParsedCell,
-      },
-    };
-  });
-
-  if (
-    columns === parsed.columns &&
-    rows.every((row, index) => row === parsed.rows[index])
-  ) {
-    return parsed;
-  }
-  return {
-    ...parsed,
-    columns,
-    rows,
-  };
-}
-
 export function isFilterColumnTitle(columnTitle: string): boolean {
   const normalized = normalizeHeaderTitle(columnTitle);
   return normalized === "level1" || normalized === "level2";
 }
 
 export function getFieldSignature(columns: ParsedColumn[]): string {
-  return columns
-    .filter((column) => !isAIResultWithConfigColumn(column))
-    .map((column) => normalizeHeaderTitle(column.title))
-    .join("|");
+  return columns.map((column) => normalizeHeaderTitle(column.title)).join("|");
 }
 
 export function normalizeColumnSelection(
@@ -218,13 +198,6 @@ export function normalizeColumnSelection(
   let editableKeys = deduplicateKeys(selectedEditableColumnKeys ?? []).filter(
     (key) => allowedKeys.has(key),
   );
-  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
-  if (
-    aiResultWithConfigColumn &&
-    !editableKeys.includes(aiResultWithConfigColumn.key)
-  ) {
-    editableKeys = [...editableKeys, aiResultWithConfigColumn.key];
-  }
 
   const displaySourceKeys = selectedDisplayColumnKeys ?? allColumnKeys;
   const displaySet = new Set(
@@ -267,14 +240,14 @@ export function toViewState(
   selectedFilterColumnKeys?: string[],
   filterValues?: Record<string, string>,
 ): FileViewState {
-  const nextParsed = ensureAIResultWithConfigColumn(parsed);
+  const cleanedParsed = stripLegacyAIResultColumn(parsed);
   const normalized = normalizeColumnSelection(
-    nextParsed.columns,
+    cleanedParsed.columns,
     selectedDisplayColumnKeys,
     selectedEditableColumnKeys,
   );
   const normalizedFilterKeys = normalizeFilterSelection(
-    nextParsed.columns,
+    cleanedParsed.columns,
     selectedFilterColumnKeys,
   );
   const columnFilterValues: Record<string, string> = {};
@@ -284,8 +257,11 @@ export function toViewState(
       typeof value === "string" ? value : ALL_FILTER_VALUE;
   });
   return {
-    ...nextParsed,
-    columns: applyEditableConfig(nextParsed.columns, normalized.editableKeys),
+    ...cleanedParsed,
+    columns: applyEditableConfig(
+      cleanedParsed.columns,
+      normalized.editableKeys,
+    ),
     selectedDisplayColumnKeys: normalized.displayKeys,
     selectedEditableColumnKeys: normalized.editableKeys,
     selectedFilterColumnKeys: normalizedFilterKeys,
@@ -341,6 +317,23 @@ function toSafeStringRecord(value: unknown): Record<string, string> {
   entries.forEach(([key, item]) => {
     if (typeof item === "string") {
       result[key] = item;
+    }
+  });
+  return result;
+}
+
+function normalizeRowAIResults(
+  value: unknown,
+): Partial<Record<AIDetectStageKey, string>> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const result: Partial<Record<AIDetectStageKey, string>> = {};
+  const raw = value as Record<string, unknown>;
+  AI_STAGE_ORDER.forEach((stageKey) => {
+    const item = raw[stageKey];
+    if (typeof item === "string") {
+      result[stageKey] = item;
     }
   });
   return result;
@@ -475,6 +468,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
       return {
         rowId: item.rowId,
         values,
+        aiResults: normalizeRowAIResults(item.aiResults),
       };
     })
     .filter((row): row is ParsedRow => row !== null);
@@ -487,14 +481,15 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
     level1Options: toSafeStringArray(candidate.level1Options),
     level2Options: toSafeStringArray(candidate.level2Options),
   };
+  const cleanedParsed = stripLegacyAIResultColumn(parsed);
 
-  const level1Key = getLevelColumnKey(columns, "level1");
-  const level2Key = getLevelColumnKey(columns, "level2");
-  if (parsed.level1Options.length === 0) {
-    parsed.level1Options = getDistinctOptions(rows, level1Key);
+  const level1Key = getLevelColumnKey(cleanedParsed.columns, "level1");
+  const level2Key = getLevelColumnKey(cleanedParsed.columns, "level2");
+  if (cleanedParsed.level1Options.length === 0) {
+    cleanedParsed.level1Options = getDistinctOptions(rows, level1Key);
   }
-  if (parsed.level2Options.length === 0) {
-    parsed.level2Options = getDistinctOptions(rows, level2Key);
+  if (cleanedParsed.level2Options.length === 0) {
+    cleanedParsed.level2Options = getDistinctOptions(rows, level2Key);
   }
 
   const hasDisplayKeys = Array.isArray(candidate.selectedDisplayColumnKeys);
@@ -510,23 +505,25 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
       : undefined;
   const editableKeysFromState = hasEditableKeys
     ? toSafeStringArray(candidate.selectedEditableColumnKeys)
-    : columns.filter((column) => column.editable).map((column) => column.key);
+    : cleanedParsed.columns
+        .filter((column) => column.editable)
+        .map((column) => column.key);
   const filterKeysFromState = Array.isArray(candidate.selectedFilterColumnKeys)
     ? toSafeStringArray(candidate.selectedFilterColumnKeys)
     : undefined;
   const rawFilterValues = toSafeStringRecord(candidate.columnFilterValues);
 
   const normalized = toViewState(
-    parsed,
+    cleanedParsed,
     displayKeysFromState,
     editableKeysFromState,
     filterKeysFromState,
     rawFilterValues,
   );
   const legacyFilterValues: Record<string, string> = {};
-  const legacyLevel1Key = getLevelColumnKey(columns, "level1");
-  const legacyLevel2Key = getLevelColumnKey(columns, "level2");
-  const legacyTimeKey = columns.find((column) =>
+  const legacyLevel1Key = getLevelColumnKey(cleanedParsed.columns, "level1");
+  const legacyLevel2Key = getLevelColumnKey(cleanedParsed.columns, "level2");
+  const legacyTimeKey = cleanedParsed.columns.find((column) =>
     isTimeColumnTitle(column.title),
   )?.key;
   if (typeof candidate.level1Filter === "string" && legacyLevel1Key) {

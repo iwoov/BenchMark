@@ -29,14 +29,7 @@ import type {
   AIDetectFieldPayload,
   AIDetectStreamResult,
 } from "./types";
-import {
-  getCellImageSources,
-  getAIResultWithConfigColumn,
-  isFeedbackColumnTitle,
-  isInspectorColumnTitle,
-  isOpensourceColumnTitle,
-  isQualifiedColumnTitle,
-} from "./file-helpers";
+import { getCellImageSources } from "./file-helpers";
 
 export function getDefaultAIUrl(provider: AIDetectProfile["provider"]): string {
   return provider === "openai" ? DEFAULT_OPENAI_URL : DEFAULT_GEMINI_URL;
@@ -105,20 +98,6 @@ export function composeAISaveText(
     return `【思考过程】\n${thinkingText}`;
   }
   return `【思考过程】\n${thinkingText}\n\n【AI结果】\n${answerText}`;
-}
-
-export function composeAISaveTextWithConfigName(
-  answerText: string,
-  thinkingText: string,
-  configName: string,
-): string {
-  const content = composeAISaveText(answerText, thinkingText).trim();
-  if (content.length === 0) {
-    return "";
-  }
-  const normalizedConfigName =
-    configName.trim().length > 0 ? configName.trim() : DEFAULT_AI_CONFIG_NAME;
-  return `【AI配置】${normalizedConfigName}\n${content}`;
 }
 
 export function cloneAIDetectProfile(
@@ -272,10 +251,6 @@ function normalizeLoadedAIDetectStageConfig(
       typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
         ? candidate.prompt
         : fallback.prompt,
-    resultFieldKey:
-      typeof candidate.resultFieldKey === "string"
-        ? candidate.resultFieldKey
-        : "",
   };
 }
 
@@ -415,30 +390,6 @@ export function normalizeLoadedNamedAIDetectConfigs(
   return result;
 }
 
-function getDefaultResultFieldKey(columns: ParsedColumn[]): string {
-  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
-  if (aiResultWithConfigColumn) {
-    return aiResultWithConfigColumn.key;
-  }
-  const feedbackEditable = columns.find(
-    (column) => column.editable && isFeedbackColumnTitle(column.title),
-  );
-  if (feedbackEditable) {
-    return feedbackEditable.key;
-  }
-  const firstEditable = columns.find((column) => column.editable);
-  return firstEditable?.key ?? "";
-}
-
-function isLegacyAIDetectResultColumnTitle(columnTitle: string): boolean {
-  return (
-    isOpensourceColumnTitle(columnTitle) ||
-    isQualifiedColumnTitle(columnTitle) ||
-    isInspectorColumnTitle(columnTitle) ||
-    isFeedbackColumnTitle(columnTitle)
-  );
-}
-
 function normalizeAIDetectStageConfigForColumns(
   config: AIDetectStageConfig,
   columns: ParsedColumn[],
@@ -447,27 +398,9 @@ function normalizeAIDetectStageConfigForColumns(
   const submitFieldKeys = config.submitFieldKeys.filter((key) =>
     keySet.has(key),
   );
-  const editableKeySet = new Set(
-    columns.filter((column) => column.editable).map((column) => column.key),
-  );
-  const aiResultWithConfigColumn = getAIResultWithConfigColumn(columns);
-  const currentResultColumn = columns.find(
-    (column) => column.key === config.resultFieldKey,
-  );
-  const shouldMigrateLegacyResultField =
-    aiResultWithConfigColumn !== null &&
-    currentResultColumn !== undefined &&
-    isLegacyAIDetectResultColumnTitle(currentResultColumn.title);
-  const nextResultFieldKey = shouldMigrateLegacyResultField
-    ? aiResultWithConfigColumn.key
-    : editableKeySet.has(config.resultFieldKey)
-      ? config.resultFieldKey
-      : getDefaultResultFieldKey(columns);
-
   return {
     ...config,
     submitFieldKeys,
-    resultFieldKey: nextResultFieldKey,
   };
 }
 

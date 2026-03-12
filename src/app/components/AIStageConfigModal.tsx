@@ -18,14 +18,9 @@ interface AIStageConfigModalProps {
   setDraftAIConfigName: (value: string) => void;
   draftAIConfig: AIDetectConfig;
   setDraftAIConfig: Dispatch<SetStateAction<AIDetectConfig>>;
-  aiResultFieldColumns: ParsedColumn[];
   aiSubmitFieldColumns: ParsedColumn[];
   aiConfigSaving: boolean;
   onToggleDraftAISubmitField: (
-    stageKey: AIDetectStageKey,
-    columnKey: string,
-  ) => void;
-  onChangeDraftResultField: (
     stageKey: AIDetectStageKey,
     columnKey: string,
   ) => void;
@@ -42,11 +37,9 @@ export function AIStageConfigModal({
   setDraftAIConfigName,
   draftAIConfig,
   setDraftAIConfig,
-  aiResultFieldColumns,
   aiSubmitFieldColumns,
   aiConfigSaving,
   onToggleDraftAISubmitField,
-  onChangeDraftResultField,
   onCancel,
   onSave,
 }: AIStageConfigModalProps) {
@@ -155,22 +148,12 @@ export function AIStageConfigModal({
               <small className="ai-config-hint">尚未配置接口</small>
             )}
           </label>
-          <label className="ai-config-field">
-            <span>结果保存字段</span>
-            <select
-              value={stageConfig.resultFieldKey}
-              onChange={(event) =>
-                onChangeDraftResultField(activeStageKey, event.target.value)
-              }
-            >
-              <option value="">请选择</option>
-              {aiResultFieldColumns.map((column) => (
-                <option key={column.key} value={column.key}>
-                  {column.title}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="ai-config-field">
+            <span>结果保存</span>
+            <div className="ai-config-hint">
+              AI 检测结果将直接写入“AI检测结果”区域，不再保存到 Excel 字段。
+            </div>
+          </div>
           <div className="ai-config-section">
             <div className="ai-config-section-title">
               提交回答字段（可多选）

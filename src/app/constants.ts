@@ -18,8 +18,6 @@ export const FEEDBACK_TITLE_ALIASES = [
   "质检员业务反馈意见",
 ] as const;
 export const OPENSOURCE_TITLE_ALIASES = ["是否开源"] as const;
-export const AI_RESULT_WITH_CONFIG_COLUMN_KEY = "__ai_result_with_config__";
-export const AI_RESULT_WITH_CONFIG_COLUMN_TITLE = "AI解析结果+AI配置名";
 
 export const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
 export const DEFAULT_GEMINI_URL =
@@ -87,7 +85,6 @@ export const DEFAULT_AI_PROFILES: NamedAIDetectProfile[] = [
 const DEFAULT_AI_STAGE_BASE: Omit<AIDetectStageConfig, "prompt"> = {
   profileName: DEFAULT_AI_PROFILE_NAME,
   submitFieldKeys: [],
-  resultFieldKey: "",
 };
 
 export const DEFAULT_AI_STAGE_CONFIGS: AIDetectStageConfigMap = {

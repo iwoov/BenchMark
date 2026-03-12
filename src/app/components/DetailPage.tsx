@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import type { ParsedColumn, ParsedRow } from "../../types";
+import type { AIDetectStageKey, ParsedColumn, ParsedRow } from "../../types";
 import { IconChevron } from "../icons";
+import { AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
 
 interface DetailPageProps {
   selectedRow: ParsedRow | null;
@@ -10,6 +11,7 @@ interface DetailPageProps {
   onToggleHiddenFields: () => void;
   onOpenAIRunModal: () => void;
   renderDetailField: (column: ParsedColumn, isHidden: boolean) => ReactNode;
+  aiResults?: Partial<Record<AIDetectStageKey, string>>;
 }
 
 export function DetailPage({
@@ -20,6 +22,7 @@ export function DetailPage({
   onToggleHiddenFields,
   onOpenAIRunModal,
   renderDetailField,
+  aiResults,
 }: DetailPageProps) {
   if (!selectedRow) {
     return (
@@ -42,6 +45,29 @@ export function DetailPage({
           >
             运行AI检测
           </button>
+        </div>
+        <div className="record-detail-ai-results">
+          <div className="record-detail-ai-results-head">
+            <strong>AI检测结果</strong>
+            <span>四阶段结果仅保存到数据库</span>
+          </div>
+          <div className="record-detail-ai-results-grid">
+            {AI_STAGE_ORDER.map((stageKey) => {
+              const label = AI_STAGE_LABELS[stageKey];
+              const content = aiResults?.[stageKey] ?? "";
+              return (
+                <div key={stageKey} className="record-detail-ai-result-card">
+                  <div className="record-detail-ai-result-title">
+                    <span>{label.shortTitle}</span>
+                    <small>{label.title}</small>
+                  </div>
+                  <pre className="record-detail-ai-result-body">
+                    {content.trim().length > 0 ? content : "暂无结果"}
+                  </pre>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
       <div className="detail-fields">

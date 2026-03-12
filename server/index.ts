@@ -117,15 +117,22 @@ type AIDetectStageKey =
   | "independent_solving"
   | "final_verdict";
 type AIDetectStageConfig = {
+  profileName: string;
+  submitFieldKeys: string[];
+  prompt: string;
+  resultFieldKey: string;
+};
+type AIDetectProfile = {
   provider: AIProvider;
   url: string;
   model: string;
   apiKey: string;
-  submitFieldKeys: string[];
-  prompt: string;
-  resultFieldKey: string;
   reasoningEffort: AIReasoningEffort;
   retryCount: number;
+};
+type NamedAIDetectProfile = {
+  name: string;
+  profile: AIDetectProfile;
 };
 const AI_STAGE_ORDER: AIDetectStageKey[] = [
   "precheck",
@@ -139,6 +146,7 @@ const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
   independent_solving: "Independent Solving",
   final_verdict: "Final Verdict",
 };
+const DEFAULT_AI_PROFILE_NAME = "默认接口";
 const DEFAULT_AI_RETRY_COUNT = 2;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
@@ -1250,9 +1258,16 @@ app.get("/api/ai-config/:fileName", (req, res) => {
     activeConfig?.stages.independent_solving ??
     activeConfig?.stages.precheck ??
     null;
+  const legacyProfile =
+    legacyStage && activeConfig?.profiles
+      ? (activeConfig.profiles.find(
+          (item) => item.name === legacyStage.profileName,
+        ) ?? activeConfig.profiles[0])
+      : null;
   return res.json({
     configs: configs.map((item) => ({
       name: item.name,
+      profiles: item.profiles,
       stages: item.stages,
       isActive: item.isActive,
       updatedAt: item.updatedAt,
@@ -1261,15 +1276,15 @@ app.get("/api/ai-config/:fileName", (req, res) => {
     // Keep compatibility with legacy frontend that only reads one config.
     config: legacyStage
       ? {
-          provider: legacyStage.provider,
-          url: legacyStage.url,
-          model: legacyStage.model,
-          apiKey: legacyStage.apiKey,
+          provider: legacyProfile?.profile.provider,
+          url: legacyProfile?.profile.url,
+          model: legacyProfile?.profile.model,
+          apiKey: legacyProfile?.profile.apiKey,
           submitFieldKeys: legacyStage.submitFieldKeys,
           prompt: legacyStage.prompt,
           resultFieldKey: legacyStage.resultFieldKey,
-          reasoningEffort: legacyStage.reasoningEffort,
-          retryCount: legacyStage.retryCount,
+          reasoningEffort: legacyProfile?.profile.reasoningEffort,
+          retryCount: legacyProfile?.profile.retryCount,
         }
       : null,
   });
@@ -1280,6 +1295,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   const {
     name,
     stages,
+    profiles,
     provider,
     url,
     model,
@@ -1303,6 +1319,7 @@ app.put("/api/ai-config/:fileName", (req, res) => {
     retryCount?: unknown;
     setActive?: unknown;
     stages?: unknown;
+    profiles?: unknown;
   };
 
   if (name !== undefined && typeof name !== "string") {
@@ -1320,119 +1337,315 @@ app.put("/api/ai-config/:fileName", (req, res) => {
       ? name.trim()
       : DEFAULT_AI_CONFIG_NAME;
 
+  let normalizedProfiles: NamedAIDetectProfile[] = [];
   let normalizedStages: Record<AIDetectStageKey, AIDetectStageConfig> | null =
     null;
 
-  if (stages && typeof stages === "object") {
-    const rawStages = stages as Record<string, unknown>;
-    const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
-
-    for (const stageKey of AI_STAGE_ORDER) {
-      const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
-      const stageValue = rawStages[stageKey];
-      if (!stageValue || typeof stageValue !== "object") {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} config must be an object` });
+  if (profiles !== undefined) {
+    if (!Array.isArray(profiles)) {
+      return res.status(400).json({ message: "profiles must be an array" });
+    }
+    const nameSet = new Set<string>();
+    const nextProfiles: NamedAIDetectProfile[] = [];
+    for (const [index, item] of profiles.entries()) {
+      if (!item || typeof item !== "object") {
+        return res.status(400).json({
+          message: `profile at index ${index} must be an object`,
+        });
       }
-      const stage = stageValue as {
-        provider?: unknown;
-        url?: unknown;
-        model?: unknown;
-        apiKey?: unknown;
-        submitFieldKeys?: unknown;
-        prompt?: unknown;
-        resultFieldKey?: unknown;
-        reasoningEffort?: unknown;
-        retryCount?: unknown;
-      };
-
-      const normalizedProvider: AIProvider = isAIProvider(stage.provider)
-        ? stage.provider
-        : stage.provider === "vertex"
+      const candidate = item as {
+        name?: unknown;
+        profile?: unknown;
+      } & Partial<AIDetectProfile>;
+      const rawName =
+        typeof candidate.name === "string" && candidate.name.trim().length > 0
+          ? candidate.name.trim()
+          : "";
+      if (!rawName) {
+        return res.status(400).json({
+          message: "profile name must be a non-empty string",
+        });
+      }
+      if (nameSet.has(rawName)) {
+        return res.status(400).json({
+          message: `profile name duplicated: ${rawName}`,
+        });
+      }
+      nameSet.add(rawName);
+      const profileSource =
+        candidate.profile && typeof candidate.profile === "object"
+          ? candidate.profile
+          : candidate;
+      const normalizedProvider: AIProvider = isAIProvider(
+        (profileSource as { provider?: unknown }).provider,
+      )
+        ? (profileSource as { provider?: AIProvider }).provider
+        : (profileSource as { provider?: unknown }).provider === "vertex"
           ? "gemini"
           : "openai";
-
-      if (stage.url !== undefined && typeof stage.url !== "string") {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} url must be a string` });
-      }
-      if (stage.apiKey !== undefined && typeof stage.apiKey !== "string") {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} apiKey must be a string` });
-      }
-      if (!isNonEmptyString(stage.model)) {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} model must be a non-empty string` });
-      }
-      if (!isNonEmptyString(stage.url)) {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} url must be a non-empty string` });
-      }
-      if (!isNonEmptyString(stage.apiKey)) {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} apiKey must be a non-empty string` });
-      }
       if (
-        !Array.isArray(stage.submitFieldKeys) ||
-        !stage.submitFieldKeys.every((item) => typeof item === "string")
+        (profileSource as { url?: unknown }).url !== undefined &&
+        typeof (profileSource as { url?: unknown }).url !== "string"
       ) {
         return res.status(400).json({
-          message: `${stageLabel} submitFieldKeys must be a string array`,
-        });
-      }
-      if (!isNonEmptyString(stage.prompt)) {
-        return res
-          .status(400)
-          .json({ message: `${stageLabel} prompt must be a non-empty string` });
-      }
-      if (
-        stage.resultFieldKey !== undefined &&
-        typeof stage.resultFieldKey !== "string"
-      ) {
-        return res.status(400).json({
-          message: `${stageLabel} resultFieldKey must be a string`,
+          message: `【${rawName}】url must be a string`,
         });
       }
       if (
-        stage.reasoningEffort !== undefined &&
-        !isAIReasoningEffort(stage.reasoningEffort)
+        (profileSource as { apiKey?: unknown }).apiKey !== undefined &&
+        typeof (profileSource as { apiKey?: unknown }).apiKey !== "string"
       ) {
         return res.status(400).json({
-          message: `${stageLabel} reasoningEffort must be low, medium or high`,
+          message: `【${rawName}】apiKey must be a string`,
         });
       }
-      if (
-        stage.retryCount !== undefined &&
-        !isValidAIRetryCount(stage.retryCount)
-      ) {
+      if (!isNonEmptyString((profileSource as { model?: unknown }).model)) {
         return res.status(400).json({
-          message: `${stageLabel} retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+          message: `【${rawName}】model must be a non-empty string`,
         });
       }
-
-      stageMap[stageKey] = {
-        provider: normalizedProvider,
-        url: stage.url as string,
-        model: stage.model as string,
-        apiKey: stage.apiKey as string,
-        submitFieldKeys: stage.submitFieldKeys as string[],
-        prompt: stage.prompt as string,
-        resultFieldKey:
-          typeof stage.resultFieldKey === "string" ? stage.resultFieldKey : "",
-        reasoningEffort: isAIReasoningEffort(stage.reasoningEffort)
-          ? stage.reasoningEffort
-          : "high",
-        retryCount: normalizeAIRetryCount(stage.retryCount),
-      };
+      if (!isNonEmptyString((profileSource as { url?: unknown }).url)) {
+        return res.status(400).json({
+          message: `【${rawName}】url must be a non-empty string`,
+        });
+      }
+      if (!isNonEmptyString((profileSource as { apiKey?: unknown }).apiKey)) {
+        return res.status(400).json({
+          message: `【${rawName}】apiKey must be a non-empty string`,
+        });
+      }
+      const reasoningEffort = isAIReasoningEffort(
+        (profileSource as { reasoningEffort?: unknown }).reasoningEffort,
+      )
+        ? (profileSource as { reasoningEffort?: AIReasoningEffort })
+            .reasoningEffort
+        : "high";
+      const retryCount = normalizeAIRetryCount(
+        (profileSource as { retryCount?: unknown }).retryCount,
+      );
+      nextProfiles.push({
+        name: rawName,
+        profile: {
+          provider: normalizedProvider,
+          url: (profileSource as { url?: string }).url as string,
+          model: (profileSource as { model?: string }).model as string,
+          apiKey: (profileSource as { apiKey?: string }).apiKey as string,
+          reasoningEffort,
+          retryCount,
+        },
+      });
     }
+    normalizedProfiles = nextProfiles;
+  }
 
-    normalizedStages = stageMap;
+  if (stages && typeof stages === "object") {
+    const rawStages = stages as Record<string, unknown>;
+    const hasProfileName = AI_STAGE_ORDER.some((stageKey) => {
+      const stageValue = rawStages[stageKey] as {
+        profileName?: unknown;
+      } | null;
+      return (
+        stageValue &&
+        typeof stageValue === "object" &&
+        typeof stageValue.profileName === "string"
+      );
+    });
+
+    if (hasProfileName) {
+      if (normalizedProfiles.length === 0) {
+        return res
+          .status(400)
+          .json({ message: "profiles is required for stages" });
+      }
+      const profileNameSet = new Set(
+        normalizedProfiles.map((item) => item.name),
+      );
+      const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+
+      for (const stageKey of AI_STAGE_ORDER) {
+        const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
+        const stageValue = rawStages[stageKey];
+        if (!stageValue || typeof stageValue !== "object") {
+          return res
+            .status(400)
+            .json({ message: `${stageLabel} config must be an object` });
+        }
+        const stage = stageValue as {
+          profileName?: unknown;
+          submitFieldKeys?: unknown;
+          prompt?: unknown;
+          resultFieldKey?: unknown;
+        };
+
+        if (!isNonEmptyString(stage.profileName)) {
+          return res.status(400).json({
+            message: `${stageLabel} profileName must be a non-empty string`,
+          });
+        }
+        const profileName = stage.profileName.trim();
+        if (!profileNameSet.has(profileName)) {
+          return res.status(400).json({
+            message: `${stageLabel} profileName must reference an existing profile`,
+          });
+        }
+        if (
+          !Array.isArray(stage.submitFieldKeys) ||
+          !stage.submitFieldKeys.every((item) => typeof item === "string")
+        ) {
+          return res.status(400).json({
+            message: `${stageLabel} submitFieldKeys must be a string array`,
+          });
+        }
+        if (!isNonEmptyString(stage.prompt)) {
+          return res.status(400).json({
+            message: `${stageLabel} prompt must be a non-empty string`,
+          });
+        }
+        if (
+          stage.resultFieldKey !== undefined &&
+          typeof stage.resultFieldKey !== "string"
+        ) {
+          return res.status(400).json({
+            message: `${stageLabel} resultFieldKey must be a string`,
+          });
+        }
+
+        stageMap[stageKey] = {
+          profileName,
+          submitFieldKeys: stage.submitFieldKeys as string[],
+          prompt: stage.prompt as string,
+          resultFieldKey:
+            typeof stage.resultFieldKey === "string"
+              ? stage.resultFieldKey
+              : "",
+        };
+      }
+
+      normalizedStages = stageMap;
+    } else {
+      const legacyProfiles: NamedAIDetectProfile[] = [];
+      const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
+
+      for (const [index, stageKey] of AI_STAGE_ORDER.entries()) {
+        const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
+        const stageValue = rawStages[stageKey];
+        if (!stageValue || typeof stageValue !== "object") {
+          return res
+            .status(400)
+            .json({ message: `${stageLabel} config must be an object` });
+        }
+        const stage = stageValue as {
+          provider?: unknown;
+          url?: unknown;
+          model?: unknown;
+          apiKey?: unknown;
+          submitFieldKeys?: unknown;
+          prompt?: unknown;
+          resultFieldKey?: unknown;
+          reasoningEffort?: unknown;
+          retryCount?: unknown;
+        };
+
+        const normalizedProvider: AIProvider = isAIProvider(stage.provider)
+          ? stage.provider
+          : stage.provider === "vertex"
+            ? "gemini"
+            : "openai";
+
+        if (stage.url !== undefined && typeof stage.url !== "string") {
+          return res
+            .status(400)
+            .json({ message: `${stageLabel} url must be a string` });
+        }
+        if (stage.apiKey !== undefined && typeof stage.apiKey !== "string") {
+          return res
+            .status(400)
+            .json({ message: `${stageLabel} apiKey must be a string` });
+        }
+        if (!isNonEmptyString(stage.model)) {
+          return res.status(400).json({
+            message: `${stageLabel} model must be a non-empty string`,
+          });
+        }
+        if (!isNonEmptyString(stage.url)) {
+          return res
+            .status(400)
+            .json({ message: `${stageLabel} url must be a non-empty string` });
+        }
+        if (!isNonEmptyString(stage.apiKey)) {
+          return res.status(400).json({
+            message: `${stageLabel} apiKey must be a non-empty string`,
+          });
+        }
+        if (
+          !Array.isArray(stage.submitFieldKeys) ||
+          !stage.submitFieldKeys.every((item) => typeof item === "string")
+        ) {
+          return res.status(400).json({
+            message: `${stageLabel} submitFieldKeys must be a string array`,
+          });
+        }
+        if (!isNonEmptyString(stage.prompt)) {
+          return res.status(400).json({
+            message: `${stageLabel} prompt must be a non-empty string`,
+          });
+        }
+        if (
+          stage.resultFieldKey !== undefined &&
+          typeof stage.resultFieldKey !== "string"
+        ) {
+          return res.status(400).json({
+            message: `${stageLabel} resultFieldKey must be a string`,
+          });
+        }
+        if (
+          stage.reasoningEffort !== undefined &&
+          !isAIReasoningEffort(stage.reasoningEffort)
+        ) {
+          return res.status(400).json({
+            message: `${stageLabel} reasoningEffort must be low, medium or high`,
+          });
+        }
+        if (
+          stage.retryCount !== undefined &&
+          !isValidAIRetryCount(stage.retryCount)
+        ) {
+          return res.status(400).json({
+            message: `${stageLabel} retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+          });
+        }
+
+        const profileName =
+          AI_STAGE_ORDER.length > 1
+            ? `${DEFAULT_AI_PROFILE_NAME}-${index + 1}`
+            : DEFAULT_AI_PROFILE_NAME;
+        legacyProfiles.push({
+          name: profileName,
+          profile: {
+            provider: normalizedProvider,
+            url: stage.url as string,
+            model: stage.model as string,
+            apiKey: stage.apiKey as string,
+            reasoningEffort: isAIReasoningEffort(stage.reasoningEffort)
+              ? stage.reasoningEffort
+              : "high",
+            retryCount: normalizeAIRetryCount(stage.retryCount),
+          },
+        });
+        stageMap[stageKey] = {
+          profileName,
+          submitFieldKeys: stage.submitFieldKeys as string[],
+          prompt: stage.prompt as string,
+          resultFieldKey:
+            typeof stage.resultFieldKey === "string"
+              ? stage.resultFieldKey
+              : "",
+        };
+      }
+
+      normalizedProfiles = legacyProfiles;
+      normalizedStages = stageMap;
+    }
   } else {
     const normalizedProvider: AIProvider = isAIProvider(provider)
       ? provider
@@ -1497,22 +1710,28 @@ app.put("/api/ai-config/:fileName", (req, res) => {
       ? reasoningEffort
       : "high";
     const normalizedRetryCount = normalizeAIRetryCount(retryCount);
-    const baseStage: AIDetectStageConfig = {
+    const baseProfile: AIDetectProfile = {
       provider: normalizedProvider,
       url: typeof url === "string" ? url : "",
       model: model as string,
       apiKey: typeof apiKey === "string" ? apiKey : "",
-      submitFieldKeys: submitFieldKeys as string[],
-      prompt: prompt as string,
-      resultFieldKey: typeof resultFieldKey === "string" ? resultFieldKey : "",
       reasoningEffort: normalizedReasoningEffort,
       retryCount: normalizedRetryCount,
     };
+    normalizedProfiles = [
+      {
+        name: DEFAULT_AI_PROFILE_NAME,
+        profile: baseProfile,
+      },
+    ];
     const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
     AI_STAGE_ORDER.forEach((stageKey) => {
       stageMap[stageKey] = {
-        ...baseStage,
-        submitFieldKeys: [...baseStage.submitFieldKeys],
+        profileName: DEFAULT_AI_PROFILE_NAME,
+        submitFieldKeys: (submitFieldKeys as string[]) ?? [],
+        prompt: prompt as string,
+        resultFieldKey:
+          typeof resultFieldKey === "string" ? resultFieldKey : "",
       };
     });
     normalizedStages = stageMap;
@@ -1521,11 +1740,15 @@ app.put("/api/ai-config/:fileName", (req, res) => {
   if (!normalizedStages) {
     return res.status(400).json({ message: "stages is required" });
   }
+  if (normalizedProfiles.length === 0) {
+    return res.status(400).json({ message: "profiles is required" });
+  }
 
   saveAIDetectConfig(
     decodeURIComponent(fileName),
     configName,
     {
+      profiles: normalizedProfiles,
       stages: normalizedStages,
     },
     {

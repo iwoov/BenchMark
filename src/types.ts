@@ -17,6 +17,7 @@ export interface ParsedColumn {
 export interface ParsedRow {
   rowId: string;
   values: Record<string, ParsedCell>;
+  aiResults?: Partial<Record<AIDetectStageKey, string>>;
 }
 
 export interface ParsedFile {
@@ -59,7 +60,6 @@ export interface AIDetectStageConfig {
   profileName: string;
   submitFieldKeys: string[];
   prompt: string;
-  resultFieldKey: string;
 }
 
 export type AIDetectStageConfigMap = Record<

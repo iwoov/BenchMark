@@ -36,19 +36,12 @@ export function SettingsPage({
   onOpenAIProfileModal,
 }: SettingsPageProps) {
   const visibleDisplayColumns = displayColumns;
-  const filterColumns = activeFile.selectedFilterColumnKeys
-    .map((key) => activeFile.columns.find((column) => column.key === key))
-    .filter((column): column is ParsedColumn => Boolean(column));
   const editableColumns = activeFile.columns.filter((column) =>
     activeFile.selectedEditableColumnKeys.includes(column.key),
   );
   const activeConfig =
     aiConfigList.find((item) => item.name === selectedAIConfigName)?.config ??
     aiConfig;
-  const columnTitleMap = new Map(
-    activeFile.columns.map((column) => [column.key, column.title]),
-  );
-  const getColumnTitle = (key: string) => columnTitleMap.get(key) ?? key;
   const profiles = activeConfig.profiles ?? [];
   const profileMap = new Map(profiles.map((item) => [item.name, item.profile]));
   const openaiConfigs = profiles.filter(
@@ -85,23 +78,6 @@ export function SettingsPage({
             </button>
           </div>
           <div className="settings-grid">
-            <div className="settings-subsection">
-              <div className="settings-subsection-head">
-                <h4>筛选字段</h4>
-                <span>列表页筛选器使用的字段</span>
-              </div>
-              <div className="settings-pill-list">
-                {filterColumns.length > 0 ? (
-                  filterColumns.map((column) => (
-                    <span key={column.key} className="settings-pill">
-                      {column.title}
-                    </span>
-                  ))
-                ) : (
-                  <span className="settings-empty">暂无筛选字段</span>
-                )}
-              </div>
-            </div>
             <div className="settings-subsection">
               <div className="settings-subsection-head">
                 <h4>展示字段</h4>
@@ -162,9 +138,6 @@ export function SettingsPage({
                 {AI_STAGE_ORDER.map((stageKey) => {
                   const stageConfig = activeConfig.stages[stageKey];
                   const stageLabel = AI_STAGE_LABELS[stageKey];
-                  const resultFieldTitle = stageConfig.resultFieldKey
-                    ? getColumnTitle(stageConfig.resultFieldKey)
-                    : "未配置";
                   const profile = profileMap.get(stageConfig.profileName);
                   const providerLabel = profile
                     ? getProviderLabel(profile.provider)
@@ -180,7 +153,7 @@ export function SettingsPage({
                       </div>
                       <div className="settings-stage-meta">
                         <span>{`提交字段 ${stageConfig.submitFieldKeys.length} 个`}</span>
-                        <span>{`结果字段 ${resultFieldTitle}`}</span>
+                        <span>{`结果字段 AI检测结果`}</span>
                         <span>{`重试 ${profile?.retryCount ?? 0} 次`}</span>
                         <span>{`模型 ${profile?.model || "-"}`}</span>
                       </div>

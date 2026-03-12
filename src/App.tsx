@@ -32,7 +32,6 @@ import {
   isInspectorColumnTitle,
   isOpensourceColumnTitle,
   isQualifiedColumnTitle,
-  isAIResultWithConfigColumn,
   logUIImageRenderError,
   normalizeFilterSelection,
   normalizeColumnSelection,
@@ -43,7 +42,6 @@ import {
   buildAIDetectFieldsForRow,
   cloneAIDetectConfig,
   composeAISaveText,
-  composeAISaveTextWithConfigName,
   createDefaultAIDetectConfig,
   formatDuration,
   normalizeAIBatchConcurrency,
@@ -123,14 +121,10 @@ function App() {
   const [isAIDetecting, setIsAIDetecting] = useState(false);
   const [aiThinkingText, setAIThinkingText] = useState("");
   const [aiResultText, setAIResultText] = useState("");
-  const [aiResultConfigName, setAIResultConfigName] = useState<string>(
-    DEFAULT_AI_CONFIG_NAME,
-  );
   const [aiResultMessage, setAIResultMessage] = useState("");
   const [activeAIStageKey, setActiveAIStageKey] =
     useState<AIDetectStageKey>("precheck");
   const [aiDetectElapsedMs, setAIDetectElapsedMs] = useState(0);
-  const [isSavingAIResult, setIsSavingAIResult] = useState(false);
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [aiBatchTask, setAIBatchTask] = useState<AIBatchTaskState>(
     INITIAL_AI_BATCH_TASK,
@@ -318,7 +312,6 @@ function App() {
       setAIConfigFormMessage("");
       setAIThinkingText("");
       setAIResultText("");
-      setAIResultConfigName(DEFAULT_AI_CONFIG_NAME);
       setAIResultMessage("");
       setBatchSelectedRowIds([]);
       aiDetectStartedAtRef.current = null;
@@ -380,7 +373,6 @@ function App() {
         setDraftAIConfigName(activeConfigName);
         setAIConfig(activeConfig);
         setDraftAIConfig(cloneAIDetectConfig(activeConfig));
-        setAIResultConfigName(activeConfigName);
         setAIConfigFormMessage("");
       } catch {
         if (disposed) {
@@ -400,7 +392,6 @@ function App() {
         setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
         setAIConfig(fallbackConfig);
         setDraftAIConfig(cloneAIDetectConfig(fallbackConfig));
-        setAIResultConfigName(DEFAULT_AI_CONFIG_NAME);
         setAIConfigFormMessage("");
       } finally {
         if (!disposed) {
@@ -475,14 +466,12 @@ function App() {
   useEffect(() => {
     setAIThinkingText("");
     setAIResultText("");
-    setAIResultConfigName(selectedAIConfigName);
     setAIResultMessage("");
     aiStreamAbortRef.current?.abort();
     aiStreamAbortRef.current = null;
     aiDetectStartedAtRef.current = null;
     setAIDetectElapsedMs(0);
     setIsAIDetecting(false);
-    setIsSavingAIResult(false);
   }, [activeFileId, selectedRowId]);
 
   const filterColumns = useMemo(() => {
@@ -523,20 +512,7 @@ function App() {
   }, [activeFile]);
 
   const aiSubmitFieldColumns = useMemo(
-    () =>
-      activeFile
-        ? activeFile.columns.filter(
-            (column) => !isAIResultWithConfigColumn(column),
-          )
-        : [],
-    [activeFile],
-  );
-
-  const aiResultFieldColumns = useMemo(
-    () =>
-      activeFile
-        ? activeFile.columns.filter((column) => column.editable)
-        : ([] as ParsedColumn[]),
+    () => (activeFile ? activeFile.columns : []),
     [activeFile],
   );
 
@@ -552,13 +528,6 @@ function App() {
     return matched ?? profiles[0] ?? null;
   }, [aiConfig.profiles, activeStageConfig?.profileName]);
 
-  const aiResultFieldTitle = useMemo(() => {
-    const matched = aiResultFieldColumns.find(
-      (column) => column.key === activeStageConfig?.resultFieldKey,
-    );
-    return matched?.title ?? "";
-  }, [aiResultFieldColumns, activeStageConfig?.resultFieldKey]);
-
   const isAIBatchRunning = aiBatchTask.status === "running";
   const aiBatchProgressPercent =
     aiBatchTask.total > 0
@@ -569,7 +538,6 @@ function App() {
     () => composeAISaveText(aiResultText, aiThinkingText),
     [aiResultText, aiThinkingText],
   );
-  const hasAISaveContent = aiMergedStreamText.trim().length > 0;
   const batchSelectedRowIdSet = useMemo(
     () => new Set(batchSelectedRowIds),
     [batchSelectedRowIds],
@@ -751,6 +719,75 @@ function App() {
     schedulePersistFileState(nextFile);
   };
 
+  const onEditCell = (rowId: string, columnKey: string, value: string) => {
+    patchActiveFile((file) => ({
+      ...file,
+      rows: file.rows.map((row) => {
+        if (row.rowId !== rowId) {
+          return row;
+        }
+
+        const currentCell = row.values[columnKey];
+
+        return {
+          ...row,
+          values: {
+            ...row.values,
+            [columnKey]:
+              currentCell?.type === "image" && currentCell.src
+                ? {
+                    type: "image",
+                    src: currentCell.src,
+                    value,
+                  }
+                : {
+                    type: "text",
+                    value,
+                  },
+          },
+        };
+      }),
+    }));
+  };
+
+  const updateRowAIResult = (
+    fileId: string,
+    rowId: string,
+    stageKey: AIDetectStageKey,
+    resultText: string,
+  ) => {
+    let nextFileToPersist: FileViewState | null = null;
+    setFiles((previous) =>
+      previous.map((file) => {
+        if (file.fileId !== fileId) {
+          return file;
+        }
+        const nextRows = file.rows.map((row) => {
+          if (row.rowId !== rowId) {
+            return row;
+          }
+          return {
+            ...row,
+            aiResults: {
+              ...(row.aiResults ?? {}),
+              [stageKey]: resultText,
+            },
+          };
+        });
+        const nextFile: FileViewState = {
+          ...file,
+          rows: nextRows,
+        };
+        nextFileToPersist = nextFile;
+        return nextFile;
+      }),
+    );
+
+    if (nextFileToPersist) {
+      schedulePersistFileState(nextFileToPersist);
+    }
+  };
+
   const persistColumnPrefs = (file: FileViewState) => {
     fetch(`/api/column-prefs/${encodeURIComponent(file.fileName)}`, {
       method: "PUT",
@@ -919,16 +956,6 @@ function App() {
     });
   };
 
-  const onChangeDraftResultField = (
-    stageKey: AIDetectStageKey,
-    columnKey: string,
-  ) => {
-    updateDraftStageConfig(stageKey, (stage) => ({
-      ...stage,
-      resultFieldKey: columnKey,
-    }));
-  };
-
   const onSaveAIConfig = async () => {
     if (!activeFile) {
       return;
@@ -1007,13 +1034,6 @@ function App() {
       }
       if (stageConfig.prompt.trim().length === 0) {
         setAIConfigFormMessage(`【${stageLabel}】Prompt 不能为空`);
-        return;
-      }
-      if (
-        aiResultFieldColumns.length > 0 &&
-        stageConfig.resultFieldKey.trim().length === 0
-      ) {
-        setAIConfigFormMessage(`【${stageLabel}】请选择 AI 结果保存字段`);
         return;
       }
     }
@@ -1148,7 +1168,6 @@ function App() {
     setIsAIDetecting(true);
     setAIThinkingText("");
     setAIResultText("");
-    setAIResultConfigName(runningConfigName);
     setAIResultMessage("");
     setErrorMessage("");
 
@@ -1176,14 +1195,21 @@ function App() {
       );
       setAIResultText(streamResult.answerText);
       setAIThinkingText(streamResult.thinkingText);
-      if (
-        streamResult.answerText.trim().length === 0 &&
-        streamResult.thinkingText.trim().length === 0
-      ) {
+      const composedText = composeAISaveText(
+        streamResult.answerText,
+        streamResult.thinkingText,
+      );
+      if (composedText.trim().length === 0) {
         setAIResultMessage("AI 返回为空");
       } else {
+        updateRowAIResult(
+          activeFile.fileId,
+          selectedRow.rowId,
+          activeAIStageKey,
+          composedText,
+        );
         setAIResultMessage(
-          `AI 回答完成（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}），可直接保存到目标字段`,
+          `AI 回答完成（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}），已写入 AI 检测结果`,
         );
       }
     } catch (error) {
@@ -1207,7 +1233,7 @@ function App() {
 
   const applyBatchAIResultsToFile = (
     fileId: string,
-    resultFieldKey: string,
+    stageKey: AIDetectStageKey,
     resultMap: Map<string, string>,
   ) => {
     if (resultMap.size === 0) {
@@ -1226,25 +1252,11 @@ function App() {
           if (result === undefined) {
             return row;
           }
-
-          const currentCell = row.values[resultFieldKey];
-          const nextCell: ParsedCell =
-            currentCell?.type === "image" && currentCell.src
-              ? {
-                  type: "image",
-                  src: currentCell.src,
-                  value: result,
-                }
-              : {
-                  type: "text",
-                  value: result,
-                };
-
           return {
             ...row,
-            values: {
-              ...row.values,
-              [resultFieldKey]: nextCell,
+            aiResults: {
+              ...(row.aiResults ?? {}),
+              [stageKey]: result,
             },
           };
         });
@@ -1319,18 +1331,6 @@ function App() {
     }
     if (stageConfig.prompt.trim().length === 0) {
       setErrorMessage("请先配置 Prompt");
-      return;
-    }
-    if (stageConfig.resultFieldKey.trim().length === 0) {
-      setErrorMessage("请先在 AI 配置中设置结果保存字段");
-      return;
-    }
-
-    const targetResultColumn = activeFile.columns.find(
-      (column) => column.key === stageConfig.resultFieldKey && column.editable,
-    );
-    if (!targetResultColumn) {
-      setErrorMessage("结果保存字段无效，请重新配置");
       return;
     }
 
@@ -1418,10 +1418,9 @@ function App() {
             },
             { signal: controller.signal },
           );
-          const text = composeAISaveTextWithConfigName(
+          const text = composeAISaveText(
             streamResult.answerText,
             streamResult.thinkingText,
-            runningConfigName,
           );
 
           if (text.trim().length === 0) {
@@ -1453,16 +1452,12 @@ function App() {
         return;
       }
 
-      applyBatchAIResultsToFile(
-        targetFileId,
-        stageConfig.resultFieldKey,
-        resultMap,
-      );
+      applyBatchAIResultsToFile(targetFileId, activeAIStageKey, resultMap);
 
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
-        message: `结果已写入字段：${targetResultColumn.title}（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}）`,
+        message: `结果已写入 AI 检测结果（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}）`,
       }));
       setErrorMessage("");
     } catch (error) {
@@ -1487,53 +1482,6 @@ function App() {
 
   const onRunSelectedBatchAIAnswer = async () => {
     await onRunBatchAIAnswer(batchSelectedRowIds);
-  };
-
-  const onSaveAIResult = () => {
-    if (!activeFile || !selectedRow) {
-      return;
-    }
-
-    const composedText = composeAISaveTextWithConfigName(
-      aiResultText,
-      aiThinkingText,
-      aiResultConfigName,
-    );
-    if (composedText.trim().length === 0) {
-      setAIResultMessage("暂无可保存的 AI 返回结果");
-      return;
-    }
-
-    const resultFieldKey = activeStageConfig?.resultFieldKey ?? "";
-    if (resultFieldKey.trim().length === 0) {
-      setAIResultMessage("请先在 AI 配置中设置结果保存字段");
-      return;
-    }
-
-    const targetColumn = activeFile.columns.find(
-      (column) => column.key === resultFieldKey,
-    );
-    if (!targetColumn || !targetColumn.editable) {
-      setAIResultMessage("结果字段无效，请重新配置");
-      return;
-    }
-
-    setIsSavingAIResult(true);
-    try {
-      const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
-      onEditCell(selectedRow.rowId, resultFieldKey, composedText);
-      if (aiThinkingText.trim().length > 0) {
-        setAIResultMessage(
-          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}${stageLabel ? ` / ${stageLabel}` : ""}，含思考过程）`,
-        );
-      } else {
-        setAIResultMessage(
-          `已保存到字段：${targetColumn.title}（配置：${aiResultConfigName}${stageLabel ? ` / ${stageLabel}` : ""}）`,
-        );
-      }
-    } finally {
-      setIsSavingAIResult(false);
-    }
   };
 
   const onExportFile = async () => {
@@ -1898,37 +1846,6 @@ function App() {
 
   const onClearBatchRows = () => {
     setBatchSelectedRowIds([]);
-  };
-
-  const onEditCell = (rowId: string, columnKey: string, value: string) => {
-    patchActiveFile((file) => ({
-      ...file,
-      rows: file.rows.map((row) => {
-        if (row.rowId !== rowId) {
-          return row;
-        }
-
-        const currentCell = row.values[columnKey];
-
-        return {
-          ...row,
-          values: {
-            ...row.values,
-            [columnKey]:
-              currentCell?.type === "image" && currentCell.src
-                ? {
-                    type: "image",
-                    src: currentCell.src,
-                    value,
-                  }
-                : {
-                    type: "text",
-                    value,
-                  },
-          },
-        };
-      }),
-    }));
   };
 
   const getLatexToggleKey = (columnKey: string) =>
@@ -2484,6 +2401,7 @@ function App() {
                       }
                       onOpenAIRunModal={() => setIsAIRunModalOpen(true)}
                       renderDetailField={renderDetailField}
+                      aiResults={selectedRow?.aiResults}
                     />
                   </section>
                 ) : null}
@@ -2537,11 +2455,9 @@ function App() {
         setDraftAIConfigName={setDraftAIConfigName}
         draftAIConfig={draftAIConfig}
         setDraftAIConfig={setDraftAIConfig}
-        aiResultFieldColumns={aiResultFieldColumns}
         aiSubmitFieldColumns={aiSubmitFieldColumns}
         aiConfigSaving={aiConfigSaving}
         onToggleDraftAISubmitField={onToggleDraftAISubmitField}
-        onChangeDraftResultField={onChangeDraftResultField}
         onCancel={onCancelAIStageConfigModal}
         onSave={onSaveAIConfig}
       />
@@ -2578,17 +2494,6 @@ function App() {
           !isAIBatchRunning
         }
         onRunAIDetect={onRunAIDetect}
-        onSaveAIResult={onSaveAIResult}
-        canSaveAIResult={
-          Boolean(selectedRow) &&
-          !isAIDetecting &&
-          !isAIBatchRunning &&
-          !isSavingAIResult &&
-          hasAISaveContent &&
-          (activeStageConfig?.resultFieldKey ?? "").trim().length > 0
-        }
-        isSavingAIResult={isSavingAIResult}
-        aiResultFieldTitle={aiResultFieldTitle}
         aiRetryCount={activeProfile?.profile.retryCount ?? 0}
         aiMergedStreamText={aiMergedStreamText}
         onAIResultTextChange={(value) => {

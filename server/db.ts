@@ -38,6 +38,7 @@ db.exec(`
 `);
 
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
+const DEFAULT_AI_PROFILE_NAME = "默认接口";
 type AIProvider = "openai" | "gemini";
 type AIReasoningEffort = "low" | "medium" | "high";
 export type AIDetectStageKey =
@@ -80,6 +81,7 @@ function createAIDetectConfigTable(): void {
       reasoning_effort TEXT NOT NULL DEFAULT 'high',
       retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT},
       stages_json TEXT,
+      profiles_json TEXT,
       is_active INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -242,6 +244,9 @@ function ensureAIDetectConfigTable(): void {
   if (!columns.has("stages_json")) {
     db.exec("ALTER TABLE ai_configs ADD COLUMN stages_json TEXT");
   }
+  if (!columns.has("profiles_json")) {
+    db.exec("ALTER TABLE ai_configs ADD COLUMN profiles_json TEXT");
+  }
   if (!columns.has("provider")) {
     db.exec(
       "ALTER TABLE ai_configs ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'",
@@ -326,6 +331,7 @@ export interface PersistedFileState {
 }
 
 export interface AIDetectConfig {
+  profiles: NamedAIDetectProfile[];
   stages: Record<AIDetectStageKey, AIDetectStageConfig>;
 }
 
@@ -335,7 +341,28 @@ export interface NamedAIDetectConfig extends AIDetectConfig {
   updatedAt: string;
 }
 
+export interface AIDetectProfile {
+  provider: AIProvider;
+  url: string;
+  model: string;
+  apiKey: string;
+  reasoningEffort: AIReasoningEffort;
+  retryCount: number;
+}
+
+export interface NamedAIDetectProfile {
+  name: string;
+  profile: AIDetectProfile;
+}
+
 export interface AIDetectStageConfig {
+  profileName: string;
+  submitFieldKeys: string[];
+  prompt: string;
+  resultFieldKey: string;
+}
+
+interface LegacyAIDetectStageConfig {
   provider: AIProvider;
   url: string;
   model: string;
@@ -417,10 +444,133 @@ function normalizeStageReasoningEffort(
   return fallback;
 }
 
+function normalizeProfile(
+  value: unknown,
+  fallback: AIDetectProfile,
+): AIDetectProfile {
+  if (!value || typeof value !== "object") {
+    return { ...fallback };
+  }
+  const candidate = value as Partial<AIDetectProfile>;
+  const provider = normalizeStageProvider(
+    candidate.provider,
+    fallback.provider,
+  );
+  const reasoningEffort = normalizeStageReasoningEffort(
+    candidate.reasoningEffort,
+    fallback.reasoningEffort,
+  );
+  const retryCount =
+    typeof candidate.retryCount === "number"
+      ? normalizeRetryCount(candidate.retryCount)
+      : fallback.retryCount;
+  return {
+    provider,
+    url:
+      typeof candidate.url === "string" && candidate.url.trim().length > 0
+        ? candidate.url
+        : fallback.url,
+    model:
+      typeof candidate.model === "string" && candidate.model.trim().length > 0
+        ? candidate.model
+        : fallback.model,
+    apiKey:
+      typeof candidate.apiKey === "string" ? candidate.apiKey : fallback.apiKey,
+    reasoningEffort,
+    retryCount,
+  };
+}
+
+function parseProfilesJson(
+  value: string | null | undefined,
+  fallback: AIDetectProfile,
+): NamedAIDetectProfile[] {
+  if (!value) {
+    return [{ name: DEFAULT_AI_PROFILE_NAME, profile: fallback }];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error("invalid");
+    }
+    const nameCount = new Map<string, number>();
+    const profiles: NamedAIDetectProfile[] = [];
+    parsed.forEach((item, index) => {
+      if (!item || typeof item !== "object") {
+        return;
+      }
+      const candidate = item as {
+        name?: unknown;
+        profile?: unknown;
+      } & Partial<AIDetectProfile>;
+      const rawName =
+        typeof candidate.name === "string" && candidate.name.trim().length > 0
+          ? candidate.name.trim()
+          : index === 0
+            ? DEFAULT_AI_PROFILE_NAME
+            : `接口配置 ${index + 1}`;
+      const count = nameCount.get(rawName) ?? 0;
+      nameCount.set(rawName, count + 1);
+      const name = count > 0 ? `${rawName}-${count + 1}` : rawName;
+      const profileSource =
+        candidate.profile && typeof candidate.profile === "object"
+          ? candidate.profile
+          : candidate;
+      profiles.push({
+        name,
+        profile: normalizeProfile(profileSource, fallback),
+      });
+    });
+    return profiles.length > 0
+      ? profiles
+      : [{ name: DEFAULT_AI_PROFILE_NAME, profile: fallback }];
+  } catch {
+    return [{ name: DEFAULT_AI_PROFILE_NAME, profile: fallback }];
+  }
+}
+
 function normalizeStageConfig(
   value: unknown,
   fallback: AIDetectStageConfig,
+  fallbackProfileName: string,
 ): AIDetectStageConfig {
+  if (!value || typeof value !== "object") {
+    return {
+      ...fallback,
+      profileName: fallbackProfileName,
+      submitFieldKeys: [...fallback.submitFieldKeys],
+    };
+  }
+
+  const candidate = value as Partial<AIDetectStageConfig>;
+  const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
+    ? candidate.submitFieldKeys.filter(
+        (item): item is string => typeof item === "string",
+      )
+    : [...fallback.submitFieldKeys];
+  const profileName =
+    typeof candidate.profileName === "string" && candidate.profileName.trim()
+      ? candidate.profileName.trim()
+      : fallbackProfileName;
+
+  return {
+    profileName,
+    submitFieldKeys,
+    prompt:
+      typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
+        ? candidate.prompt
+        : fallback.prompt,
+    resultFieldKey:
+      typeof candidate.resultFieldKey === "string"
+        ? candidate.resultFieldKey
+        : fallback.resultFieldKey,
+  };
+}
+
+function normalizeLegacyStageConfig(
+  value: unknown,
+  fallback: LegacyAIDetectStageConfig,
+): LegacyAIDetectStageConfig {
   if (!value || typeof value !== "object") {
     return {
       ...fallback,
@@ -428,7 +578,7 @@ function normalizeStageConfig(
     };
   }
 
-  const candidate = value as Partial<AIDetectStageConfig>;
+  const candidate = value as Partial<LegacyAIDetectStageConfig>;
   const provider = normalizeStageProvider(
     candidate.provider,
     fallback.provider,
@@ -476,11 +626,16 @@ function normalizeStageConfig(
 function parseStageConfigMap(
   value: string | null | undefined,
   fallback: AIDetectStageConfig,
+  fallbackProfileName: string,
 ): Record<AIDetectStageKey, AIDetectStageConfig> {
   if (!value) {
     const stages = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
     AI_STAGE_ORDER.forEach((stageKey) => {
-      stages[stageKey] = normalizeStageConfig(null, fallback);
+      stages[stageKey] = normalizeStageConfig(
+        null,
+        fallback,
+        fallbackProfileName,
+      );
     });
     return stages;
   }
@@ -493,13 +648,56 @@ function parseStageConfigMap(
     const rawStages = parsed as Record<string, unknown>;
     const stages = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
     AI_STAGE_ORDER.forEach((stageKey) => {
-      stages[stageKey] = normalizeStageConfig(rawStages[stageKey], fallback);
+      stages[stageKey] = normalizeStageConfig(
+        rawStages[stageKey],
+        fallback,
+        fallbackProfileName,
+      );
     });
     return stages;
   } catch {
     const stages = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
     AI_STAGE_ORDER.forEach((stageKey) => {
-      stages[stageKey] = normalizeStageConfig(null, fallback);
+      stages[stageKey] = normalizeStageConfig(
+        null,
+        fallback,
+        fallbackProfileName,
+      );
+    });
+    return stages;
+  }
+}
+
+function parseLegacyStageConfigMap(
+  value: string | null | undefined,
+  fallback: LegacyAIDetectStageConfig,
+): Record<AIDetectStageKey, LegacyAIDetectStageConfig> {
+  if (!value) {
+    const stages = {} as Record<AIDetectStageKey, LegacyAIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stages[stageKey] = normalizeLegacyStageConfig(null, fallback);
+    });
+    return stages;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error("invalid");
+    }
+    const rawStages = parsed as Record<string, unknown>;
+    const stages = {} as Record<AIDetectStageKey, LegacyAIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stages[stageKey] = normalizeLegacyStageConfig(
+        rawStages[stageKey],
+        fallback,
+      );
+    });
+    return stages;
+  } catch {
+    const stages = {} as Record<AIDetectStageKey, LegacyAIDetectStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      stages[stageKey] = normalizeLegacyStageConfig(null, fallback);
     });
     return stages;
   }
@@ -634,6 +832,7 @@ export function listAIDetectConfigs(fileName: string): {
          reasoning_effort,
          retry_count,
          stages_json,
+         profiles_json,
          is_active,
          updated_at
        FROM ai_configs
@@ -654,12 +853,13 @@ export function listAIDetectConfigs(fileName: string): {
     reasoning_effort: string | null;
     retry_count: number | null;
     stages_json: string | null;
+    profiles_json: string | null;
     is_active: number;
     updated_at: string;
   }>;
 
   const configs = rows.map((row) => {
-    const legacyStageConfig: AIDetectStageConfig = {
+    const legacyStageConfig: LegacyAIDetectStageConfig = {
       provider: normalizeAIProvider(row.provider),
       url: row.ai_url,
       model: row.ai_model,
@@ -670,9 +870,106 @@ export function listAIDetectConfigs(fileName: string): {
       reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
       retryCount: normalizeRetryCount(row.retry_count),
     };
-    const stages = parseStageConfigMap(row.stages_json, legacyStageConfig);
+    const fallbackProfile: AIDetectProfile = {
+      provider: legacyStageConfig.provider,
+      url: legacyStageConfig.url,
+      model: legacyStageConfig.model,
+      apiKey: legacyStageConfig.apiKey,
+      reasoningEffort: legacyStageConfig.reasoningEffort,
+      retryCount: legacyStageConfig.retryCount,
+    };
+    const fallbackProfileName = DEFAULT_AI_PROFILE_NAME;
+    let profiles = parseProfilesJson(row.profiles_json, fallbackProfile);
+    let stages: Record<AIDetectStageKey, AIDetectStageConfig> | null = null;
+
+    if (row.stages_json) {
+      try {
+        const parsed = JSON.parse(row.stages_json) as unknown;
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("invalid");
+        }
+        const rawStages = parsed as Record<string, unknown>;
+        const hasProfileName = AI_STAGE_ORDER.some((stageKey) => {
+          const stageValue = rawStages[stageKey] as {
+            profileName?: unknown;
+          } | null;
+          return (
+            stageValue &&
+            typeof stageValue === "object" &&
+            typeof stageValue.profileName === "string"
+          );
+        });
+
+        if (hasProfileName) {
+          const fallbackStage: AIDetectStageConfig = {
+            profileName: profiles[0]?.name ?? fallbackProfileName,
+            submitFieldKeys: legacyStageConfig.submitFieldKeys,
+            prompt: legacyStageConfig.prompt,
+            resultFieldKey: legacyStageConfig.resultFieldKey,
+          };
+          stages = parseStageConfigMap(
+            row.stages_json,
+            fallbackStage,
+            profiles[0]?.name ?? fallbackProfileName,
+          );
+        } else {
+          const legacyStages = parseLegacyStageConfigMap(
+            row.stages_json,
+            legacyStageConfig,
+          );
+          const derivedProfiles: NamedAIDetectProfile[] = [];
+          const derivedStages = {} as Record<
+            AIDetectStageKey,
+            AIDetectStageConfig
+          >;
+          AI_STAGE_ORDER.forEach((stageKey, index) => {
+            const legacyStage = legacyStages[stageKey];
+            const profileName =
+              AI_STAGE_ORDER.length > 1
+                ? `${DEFAULT_AI_PROFILE_NAME}-${index + 1}`
+                : DEFAULT_AI_PROFILE_NAME;
+            derivedProfiles.push({
+              name: profileName,
+              profile: {
+                provider: legacyStage.provider,
+                url: legacyStage.url,
+                model: legacyStage.model,
+                apiKey: legacyStage.apiKey,
+                reasoningEffort: legacyStage.reasoningEffort,
+                retryCount: legacyStage.retryCount,
+              },
+            });
+            derivedStages[stageKey] = {
+              profileName,
+              submitFieldKeys: legacyStage.submitFieldKeys,
+              prompt: legacyStage.prompt,
+              resultFieldKey: legacyStage.resultFieldKey,
+            };
+          });
+          profiles = derivedProfiles;
+          stages = derivedStages;
+        }
+      } catch {
+        stages = null;
+      }
+    }
+
+    if (!stages) {
+      const fallbackStage: AIDetectStageConfig = {
+        profileName: profiles[0]?.name ?? fallbackProfileName,
+        submitFieldKeys: legacyStageConfig.submitFieldKeys,
+        prompt: legacyStageConfig.prompt,
+        resultFieldKey: legacyStageConfig.resultFieldKey,
+      };
+      stages = parseStageConfigMap(
+        null,
+        fallbackStage,
+        profiles[0]?.name ?? fallbackProfileName,
+      );
+    }
     return {
       name: row.config_name,
+      profiles,
       stages,
       isActive: row.is_active === 1,
       updatedAt: row.updated_at,
@@ -698,8 +995,22 @@ export function saveAIDetectConfig(
   const normalizedName = normalizeConfigName(configName);
   const shouldSetActive = options?.setActive !== false;
   const stagesJson = JSON.stringify(config.stages);
+  const profilesJson = JSON.stringify(config.profiles ?? []);
   const legacyStage =
     config.stages[LEGACY_STAGE_KEY] ?? config.stages[AI_STAGE_ORDER[0]];
+  const fallbackProfile =
+    config.profiles?.[0]?.profile ??
+    ({
+      provider: "openai",
+      url: "",
+      model: "",
+      apiKey: "",
+      reasoningEffort: "high",
+      retryCount: DEFAULT_AI_RETRY_COUNT,
+    } as AIDetectProfile);
+  const legacyProfile =
+    config.profiles?.find((item) => item.name === legacyStage.profileName)
+      ?.profile ?? fallbackProfile;
 
   const tx = db.transaction(() => {
     db.prepare(
@@ -718,11 +1029,12 @@ export function saveAIDetectConfig(
          reasoning_effort,
          retry_count,
          stages_json,
+         profiles_json,
          is_active,
          created_at,
          updated_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        ON CONFLICT(file_name, config_name) DO UPDATE SET
          provider = excluded.provider,
          ai_url = excluded.ai_url,
@@ -736,6 +1048,7 @@ export function saveAIDetectConfig(
          reasoning_effort = excluded.reasoning_effort,
          retry_count = excluded.retry_count,
          stages_json = excluded.stages_json,
+         profiles_json = excluded.profiles_json,
          is_active = CASE
            WHEN excluded.is_active = 1 THEN 1
            ELSE ai_configs.is_active
@@ -744,18 +1057,19 @@ export function saveAIDetectConfig(
     ).run(
       fileName,
       normalizedName,
-      normalizeAIProvider(legacyStage.provider),
-      legacyStage.url,
-      legacyStage.model,
-      legacyStage.apiKey,
+      normalizeAIProvider(legacyProfile.provider),
+      legacyProfile.url,
+      legacyProfile.model,
+      legacyProfile.apiKey,
       "",
       "",
       JSON.stringify(legacyStage.submitFieldKeys),
       legacyStage.prompt,
       legacyStage.resultFieldKey || null,
-      legacyStage.reasoningEffort,
-      normalizeRetryCount(legacyStage.retryCount),
+      legacyProfile.reasoningEffort,
+      normalizeRetryCount(legacyProfile.retryCount),
       stagesJson,
+      profilesJson,
       shouldSetActive ? 1 : 0,
     );
 
