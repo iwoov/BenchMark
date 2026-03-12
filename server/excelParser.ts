@@ -369,21 +369,32 @@ function findDirectoryByName(
 
 function locateImageRootDirectory(rootDirName: string): string | null {
   if (imageRootCache.has(rootDirName)) {
-    return imageRootCache.get(rootDirName) ?? null;
+    const cached = imageRootCache.get(rootDirName) ?? null;
+    return cached;
   }
 
-  for (const searchRoot of getImageSearchRoots()) {
+  const searchRoots = getImageSearchRoots();
+  // eslint-disable-next-line no-console
+  console.log(
+    `[ImageRootSearch] Looking for "${rootDirName}" in roots: ${JSON.stringify(searchRoots)}`,
+  );
+
+  for (const searchRoot of searchRoots) {
     const found = findDirectoryByName(
       searchRoot,
       rootDirName,
       IMAGE_SEARCH_MAX_DEPTH,
     );
     if (found) {
+      // eslint-disable-next-line no-console
+      console.log(`[ImageRootSearch] Found "${rootDirName}" at: ${found}`);
       imageRootCache.set(rootDirName, found);
       return found;
     }
   }
 
+  // eslint-disable-next-line no-console
+  console.log(`[ImageRootSearch] Not found: "${rootDirName}"`);
   imageRootCache.set(rootDirName, null);
   return null;
 }
@@ -452,6 +463,10 @@ function normalizeHyperlinkToAbsolutePath(
     const rootIndex = segments.findIndex((item) => item === rootNameFromLink);
     const tail = rootIndex >= 0 ? segments.slice(rootIndex + 1) : segments;
     const candidate = path.join(matchedRootDir, ...tail);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ImagePathResolve] rootDir=${matchedRootDir} tail=${tail.join("/")} candidate=${candidate} exists=${isPathExistingFile(candidate)}`,
+    );
     if (isPathExistingFile(candidate)) {
       hyperlinkPathCache.set(trimmed, candidate);
       return candidate;

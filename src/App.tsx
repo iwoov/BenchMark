@@ -956,7 +956,7 @@ function App() {
     });
   };
 
-  const onSaveAIConfig = async () => {
+  const onSaveAIConfig = async (skipStageValidation = false) => {
     if (!activeFile) {
       return;
     }
@@ -1020,21 +1020,24 @@ function App() {
       }
     }
 
-    for (const stageKey of AI_STAGE_ORDER) {
-      const stageConfig = nextConfig.stages[stageKey];
-      const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey;
+    // Skip stage validation when saving from profile modal
+    if (!skipStageValidation) {
+      for (const stageKey of AI_STAGE_ORDER) {
+        const stageConfig = nextConfig.stages[stageKey];
+        const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey;
 
-      if (!profileNameSet.has(stageConfig.profileName)) {
-        setAIConfigFormMessage(`【${stageLabel}】请选择有效的接口配置`);
-        return;
-      }
-      if (stageConfig.submitFieldKeys.length === 0) {
-        setAIConfigFormMessage(`【${stageLabel}】请至少选择一个提交回答字段`);
-        return;
-      }
-      if (stageConfig.prompt.trim().length === 0) {
-        setAIConfigFormMessage(`【${stageLabel}】Prompt 不能为空`);
-        return;
+        if (!profileNameSet.has(stageConfig.profileName)) {
+          setAIConfigFormMessage(`【${stageLabel}】请选择有效的接口配置`);
+          return;
+        }
+        if (stageConfig.submitFieldKeys.length === 0) {
+          setAIConfigFormMessage(`【${stageLabel}】请至少选择一个提交回答字段`);
+          return;
+        }
+        if (stageConfig.prompt.trim().length === 0) {
+          setAIConfigFormMessage(`【${stageLabel}】Prompt 不能为空`);
+          return;
+        }
       }
     }
 
@@ -1088,6 +1091,12 @@ function App() {
       setAIConfigSaving(false);
     }
   };
+
+  // Save profile config only (skip stage validation)
+  const onSaveAIProfileConfig = () => onSaveAIConfig(true);
+
+  // Save stage config (full validation)
+  const onSaveAIStageConfig = () => onSaveAIConfig(false);
 
   const onRunAIDetect = async () => {
     if (!activeFile || !selectedRow) {
@@ -2095,16 +2104,23 @@ function App() {
     );
   };
 
-  const renderListReadonlyCell = (row: ParsedRow, column: ParsedColumn) =>
-    renderReadonlyCell(
+  const renderListReadonlyCell = (row: ParsedRow, column: ParsedColumn) => {
+    const cell = row.values[column.key];
+    // Hide filename text for image columns on list page (show "-" instead)
+    const isImageColumn = /图片/.test(column.title);
+    if (isImageColumn && cell?.type === "text") {
+      return <span className="empty-text">-</span>;
+    }
+    return renderReadonlyCell(
       row,
       {
         ...column,
         editable: false,
       },
-      row.values[column.key],
+      cell,
       false,
     );
+  };
   const getListCellTitle = (row: ParsedRow, column: ParsedColumn) =>
     getCellText(row, column.key).trim();
 
@@ -2459,7 +2475,7 @@ function App() {
         aiConfigSaving={aiConfigSaving}
         onToggleDraftAISubmitField={onToggleDraftAISubmitField}
         onCancel={onCancelAIStageConfigModal}
-        onSave={onSaveAIConfig}
+        onSave={onSaveAIStageConfig}
       />
       {/* ─── AI Profile Modal ─── */}
       <AIProfileModal
@@ -2473,7 +2489,7 @@ function App() {
         setDraftAIConfig={setDraftAIConfig}
         aiConfigSaving={aiConfigSaving}
         onCancel={onCancelAIProfileModal}
-        onSave={onSaveAIConfig}
+        onSave={onSaveAIProfileConfig}
       />
       <AIRunModal
         isOpen={isAIRunModalOpen}
