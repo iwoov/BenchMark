@@ -58,11 +58,11 @@ export const AI_STAGE_LABELS: Record<
 
 export const DEFAULT_AI_STAGE_PROMPTS: Record<AIDetectStageKey, string> = {
   precheck:
-    '你是题目质检助手，负责第一阶段：元数据与逻辑自洽性检查（Pre-check）。\n输入：题目文本、选项。\n任务：\n1. 检查错别字、标点错误、选项重复、题干描述与选项矛盾。\n2. 判断图文依赖性：仅靠文字是否足以解题。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "is_valid": boolean,\n  "reason": string,\n  "requires_image": boolean\n}\n要求：\n- is_valid 为 true 时，reason 需填 \"无\" 或 \"\"。\n- is_valid 为 false 时，reason 必须写清楚具体问题。\n字段内容如下：\n{{fields_json}}',
+    '你是题目质检助手，负责第一阶段：元数据与逻辑自洽性检查（Pre-check）。\n输入：题目文本、选项。\n任务：\n1. 检查错别字、标点错误、选项重复、题干描述与选项矛盾。\n2. 判断图文依赖性：仅靠文字是否足以解题。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "is_valid": boolean,\n  "reason": string,\n  "requires_image": boolean\n}\n要求：\n- is_valid 为 true 时，reason 填 \"无\" 或 \"\"。\n- is_valid 为 false 时，reason 必须写清楚具体问题。\n- requires_image 为 true 表示必须结合图片才能理解或解题。\n字段内容如下：\n{{fields_json}}',
   context_audit:
     '你是多模态一致性审计助手（Context Audit）。\n输入：题目文本、选项、图片、解答过程。\n任务：\n1. 检查图片内容是否与文本描述匹配（例如文本说“如图所示三角形 ABC”，图片里是否真为 ABC）。\n2. 检查解答过程是否引入题目未提供的前提条件。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "is_consistent": boolean,\n  "missing_info": string\n}\n要求：\n- 若一致且无外部依赖，missing_info 填 \"无\" 或 \"\"。\n- 若不一致或依赖外部信息，missing_info 写明缺失信息或矛盾点。\n字段内容如下：\n{{fields_json}}',
   independent_solving:
-    '请忽略原有解答过程，独立解题并推演每个选项（Independent Solving）。\n输入：题目文本、选项、图片。\n任务：\n1. 针对每个选项逐一推导，说明为什么对/错。\n2. 给出 AI 独立计算的最终答案。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "analysis": { "A": "...", "B": "...", "C": "...", "D": "..." },\n  "final_answer": string\n}\n要求：\n- analysis 的键使用题目提供的选项标签（如 A/B/C/D 或 ①②③④）。\n- final_answer 使用题目选项标签或明确答案文本。\n字段内容如下：\n{{fields_json}}',
+    '请忽略原有解答过程，独立解题并推演每个选项（Independent Solving）。\n输入：题目文本、选项、图片。\n任务：\n1. 针对每个选项逐一推导，说明为什么对/错。\n2. 给出 AI 独立计算的最终答案。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "analysis": { "A": "...", "B": "...", "C": "...", "D": "..." },\n  "final_answer": string\n}\n要求：\n- analysis 的键使用题目提供的选项标签（如 A/B/C/D 或 ①②③④）。\n- 若无法解题，请在 analysis 说明原因，并将 final_answer 写为 \"无法确定\"。\n字段内容如下：\n{{fields_json}}',
   final_verdict:
     '请进行真题对标与最终裁定（Final Verdict）。\n输入：步骤 3 的结果 + 题目原始答案 + 题目原始解答。\n任务：\n1. 对比 AI 答案与原始答案。\n2. 如果不一致，判断是 AI 错误还是原题答案/解答错误，并说明原因。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "status": "Pass" | "Fail",\n  "discrepancy_detail": string\n}\n要求：\n- 一致则 status = \"Pass\"，discrepancy_detail 填 \"无\" 或 \"\"。\n- 不一致则 status = \"Fail\"，discrepancy_detail 说明冲突点与责任归因。\n字段内容如下：\n{{fields_json}}',
 };
