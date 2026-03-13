@@ -90,8 +90,8 @@ function renderContextAuditResult(parsed: AIResultParsed) {
   );
 }
 
-function renderIndependentSolvingResult(parsed: AIResultParsed) {
-  const finalAnswer = parsed.final_answer?.trim() || "无法确定";
+function renderIndependentSolvingAnswer(answer: string) {
+  const finalAnswer = answer.trim().length > 0 ? answer.trim() : "无法确定";
 
   return (
     <div className="ai-result-formatted">
@@ -102,6 +102,55 @@ function renderIndependentSolvingResult(parsed: AIResultParsed) {
       </div>
     </div>
   );
+}
+
+function extractFinalAnswerFromText(content: string): string | null {
+  if (!content) {
+    return null;
+  }
+  const answerSection = content.includes("【AI结果】")
+    ? content.split("【AI结果】").pop() ?? ""
+    : content;
+
+  const jsonCandidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < answerSection.length; i += 1) {
+    const char = answerSection[i];
+    if (char === "{") {
+      if (depth === 0) {
+        start = i;
+      }
+      depth += 1;
+    } else if (char === "}") {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && start >= 0) {
+          jsonCandidates.push(answerSection.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
+  }
+
+  for (let i = jsonCandidates.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(jsonCandidates[i]) as AIResultParsed;
+      if (typeof parsed.final_answer === "string") {
+        return parsed.final_answer;
+      }
+    } catch {
+      // Ignore invalid JSON candidates.
+    }
+  }
+
+  const directMatch =
+    /final_answer\s*[:：]\s*["“”']?([^"\n\r,}]+)["“”']?/i.exec(answerSection);
+  if (directMatch?.[1]) {
+    return directMatch[1].trim();
+  }
+
+  return null;
 }
 
 function renderFinalVerdictResult(parsed: AIResultParsed) {
@@ -151,9 +200,16 @@ function renderAIResultContent(stageKey: AIDetectStageKey, content: string) {
       }
       break;
     case "independent_solving":
-      if (parsed.final_answer !== undefined) {
-        return renderIndependentSolvingResult(parsed);
+      if (typeof parsed.final_answer === "string") {
+        return renderIndependentSolvingAnswer(parsed.final_answer);
       }
+      {
+        const extracted = extractFinalAnswerFromText(trimmed);
+        if (extracted) {
+          return renderIndependentSolvingAnswer(extracted);
+        }
+      }
+      return <span className="ai-result-empty">无法解析答案</span>;
       break;
     case "final_verdict":
       if (parsed.status === "Pass" || parsed.status === "Fail") {

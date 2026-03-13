@@ -181,6 +181,7 @@ function App() {
   const aiBatchAbortRef = useRef<AbortController | null>(null);
   const aiDetectStartedAtRef = useRef<number | null>(null);
   const persistAIResultsQueueRef = useRef<Record<string, Promise<void>>>({});
+  const latestFileStateRef = useRef<Record<string, FileViewState>>({});
   const rowStreamCharsRef = useRef<
     Record<string, Partial<Record<AIDetectStageKey, number>>>
   >({});
@@ -773,15 +774,17 @@ function App() {
     );
   }, [activeFile?.fileId, visibleRows]);
 
-  const persistFileState = (file: FileViewState) => {
-    fetch(`/api/files/${encodeURIComponent(file.fileId)}/state`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state: file }),
-    }).catch((error) => {
+  const persistFileState = async (file: FileViewState) => {
+    try {
+      await fetch(`/api/files/${encodeURIComponent(file.fileId)}/state`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: file }),
+      });
+    } catch (error) {
       // eslint-disable-next-line no-console
       console.error("[PersistFileState] Failed to save file state:", error);
-    });
+    }
   };
 
   const persistAIResults = (
@@ -794,30 +797,57 @@ function App() {
       return;
     }
     const enqueuePersist = (job: () => Promise<void>) => {
-      const previous = persistAIResultsQueueRef.current[fileId] ?? Promise.resolve();
+      const previous =
+        persistAIResultsQueueRef.current[fileId] ?? Promise.resolve();
       const next = previous
         .then(job)
         .catch((error) => {
           // eslint-disable-next-line no-console
           console.error("[PersistAIResults] Failed to save AI results:", error);
           if (fallbackState) {
-            persistFileState(fallbackState);
+            void persistFileState(fallbackState);
           }
         });
       persistAIResultsQueueRef.current[fileId] = next;
     };
 
-    enqueuePersist(() =>
-      fetch(`/api/files/${encodeURIComponent(fileId)}/ai-results`, {
+    enqueuePersist(async () => {
+      const endpoint = `/api/files/${encodeURIComponent(fileId)}/ai-results`;
+      const payload = JSON.stringify({ stageKey, results });
+      const response = await fetch(endpoint, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stageKey, results }),
-      }).then((response) => {
-        if (!response.ok) {
-          throw new Error("Failed to save AI results");
+        body: payload,
+      });
+      if (response.ok) {
+        return;
+      }
+      if (response.status === 404 && fallbackState) {
+        await persistFileState(fallbackState);
+        const retryResponse = await fetch(endpoint, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+        });
+        if (retryResponse.ok) {
+          return;
         }
-      }),
-    );
+      }
+      throw new Error("Failed to save AI results");
+    });
+  };
+
+  const flushPendingAIResults = async (fileId: string) => {
+    const pending = persistAIResultsQueueRef.current[fileId];
+    if (!pending) {
+      return;
+    }
+    try {
+      await pending;
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("[PersistAIResults] Pending flush failed:", error);
+    }
   };
 
   const cancelScheduledPersist = (fileId: string) => {
@@ -992,6 +1022,7 @@ function App() {
     resultText: string,
   ) => {
     let shouldPersist = false;
+    let nextFileState: FileViewState | null = null;
     setFiles((previous) =>
       previous.map((file) => {
         if (file.fileId !== fileId) {
@@ -1014,17 +1045,20 @@ function App() {
           ...file,
           rows: nextRows,
         };
+        nextFileState = nextFile;
+        latestFileStateRef.current[fileId] = nextFile;
         return nextFile;
       }),
     );
 
-    if (shouldPersist) {
+    if (shouldPersist && nextFileState) {
       // Persist AI results immediately (no delay) to ensure data is saved
       cancelScheduledPersist(fileId);
       persistAIResults(
         fileId,
         stageKey,
         { [rowId]: resultText },
+        nextFileState,
       );
     }
   };
@@ -1366,6 +1400,15 @@ function App() {
         return;
       }
 
+      setAIBatchTask((previous) => ({
+        ...previous,
+        message: "执行全部完成，正在写入 AI 检测结果",
+      }));
+      await flushPendingAIResults(targetFileId);
+      const latestFile = latestFileStateRef.current[targetFileId];
+      if (latestFile) {
+        await persistFileState(latestFile);
+      }
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
@@ -2201,6 +2244,15 @@ function App() {
         return;
       }
 
+      setAIBatchTask((previous) => ({
+        ...previous,
+        message: "批量完成，正在写入 AI 检测结果",
+      }));
+      await flushPendingAIResults(targetFileId);
+      const latestFile = latestFileStateRef.current[targetFileId];
+      if (latestFile) {
+        await persistFileState(latestFile);
+      }
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
