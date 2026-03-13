@@ -182,6 +182,7 @@ function App() {
   const aiDetectStartedAtRef = useRef<number | null>(null);
   const persistAIResultsQueueRef = useRef<Record<string, Promise<void>>>({});
   const latestFileStateRef = useRef<Record<string, FileViewState>>({});
+  const aiBatchPersistTimerRef = useRef<number | null>(null);
   const rowStreamCharsRef = useRef<
     Record<string, Partial<Record<AIDetectStageKey, number>>>
   >({});
@@ -194,6 +195,12 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    files.forEach((file) => {
+      latestFileStateRef.current[file.fileId] = file;
+    });
+  }, [files]);
 
   useEffect(() => {
     let disposed = false;
@@ -300,6 +307,10 @@ function App() {
       if (rowStreamFlushTimerRef.current !== null) {
         window.clearTimeout(rowStreamFlushTimerRef.current);
         rowStreamFlushTimerRef.current = null;
+      }
+      if (aiBatchPersistTimerRef.current !== null) {
+        window.clearInterval(aiBatchPersistTimerRef.current);
+        aiBatchPersistTimerRef.current = null;
       }
       rowStreamCharsRef.current = {};
       rowStreamProgressRef.current = {};
@@ -886,6 +897,23 @@ function App() {
     }, 120);
   };
 
+  const stopBatchPersistLoop = () => {
+    if (aiBatchPersistTimerRef.current !== null) {
+      window.clearInterval(aiBatchPersistTimerRef.current);
+      aiBatchPersistTimerRef.current = null;
+    }
+  };
+
+  const startBatchPersistLoop = (fileId: string) => {
+    stopBatchPersistLoop();
+    aiBatchPersistTimerRef.current = window.setInterval(() => {
+      const latest = latestFileStateRef.current[fileId];
+      if (latest) {
+        void persistFileState(latest);
+      }
+    }, 1500);
+  };
+
   const resetRowStreamProgress = () => {
     if (rowStreamFlushTimerRef.current !== null) {
       window.clearTimeout(rowStreamFlushTimerRef.current);
@@ -1021,14 +1049,11 @@ function App() {
     stageKey: AIDetectStageKey,
     resultText: string,
   ) => {
-    let shouldPersist = false;
-    let nextFileState: FileViewState | null = null;
     setFiles((previous) =>
       previous.map((file) => {
         if (file.fileId !== fileId) {
           return file;
         }
-        shouldPersist = true;
         const nextRows = file.rows.map((row) => {
           if (row.rowId !== rowId) {
             return row;
@@ -1045,22 +1070,18 @@ function App() {
           ...file,
           rows: nextRows,
         };
-        nextFileState = nextFile;
-        latestFileStateRef.current[fileId] = nextFile;
         return nextFile;
       }),
     );
 
-    if (shouldPersist && nextFileState) {
-      // Persist AI results immediately (no delay) to ensure data is saved
-      cancelScheduledPersist(fileId);
-      persistAIResults(
-        fileId,
-        stageKey,
-        { [rowId]: resultText },
-        nextFileState,
-      );
-    }
+    // Persist AI results immediately (no delay) to ensure data is saved
+    cancelScheduledPersist(fileId);
+    persistAIResults(
+      fileId,
+      stageKey,
+      { [rowId]: resultText },
+      latestFileStateRef.current[fileId],
+    );
   };
 
   const getStageLabel = (stageKey: AIDetectStageKey) =>
@@ -1240,6 +1261,7 @@ function App() {
     aiBatchAbortRef.current?.abort();
     const controller = new AbortController();
     aiBatchAbortRef.current = controller;
+    startBatchPersistLoop(targetFileId);
     resetRowStreamProgress();
     resetRowBatchStatuses();
     setAIBatchTask({
@@ -1431,6 +1453,7 @@ function App() {
       if (aiBatchAbortRef.current === controller) {
         aiBatchAbortRef.current = null;
       }
+      stopBatchPersistLoop();
       resetRowStreamProgress();
     }
   };
@@ -2131,6 +2154,7 @@ function App() {
     aiBatchAbortRef.current?.abort();
     const controller = new AbortController();
     aiBatchAbortRef.current = controller;
+    startBatchPersistLoop(targetFileId);
     resetRowStreamProgress();
     resetRowBatchStatuses();
     setAIBatchTask({
@@ -2276,6 +2300,7 @@ function App() {
       if (aiBatchAbortRef.current === controller) {
         aiBatchAbortRef.current = null;
       }
+      stopBatchPersistLoop();
       resetRowStreamProgress();
     }
   };

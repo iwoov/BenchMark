@@ -379,6 +379,19 @@ const LOCAL_IMAGE_API_PATH = "/api/images/local";
 const SUPPORTED_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"] as const;
 const AI_RESPONSE_LOG_MAX_CHARS = 12000;
 const AI_RESPONSE_RAW_LOG_MAX_CHARS = 6000;
+const AI_LOG_PREVIEW_CHARS = 160;
+const AI_FIELD_PREVIEW_CHARS = 40;
+const SHOULD_LOG_AI_VERBOSE = process.env.DEBUG_AI_VERBOSE === "1";
+const SHOULD_LOG_AI_THINKING =
+  process.env.DEBUG_AI_THINKING === "1" || SHOULD_LOG_AI_VERBOSE;
+
+function formatLogPreview(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars)}...`;
+}
 
 function getImageMimeType(ext: string): string {
   const map: Record<string, string> = {
@@ -500,6 +513,16 @@ function normalizeImageUrlForAI(imageUrl: string): string | null {
 
 function logAIResponseById(requestId: string, text: string): void {
   const normalized = text.replace(/\r/g, "");
+  if (!SHOULD_LOG_AI_VERBOSE) {
+    const preview = formatLogPreview(normalized, AI_LOG_PREVIEW_CHARS);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[AIResponse][${requestId}] len=${normalized.length}${
+        preview ? ` preview=${JSON.stringify(preview)}` : ""
+      }`,
+    );
+    return;
+  }
   if (normalized.length <= AI_RESPONSE_LOG_MAX_CHARS) {
     // eslint-disable-next-line no-console
     console.log(
@@ -516,6 +539,11 @@ function logAIResponseById(requestId: string, text: string): void {
 
 function logAIRawResponseById(requestId: string, text: string): void {
   const normalized = text.replace(/\r/g, "");
+  if (!SHOULD_LOG_AI_VERBOSE) {
+    // eslint-disable-next-line no-console
+    console.log(`[AIResponseRaw][${requestId}] len=${normalized.length}`);
+    return;
+  }
   if (normalized.length <= AI_RESPONSE_RAW_LOG_MAX_CHARS) {
     // eslint-disable-next-line no-console
     console.log(
@@ -531,6 +559,9 @@ function logAIRawResponseById(requestId: string, text: string): void {
 }
 
 function logAIThinkingById(requestId: string, text: string): void {
+  if (!SHOULD_LOG_AI_THINKING) {
+    return;
+  }
   const normalized = text.replace(/\r/g, "");
   if (normalized.length <= AI_RESPONSE_LOG_MAX_CHARS) {
     // eslint-disable-next-line no-console
@@ -2141,14 +2172,35 @@ app.post("/api/ai-detect/stream", async (req, res) => {
           : "remote-url"
         : undefined,
   }));
+  const aiFieldSummary = aiFields.map((field, index) => {
+    if (field.type === "image") {
+      const imageStatus = field.imageUrl
+        ? field.imageUrl.startsWith("data:image/")
+          ? "data-url"
+          : "remote-url"
+        : "missing";
+      const imageNote = field.value.trim().length
+        ? `, ${formatLogPreview(field.value, AI_FIELD_PREVIEW_CHARS)}`
+        : "";
+      return `${index + 1}.${field.title}:image(${imageStatus}${imageNote})`;
+    }
+    const textPreview = formatLogPreview(field.value, AI_FIELD_PREVIEW_CHARS);
+    return `${index + 1}.${field.title}:text(${textPreview})`;
+  });
   // eslint-disable-next-line no-console
   console.log(
     `[AIRequest][${aiRequestId}] provider=${normalizedProvider} model=${normalizedModel} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
   );
   // eslint-disable-next-line no-console
   console.log(
-    `[AIRequestFields][${aiRequestId}] ${JSON.stringify(aiFieldLogs)}`,
+    `[AIRequestFields][${aiRequestId}] ${aiFieldSummary.join(" | ")}`,
   );
+  if (SHOULD_LOG_AI_VERBOSE) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[AIRequestFieldsRaw][${aiRequestId}] ${JSON.stringify(aiFieldLogs)}`,
+    );
+  }
   if (normalizedProvider === "openai") {
     try {
       // Validate URL before dispatching request.
@@ -2469,13 +2521,19 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       normalizedOpenAIApiKey,
     );
     // eslint-disable-next-line no-console
-    console.log(
-      `[AIUpstreamConfig][${aiRequestId}] provider=gemini thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
-    );
+      if (SHOULD_LOG_AI_VERBOSE) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamConfig][${aiRequestId}] provider=gemini thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
+        );
+      }
     // eslint-disable-next-line no-console
-    console.log(
-      `[AIUpstreamConfig][${aiRequestId}] provider=gemini authMode=${geminiAuth.mode}`,
-    );
+      if (SHOULD_LOG_AI_VERBOSE) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamConfig][${aiRequestId}] provider=gemini authMode=${geminiAuth.mode}`,
+        );
+      }
     const geminiRequestBody: GeminiGenerateContentRequest = {
       contents: [
         {
