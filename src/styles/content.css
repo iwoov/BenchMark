@@ -152,7 +152,24 @@
     font-family: inherit;
 }
 
+.batch-control select {
+    height: 30px;
+    min-width: 150px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    padding: 0 8px;
+    font-size: 12px;
+    font-family: inherit;
+}
+
 .batch-control input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.batch-control select:focus {
     border-color: var(--accent);
     outline: none;
 }
@@ -493,6 +510,31 @@
 
 .ai-result-reason span {
     color: var(--text-primary);
+}
+
+.ai-result-analysis {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.ai-result-analysis-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.ai-result-analysis-item strong {
+    color: var(--text-primary);
+    font-weight: 600;
+    flex: 0 0 auto;
+}
+
+.ai-result-analysis-item span {
+    color: var(--text-secondary);
 }
 
 .ai-result-empty {

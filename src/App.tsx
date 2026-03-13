@@ -14,6 +14,7 @@ import {
   ALL_FILTER_VALUE,
   AI_RUN_ALL_KEY,
   AI_RUN_ALL_LABEL,
+  AI_RUN_STAGE_ORDER,
   AI_STAGE_LABELS,
   AI_STAGE_ORDER,
   DEFAULT_AI_BATCH_CONCURRENCY,
@@ -2815,6 +2816,31 @@ function App() {
                   {activeSection === "list" ? (
                     <div className="toolbar-actions">
                       <div className="batch-toolbar">
+                        <label className="batch-control">
+                          <span>运行阶段</span>
+                          <select
+                            value={activeAIRunKey}
+                            onChange={(event) =>
+                              setActiveAIRunKey(
+                                event.target.value as AIDetectRunKey,
+                              )
+                            }
+                            disabled={
+                              aiConfigLoading ||
+                              isAIDetecting ||
+                              isAIBatchRunning
+                            }
+                          >
+                            {AI_RUN_STAGE_ORDER.map((stageKey) => (
+                              <option key={stageKey} value={stageKey}>
+                                {stageKey === AI_RUN_ALL_KEY
+                                  ? AI_RUN_ALL_LABEL
+                                  : (AI_STAGE_LABELS[stageKey]?.shortTitle ??
+                                    stageKey)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                         <label className="batch-control">
                           <span>批量并发</span>
                           <input

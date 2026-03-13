@@ -92,6 +92,11 @@ function renderContextAuditResult(parsed: AIResultParsed) {
 
 function renderIndependentSolvingResult(parsed: AIResultParsed) {
   const finalAnswer = parsed.final_answer?.trim() || "无法确定";
+  const analysisEntries = parsed.analysis
+    ? Object.entries(parsed.analysis).filter(
+        ([, value]) => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
 
   return (
     <div className="ai-result-formatted">
@@ -100,6 +105,16 @@ function renderIndependentSolvingResult(parsed: AIResultParsed) {
           📝 答案：{finalAnswer}
         </span>
       </div>
+      {analysisEntries.length > 0 ? (
+        <div className="ai-result-analysis">
+          {analysisEntries.map(([key, value]) => (
+            <div key={key} className="ai-result-analysis-item">
+              <strong>{key}：</strong>
+              <span>{value}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
