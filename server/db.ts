@@ -812,6 +812,69 @@ export function saveFileState(
   ).run(fileId, fileName, JSON.stringify(state));
 }
 
+export function updateFileStateAIResults(
+  fileId: string,
+  stageKey: AIDetectStageKey,
+  results: Array<{ rowId: string; resultText: string }>,
+): number | null {
+  if (results.length === 0) {
+    return 0;
+  }
+  const row = db
+    .prepare("SELECT state_json FROM file_states WHERE file_id = ?")
+    .get(fileId) as { state_json: string } | undefined;
+  if (!row) {
+    return null;
+  }
+  let parsedState: unknown = null;
+  try {
+    parsedState = JSON.parse(row.state_json) as unknown;
+  } catch {
+    return null;
+  }
+  if (!parsedState || typeof parsedState !== "object") {
+    return null;
+  }
+  const state = parsedState as { rows?: Array<Record<string, unknown>> };
+  if (!Array.isArray(state.rows)) {
+    return null;
+  }
+
+  const rowMap = new Map<string, Record<string, unknown>>();
+  state.rows.forEach((item) => {
+    const rowId = item?.rowId;
+    if (typeof rowId === "string") {
+      rowMap.set(rowId, item);
+    }
+  });
+
+  let updatedCount = 0;
+  results.forEach(({ rowId, resultText }) => {
+    const target = rowMap.get(rowId);
+    if (!target) {
+      return;
+    }
+    const rawAIResults = target.aiResults;
+    const aiResults =
+      rawAIResults && typeof rawAIResults === "object"
+        ? (rawAIResults as Record<string, string>)
+        : {};
+    aiResults[stageKey] = resultText;
+    target.aiResults = aiResults;
+    updatedCount += 1;
+  });
+
+  if (updatedCount === 0) {
+    return 0;
+  }
+
+  db.prepare(
+    "UPDATE file_states SET state_json = ?, updated_at = CURRENT_TIMESTAMP WHERE file_id = ?",
+  ).run(JSON.stringify(state), fileId);
+
+  return updatedCount;
+}
+
 export function deleteFileState(fileId: string): void {
   db.prepare("DELETE FROM file_states WHERE file_id = ?").run(fileId);
 }

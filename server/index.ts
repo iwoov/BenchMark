@@ -17,6 +17,7 @@ import {
   saveColumnPrefs,
   saveFileState,
   setAIDetectActiveConfig,
+  updateFileStateAIResults,
 } from "./db.js";
 
 type ExcelJSImportLike = { Workbook: new () => ExcelJS.Workbook };
@@ -157,6 +158,10 @@ function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
 
 function isAIProvider(value: unknown): value is AIProvider {
   return value === "openai" || value === "gemini";
+}
+
+function isAIDetectStageKey(value: unknown): value is AIDetectStageKey {
+  return AI_STAGE_ORDER.includes(value as AIDetectStageKey);
 }
 
 function isValidAIRetryCount(value: unknown): value is number {
@@ -1203,6 +1208,46 @@ app.put("/api/files/:fileId/state", (req, res) => {
 
   saveFileState(fileId, nextState.fileName, state);
   return res.json({ ok: true });
+});
+
+app.put("/api/files/:fileId/ai-results", (req, res) => {
+  const { fileId } = req.params;
+  const { stageKey, results } = req.body as {
+    stageKey?: unknown;
+    results?: unknown;
+  };
+
+  if (!isAIDetectStageKey(stageKey)) {
+    return res.status(400).json({ message: "stageKey is invalid" });
+  }
+  if (!results || typeof results !== "object") {
+    return res.status(400).json({ message: "results must be an object" });
+  }
+
+  const entries = Object.entries(results as Record<string, unknown>)
+    .map(([rowId, value]) => ({
+      rowId,
+      resultText: typeof value === "string" ? value : null,
+    }))
+    .filter(
+      (item): item is { rowId: string; resultText: string } =>
+        typeof item.rowId === "string" && item.rowId.length > 0 &&
+        item.resultText !== null,
+    );
+
+  if (entries.length === 0) {
+    return res.status(400).json({ message: "results must have string values" });
+  }
+
+  const updatedCount = updateFileStateAIResults(
+    fileId,
+    stageKey,
+    entries,
+  );
+  if (updatedCount === null) {
+    return res.status(404).json({ message: "file state not found" });
+  }
+  return res.json({ ok: true, updatedCount });
 });
 
 app.delete("/api/files/:fileId", (req, res) => {

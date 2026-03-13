@@ -720,6 +720,34 @@ function App() {
     });
   };
 
+  const persistAIResults = (
+    fileId: string,
+    stageKey: AIDetectStageKey,
+    results: Record<string, string>,
+    fallbackState?: FileViewState,
+  ) => {
+    if (Object.keys(results).length === 0) {
+      return;
+    }
+    fetch(`/api/files/${encodeURIComponent(fileId)}/ai-results`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stageKey, results }),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Failed to save AI results");
+        }
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.error("[PersistAIResults] Failed to save AI results:", error);
+        if (fallbackState) {
+          persistFileState(fallbackState);
+        }
+      });
+  };
+
   const cancelScheduledPersist = (fileId: string) => {
     const timerId = persistTimersRef.current[fileId];
     if (timerId !== undefined) {
@@ -831,7 +859,12 @@ function App() {
     if (nextFileToPersist) {
       // Persist AI results immediately (no delay) to ensure data is saved
       cancelScheduledPersist(nextFileToPersist.fileId);
-      persistFileState(nextFileToPersist);
+      persistAIResults(
+        nextFileToPersist.fileId,
+        stageKey,
+        { [rowId]: resultText },
+        nextFileToPersist,
+      );
     }
   };
 
@@ -1794,7 +1827,16 @@ function App() {
     if (nextFileToPersist) {
       // Persist batch AI results immediately to ensure data is saved
       cancelScheduledPersist(nextFileToPersist.fileId);
-      persistFileState(nextFileToPersist);
+      const results: Record<string, string> = {};
+      resultMap.forEach((value, key) => {
+        results[key] = value;
+      });
+      persistAIResults(
+        nextFileToPersist.fileId,
+        stageKey,
+        results,
+        nextFileToPersist,
+      );
     }
   };
 
