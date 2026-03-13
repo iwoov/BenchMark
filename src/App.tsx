@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AIDetectConfig,
+  AIDetectRunKey,
   AIDetectStageKey,
   FileViewState,
   NamedAIDetectConfig,
@@ -11,6 +12,8 @@ import type {
 } from "./types";
 import {
   ALL_FILTER_VALUE,
+  AI_RUN_ALL_KEY,
+  AI_RUN_ALL_LABEL,
   AI_STAGE_LABELS,
   AI_STAGE_ORDER,
   DEFAULT_AI_BATCH_CONCURRENCY,
@@ -115,8 +118,8 @@ function App() {
   const [aiThinkingText, setAIThinkingText] = useState("");
   const [aiResultText, setAIResultText] = useState("");
   const [aiResultMessage, setAIResultMessage] = useState("");
-  const [activeAIStageKey, setActiveAIStageKey] =
-    useState<AIDetectStageKey>("precheck");
+  const [activeAIRunKey, setActiveAIRunKey] =
+    useState<AIDetectRunKey>("precheck");
   const [aiDetectElapsedMs, setAIDetectElapsedMs] = useState(0);
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [aiBatchTask, setAIBatchTask] = useState<AIBatchTaskState>(
@@ -507,10 +510,12 @@ function App() {
     [activeFile],
   );
 
-  const activeStageConfig = useMemo(
-    () => aiConfig.stages[activeAIStageKey],
-    [aiConfig, activeAIStageKey],
-  );
+  const activeStageConfig = useMemo(() => {
+    if (activeAIRunKey === AI_RUN_ALL_KEY) {
+      return null;
+    }
+    return aiConfig.stages[activeAIRunKey];
+  }, [aiConfig, activeAIRunKey]);
   const activeProfile = useMemo(() => {
     const profiles = aiConfig.profiles ?? [];
     const matched = profiles.find(
@@ -603,6 +608,49 @@ function App() {
     if (!activeFile || !selectedRow) {
       return "";
     }
+    if (activeAIRunKey === AI_RUN_ALL_KEY) {
+      const stages = AI_STAGE_ORDER.map((stageKey) => {
+        const stageConfig = aiConfig.stages[stageKey];
+        const profileItem =
+          aiConfig.profiles.find(
+            (item) => item.name === stageConfig.profileName,
+          ) ?? aiConfig.profiles[0];
+        const profile = profileItem?.profile ?? DEFAULT_AI_PROFILE;
+        const fields = buildAIDetectFieldsForRow(
+          activeFile.columns,
+          selectedRow,
+          stageConfig.submitFieldKeys,
+        );
+        if (stageKey === "final_verdict") {
+          fields.push({
+            title: "AI独立解题结果（第三阶段）",
+            type: "text",
+            value: "（等待第三阶段结果）",
+          });
+        }
+        return {
+          stageKey,
+          stageTitle: AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey,
+          profileName: profileItem?.name ?? "",
+          provider: profile.provider,
+          model: profile.model,
+          reasoningEffort: profile.reasoningEffort,
+          retryCount: profile.retryCount,
+          prompt: stageConfig.prompt,
+          fields,
+        };
+      });
+      return JSON.stringify(
+        {
+          runMode: AI_RUN_ALL_LABEL,
+          dependency: "第四阶段依赖第三阶段结果",
+          stages,
+        },
+        null,
+        2,
+      );
+    }
+
     const fields = buildAIDetectFieldsForRow(
       activeFile.columns,
       selectedRow,
@@ -610,8 +658,8 @@ function App() {
     );
     return JSON.stringify(
       {
-        stageKey: activeAIStageKey,
-        stageTitle: AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "",
+        stageKey: activeAIRunKey,
+        stageTitle: AI_STAGE_LABELS[activeAIRunKey]?.shortTitle ?? "",
         profileName: activeProfile?.name ?? "",
         provider: resolvedActiveProfile.provider,
         model: resolvedActiveProfile.model,
@@ -626,8 +674,9 @@ function App() {
   }, [
     activeFile,
     selectedRow,
+    aiConfig,
     activeStageConfig,
-    activeAIStageKey,
+    activeAIRunKey,
     activeProfile,
     resolvedActiveProfile,
   ]);
@@ -780,7 +829,339 @@ function App() {
 
     if (nextFileToPersist) {
       // Persist AI results immediately (no delay) to ensure data is saved
+      cancelScheduledPersist(nextFileToPersist.fileId);
       persistFileState(nextFileToPersist);
+    }
+  };
+
+  const getStageLabel = (stageKey: AIDetectStageKey) =>
+    AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey;
+
+  const resolveProfileForStage = (
+    config: AIDetectConfig,
+    stageConfig: AIDetectConfig["stages"][AIDetectStageKey],
+  ) => {
+    const profileItem =
+      config.profiles.find((item) => item.name === stageConfig.profileName) ??
+      config.profiles[0];
+    return profileItem?.profile ?? null;
+  };
+
+  const validateStageSetup = (
+    stageKey: AIDetectStageKey,
+    stageConfig: AIDetectConfig["stages"][AIDetectStageKey],
+    profile: AIDetectConfig["profiles"][number]["profile"] | null,
+    includeStagePrefix: boolean,
+  ): string | null => {
+    const prefix = includeStagePrefix ? `【${getStageLabel(stageKey)}】` : "";
+    if (!profile) {
+      return `${prefix}请先配置接口`;
+    }
+    if (profile.model.trim().length === 0) {
+      return `${prefix}请先配置模型`;
+    }
+    if (profile.url.trim().length === 0) {
+      return `${prefix}请先配置 Base URL`;
+    }
+    if (profile.apiKey.trim().length === 0) {
+      return `${prefix}请先配置 Idealab API Key`;
+    }
+    if (stageConfig.submitFieldKeys.length === 0) {
+      return `${prefix}请先在 AI 配置中选择提交回答字段`;
+    }
+    if (stageConfig.prompt.trim().length === 0) {
+      return `${prefix}请先配置 Prompt`;
+    }
+    return null;
+  };
+
+  const buildStageFieldsForRow = (
+    columns: ParsedColumn[],
+    row: ParsedRow,
+    stageKey: AIDetectStageKey,
+    stageConfig: AIDetectConfig["stages"][AIDetectStageKey],
+    independentSolvingResult?: string,
+  ) => {
+    const fields = buildAIDetectFieldsForRow(
+      columns,
+      row,
+      stageConfig.submitFieldKeys,
+    );
+    if (stageKey === "final_verdict") {
+      fields.push({
+        title: "AI独立解题结果（第三阶段）",
+        type: "text",
+        value: independentSolvingResult ?? "",
+      });
+    }
+    return fields;
+  };
+
+  const runStageRequest = async ({
+    stageConfig,
+    profile,
+    fields,
+    signal,
+  }: {
+    stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
+    profile: AIDetectConfig["profiles"][number]["profile"];
+    fields: ReturnType<typeof buildAIDetectFieldsForRow>;
+    signal: AbortSignal;
+  }): Promise<string> => {
+    if (fields.length === 0) {
+      throw new Error("没有可提交的回答字段");
+    }
+    const streamResult = await requestAIDetectResult(
+      {
+        provider: profile.provider,
+        url: profile.url,
+        model: profile.model,
+        apiKey: profile.apiKey,
+        prompt: stageConfig.prompt,
+        fields,
+        reasoningEffort: profile.reasoningEffort,
+        retryCount: profile.retryCount,
+      },
+      { signal },
+    );
+    const text = composeAISaveText(
+      streamResult.answerText,
+      streamResult.thinkingText,
+    );
+    if (text.trim().length === 0) {
+      throw new Error("AI 返回为空");
+    }
+    return text;
+  };
+
+  const runBatchAllStages = async ({
+    normalizedConfig,
+    targetRows,
+    targetColumns,
+    targetFileId,
+    targetFileName,
+    normalizedTargetRowIds,
+  }: {
+    normalizedConfig: AIDetectConfig;
+    targetRows: ParsedRow[];
+    targetColumns: ParsedColumn[];
+    targetFileId: string;
+    targetFileName: string;
+    normalizedTargetRowIds: string[] | null;
+  }) => {
+    const stageRunMap = new Map<
+      AIDetectStageKey,
+      {
+        stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
+        profile: AIDetectConfig["profiles"][number]["profile"];
+      }
+    >();
+    for (const stageKey of AI_STAGE_ORDER) {
+      const stageConfig = normalizedConfig.stages[stageKey];
+      const profile = resolveProfileForStage(normalizedConfig, stageConfig);
+      const error = validateStageSetup(stageKey, stageConfig, profile, true);
+      if (error || !profile) {
+        setErrorMessage(error ?? "请先配置接口");
+        return;
+      }
+      stageRunMap.set(stageKey, { stageConfig, profile });
+    }
+
+    const precheckConfig = stageRunMap.get("precheck");
+    const contextConfig = stageRunMap.get("context_audit");
+    const independentConfig = stageRunMap.get("independent_solving");
+    const finalConfig = stageRunMap.get("final_verdict");
+    if (
+      !precheckConfig ||
+      !contextConfig ||
+      !independentConfig ||
+      !finalConfig
+    ) {
+      setErrorMessage("阶段配置缺失");
+      return;
+    }
+
+    const resultMaps: Record<AIDetectStageKey, Map<string, string>> = {
+      precheck: new Map(),
+      context_audit: new Map(),
+      independent_solving: new Map(),
+      final_verdict: new Map(),
+    };
+    let nextCursor = 0;
+    const requestedConcurrency =
+      normalizeAIBatchConcurrency(aiBatchConcurrency);
+    const workerCount = Math.min(requestedConcurrency, targetRows.length);
+
+    aiBatchAbortRef.current?.abort();
+    const controller = new AbortController();
+    aiBatchAbortRef.current = controller;
+    setAIBatchTask({
+      status: "running",
+      fileId: targetFileId,
+      fileName: targetFileName,
+      total: targetRows.length,
+      completed: 0,
+      success: 0,
+      failed: 0,
+      message:
+        normalizedTargetRowIds && normalizedTargetRowIds.length > 0
+          ? `已选择 ${targetRows.length} 条，执行全部，并发 ${workerCount} 线程`
+          : `执行全部，并发 ${workerCount} 线程`,
+    });
+    setErrorMessage("");
+    setAIResultMessage("");
+
+    const runWorker = async () => {
+      while (!controller.signal.aborted) {
+        const currentIndex = nextCursor;
+        nextCursor += 1;
+        if (currentIndex >= targetRows.length) {
+          return;
+        }
+
+        const row = targetRows[currentIndex];
+        let rowFailed = false;
+        try {
+          const precheckPromise = runStageRequest({
+            stageConfig: precheckConfig.stageConfig,
+            profile: precheckConfig.profile,
+            fields: buildStageFieldsForRow(
+              targetColumns,
+              row,
+              "precheck",
+              precheckConfig.stageConfig,
+            ),
+            signal: controller.signal,
+          });
+          const contextPromise = runStageRequest({
+            stageConfig: contextConfig.stageConfig,
+            profile: contextConfig.profile,
+            fields: buildStageFieldsForRow(
+              targetColumns,
+              row,
+              "context_audit",
+              contextConfig.stageConfig,
+            ),
+            signal: controller.signal,
+          });
+          const independentPromise = runStageRequest({
+            stageConfig: independentConfig.stageConfig,
+            profile: independentConfig.profile,
+            fields: buildStageFieldsForRow(
+              targetColumns,
+              row,
+              "independent_solving",
+              independentConfig.stageConfig,
+            ),
+            signal: controller.signal,
+          });
+
+          let independentResult: string | null = null;
+          try {
+            independentResult = await independentPromise;
+            resultMaps.independent_solving.set(row.rowId, independentResult);
+          } catch {
+            rowFailed = true;
+          }
+
+          if (independentResult && !controller.signal.aborted) {
+            try {
+              const finalText = await runStageRequest({
+                stageConfig: finalConfig.stageConfig,
+                profile: finalConfig.profile,
+                fields: buildStageFieldsForRow(
+                  targetColumns,
+                  row,
+                  "final_verdict",
+                  finalConfig.stageConfig,
+                  independentResult,
+                ),
+                signal: controller.signal,
+              });
+              resultMaps.final_verdict.set(row.rowId, finalText);
+            } catch {
+              rowFailed = true;
+            }
+          } else {
+            rowFailed = true;
+          }
+
+          const [precheckSettled, contextSettled] = await Promise.allSettled([
+            precheckPromise,
+            contextPromise,
+          ]);
+          if (precheckSettled.status === "fulfilled") {
+            resultMaps.precheck.set(row.rowId, precheckSettled.value);
+          } else {
+            rowFailed = true;
+          }
+          if (contextSettled.status === "fulfilled") {
+            resultMaps.context_audit.set(row.rowId, contextSettled.value);
+          } else {
+            rowFailed = true;
+          }
+        } catch {
+          rowFailed = true;
+        }
+
+        if (controller.signal.aborted) {
+          return;
+        }
+        setAIBatchTask((previous) => ({
+          ...previous,
+          completed: previous.completed + 1,
+          success: previous.success + (rowFailed ? 0 : 1),
+          failed: previous.failed + (rowFailed ? 1 : 0),
+        }));
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      applyBatchAIResultsToFile(targetFileId, "precheck", resultMaps.precheck);
+      applyBatchAIResultsToFile(
+        targetFileId,
+        "context_audit",
+        resultMaps.context_audit,
+      );
+      applyBatchAIResultsToFile(
+        targetFileId,
+        "independent_solving",
+        resultMaps.independent_solving,
+      );
+      applyBatchAIResultsToFile(
+        targetFileId,
+        "final_verdict",
+        resultMaps.final_verdict,
+      );
+
+      setAIBatchTask((previous) => ({
+        ...previous,
+        status: "completed",
+        message: "执行全部完成，已写入 AI 检测结果",
+      }));
+      setErrorMessage("");
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      const message =
+        error instanceof Error ? error.message : "批量 AI 回答任务执行失败";
+      setAIBatchTask((previous) => ({
+        ...previous,
+        status: "completed",
+        message,
+      }));
+      setErrorMessage(message);
+    } finally {
+      if (aiBatchAbortRef.current === controller) {
+        aiBatchAbortRef.current = null;
+      }
     }
   };
 
@@ -1037,8 +1418,203 @@ function App() {
       activeFile.columns,
     );
     syncActiveAIConfigState(normalizedConfig);
-    const stageConfig = normalizedConfig.stages[activeAIStageKey];
-    const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
+    if (activeAIRunKey === AI_RUN_ALL_KEY) {
+      const stageRunMap = new Map<
+        AIDetectStageKey,
+        {
+          stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
+          profile: AIDetectConfig["profiles"][number]["profile"];
+        }
+      >();
+      for (const stageKey of AI_STAGE_ORDER) {
+        const stageConfig = normalizedConfig.stages[stageKey];
+        const profile = resolveProfileForStage(normalizedConfig, stageConfig);
+        const error = validateStageSetup(stageKey, stageConfig, profile, true);
+        if (error || !profile) {
+          setAIResultMessage(error ?? "请先配置接口");
+          return;
+        }
+        stageRunMap.set(stageKey, { stageConfig, profile });
+      }
+
+      aiStreamAbortRef.current?.abort();
+      const controller = new AbortController();
+      aiStreamAbortRef.current = controller;
+      aiDetectStartedAtRef.current = Date.now();
+      setAIDetectElapsedMs(0);
+      setIsAIDetecting(true);
+      setAIThinkingText("");
+      setAIResultText("");
+      setAIResultMessage("");
+      setErrorMessage("");
+
+      const stageResults: Partial<Record<AIDetectStageKey, string>> = {};
+      const stageErrors: string[] = [];
+      const formatStageError = (stageKey: AIDetectStageKey, error: unknown) => {
+        const message = error instanceof Error ? error.message : "AI 回答失败";
+        stageErrors.push(`【${getStageLabel(stageKey)}】${message}`);
+      };
+
+      try {
+        const precheckConfig = stageRunMap.get("precheck");
+        const contextConfig = stageRunMap.get("context_audit");
+        const independentConfig = stageRunMap.get("independent_solving");
+        const finalConfig = stageRunMap.get("final_verdict");
+        if (
+          !precheckConfig ||
+          !contextConfig ||
+          !independentConfig ||
+          !finalConfig
+        ) {
+          setAIResultMessage("阶段配置缺失");
+          return;
+        }
+
+        const precheckPromise = runStageRequest({
+          stageConfig: precheckConfig.stageConfig,
+          profile: precheckConfig.profile,
+          fields: buildStageFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            "precheck",
+            precheckConfig.stageConfig,
+          ),
+          signal: controller.signal,
+        });
+        const contextPromise = runStageRequest({
+          stageConfig: contextConfig.stageConfig,
+          profile: contextConfig.profile,
+          fields: buildStageFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            "context_audit",
+            contextConfig.stageConfig,
+          ),
+          signal: controller.signal,
+        });
+        const independentPromise = runStageRequest({
+          stageConfig: independentConfig.stageConfig,
+          profile: independentConfig.profile,
+          fields: buildStageFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            "independent_solving",
+            independentConfig.stageConfig,
+          ),
+          signal: controller.signal,
+        });
+
+        let independentResult: string | null = null;
+        try {
+          independentResult = await independentPromise;
+          stageResults.independent_solving = independentResult;
+        } catch (error) {
+          formatStageError("independent_solving", error);
+        }
+
+        if (independentResult && !controller.signal.aborted) {
+          try {
+            const finalText = await runStageRequest({
+              stageConfig: finalConfig.stageConfig,
+              profile: finalConfig.profile,
+              fields: buildStageFieldsForRow(
+                activeFile.columns,
+                selectedRow,
+                "final_verdict",
+                finalConfig.stageConfig,
+                independentResult,
+              ),
+              signal: controller.signal,
+            });
+            stageResults.final_verdict = finalText;
+          } catch (error) {
+            formatStageError("final_verdict", error);
+          }
+        } else {
+          stageErrors.push(
+            `【${getStageLabel("final_verdict")}】缺少第三阶段结果，无法执行`,
+          );
+        }
+
+        const [precheckSettled, contextSettled] = await Promise.allSettled([
+          precheckPromise,
+          contextPromise,
+        ]);
+        if (precheckSettled.status === "fulfilled") {
+          stageResults.precheck = precheckSettled.value;
+        } else {
+          formatStageError("precheck", precheckSettled.reason);
+        }
+        if (contextSettled.status === "fulfilled") {
+          stageResults.context_audit = contextSettled.value;
+        } else {
+          formatStageError("context_audit", contextSettled.reason);
+        }
+
+        if (controller.signal.aborted) {
+          setAIResultMessage("AI 回答已取消");
+          return;
+        }
+
+        AI_STAGE_ORDER.forEach((stageKey) => {
+          const text = stageResults[stageKey];
+          if (!text) {
+            return;
+          }
+          updateRowAIResult(
+            activeFile.fileId,
+            selectedRow.rowId,
+            stageKey,
+            text,
+          );
+        });
+
+        const combinedText = AI_STAGE_ORDER.filter(
+          (stageKey) => stageResults[stageKey],
+        )
+          .map(
+            (stageKey) =>
+              `【${getStageLabel(stageKey)}】\n${stageResults[stageKey]}`,
+          )
+          .join("\n\n");
+        if (combinedText.trim().length > 0) {
+          setAIResultText(combinedText);
+        }
+
+        if (stageErrors.length === 0) {
+          setAIResultMessage("执行全部完成，已写入 AI 检测结果");
+        } else {
+          const successCount = AI_STAGE_ORDER.filter(
+            (stageKey) => stageResults[stageKey],
+          ).length;
+          setAIResultMessage(
+            `执行全部完成（成功 ${successCount}/${AI_STAGE_ORDER.length}）：${stageErrors.join("；")}`,
+          );
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          setAIResultMessage("AI 回答已取消");
+        } else {
+          const message =
+            error instanceof Error ? error.message : "AI 回答失败";
+          setAIResultMessage(message);
+        }
+      } finally {
+        if (aiStreamAbortRef.current === controller) {
+          aiStreamAbortRef.current = null;
+        }
+        if (aiDetectStartedAtRef.current) {
+          setAIDetectElapsedMs(Date.now() - aiDetectStartedAtRef.current);
+          aiDetectStartedAtRef.current = null;
+        }
+        setIsAIDetecting(false);
+      }
+      return;
+    }
+
+    const stageKey = activeAIRunKey;
+    const stageConfig = normalizedConfig.stages[stageKey];
+    const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? "";
     const profileItem =
       normalizedConfig.profiles.find(
         (item) => item.name === stageConfig.profileName,
@@ -1071,7 +1647,7 @@ function App() {
     }
 
     // For final_verdict stage, check if independent_solving result exists
-    if (activeAIStageKey === "final_verdict") {
+    if (stageKey === "final_verdict") {
       const independentSolvingResult =
         selectedRow.aiResults?.independent_solving?.trim() ?? "";
       if (independentSolvingResult.length === 0) {
@@ -1089,7 +1665,7 @@ function App() {
     );
 
     // For final_verdict, add the independent_solving result as a field
-    if (activeAIStageKey === "final_verdict") {
+    if (stageKey === "final_verdict") {
       const independentSolvingResult =
         selectedRow.aiResults?.independent_solving ?? "";
       fields.push({
@@ -1149,7 +1725,7 @@ function App() {
         updateRowAIResult(
           activeFile.fileId,
           selectedRow.rowId,
-          activeAIStageKey,
+          stageKey,
           composedText,
         );
         setAIResultMessage(
@@ -1216,6 +1792,7 @@ function App() {
 
     if (nextFileToPersist) {
       // Persist batch AI results immediately to ensure data is saved
+      cancelScheduledPersist(nextFileToPersist.fileId);
       persistFileState(nextFileToPersist);
     }
   };
@@ -1233,8 +1810,49 @@ function App() {
       activeFile.columns,
     );
     syncActiveAIConfigState(normalizedConfig);
-    const stageConfig = normalizedConfig.stages[activeAIStageKey];
-    const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
+    const rowIdSet = new Set(activeFile.rows.map((row) => row.rowId));
+    const normalizedTargetRowIds = rowIds
+      ? Array.from(new Set(rowIds.filter((rowId) => rowIdSet.has(rowId))))
+      : null;
+    const selectedRowIdSet = normalizedTargetRowIds
+      ? new Set(normalizedTargetRowIds)
+      : null;
+    const targetRows =
+      normalizedTargetRowIds && normalizedTargetRowIds.length > 0
+        ? activeFile.rows.filter(
+            (row) => selectedRowIdSet?.has(row.rowId) === true,
+          )
+        : normalizedTargetRowIds
+          ? []
+          : activeFile.rows;
+    if (targetRows.length === 0) {
+      setErrorMessage(
+        normalizedTargetRowIds
+          ? "请先至少选择一条数据再执行批量回答"
+          : "当前文件没有可执行的行数据",
+      );
+      return;
+    }
+
+    const targetFileId = activeFile.fileId;
+    const targetFileName = activeFile.fileName;
+    const targetColumns = activeFile.columns;
+
+    if (activeAIRunKey === AI_RUN_ALL_KEY) {
+      await runBatchAllStages({
+        normalizedConfig,
+        targetRows,
+        targetColumns,
+        targetFileId,
+        targetFileName,
+        normalizedTargetRowIds,
+      });
+      return;
+    }
+
+    const stageKey = activeAIRunKey;
+    const stageConfig = normalizedConfig.stages[stageKey];
+    const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? "";
     const profileItem =
       normalizedConfig.profiles.find(
         (item) => item.name === stageConfig.profileName,
@@ -1267,7 +1885,7 @@ function App() {
     }
 
     // For final_verdict batch, check if independent_solving results exist
-    if (activeAIStageKey === "final_verdict") {
+    if (stageKey === "final_verdict") {
       const rowsWithoutIndependentSolving = activeFile.rows.filter(
         (row) =>
           !row.aiResults?.independent_solving ||
@@ -1281,33 +1899,6 @@ function App() {
       }
     }
 
-    const rowIdSet = new Set(activeFile.rows.map((row) => row.rowId));
-    const normalizedTargetRowIds = rowIds
-      ? Array.from(new Set(rowIds.filter((rowId) => rowIdSet.has(rowId))))
-      : null;
-    const selectedRowIdSet = normalizedTargetRowIds
-      ? new Set(normalizedTargetRowIds)
-      : null;
-    const targetRows =
-      normalizedTargetRowIds && normalizedTargetRowIds.length > 0
-        ? activeFile.rows.filter(
-            (row) => selectedRowIdSet?.has(row.rowId) === true,
-          )
-        : normalizedTargetRowIds
-          ? []
-          : activeFile.rows;
-    if (targetRows.length === 0) {
-      setErrorMessage(
-        normalizedTargetRowIds
-          ? "请先至少选择一条数据再执行批量回答"
-          : "当前文件没有可执行的行数据",
-      );
-      return;
-    }
-
-    const targetFileId = activeFile.fileId;
-    const targetFileName = activeFile.fileName;
-    const targetColumns = activeFile.columns;
     const resultMap = new Map<string, string>();
     let nextCursor = 0;
     const requestedConcurrency =
@@ -1350,7 +1941,7 @@ function App() {
           );
 
           // For final_verdict, add the independent_solving result as a field
-          if (activeAIStageKey === "final_verdict") {
+          if (stageKey === "final_verdict") {
             const independentSolvingResult =
               row.aiResults?.independent_solving ?? "";
             fields.push({
@@ -1411,7 +2002,7 @@ function App() {
         return;
       }
 
-      applyBatchAIResultsToFile(targetFileId, activeAIStageKey, resultMap);
+      applyBatchAIResultsToFile(targetFileId, stageKey, resultMap);
 
       setAIBatchTask((previous) => ({
         ...previous,
@@ -2441,8 +3032,8 @@ function App() {
       <AIRunModal
         isOpen={isAIRunModalOpen}
         rowId={selectedRow?.rowId}
-        aiStageKey={activeAIStageKey}
-        onSelectAIStage={setActiveAIStageKey}
+        aiStageKey={activeAIRunKey}
+        onSelectAIStage={setActiveAIRunKey}
         aiConfigLoading={aiConfigLoading}
         isAIDetecting={isAIDetecting}
         isAIBatchRunning={isAIBatchRunning}
@@ -2454,7 +3045,11 @@ function App() {
           !isAIBatchRunning
         }
         onRunAIDetect={onRunAIDetect}
-        aiRetryCount={activeProfile?.profile.retryCount ?? 0}
+        aiRetryCount={
+          activeAIRunKey === AI_RUN_ALL_KEY
+            ? 0
+            : (activeProfile?.profile.retryCount ?? 0)
+        }
         aiMergedStreamText={aiMergedStreamText}
         onAIResultTextChange={(value) => {
           setAIThinkingText("");

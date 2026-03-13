@@ -31,6 +31,10 @@ export const AI_STAGE_ORDER = [
   "final_verdict",
 ] as const;
 
+export const AI_RUN_ALL_KEY = "all" as const;
+export const AI_RUN_ALL_LABEL = "执行全部";
+export const AI_RUN_STAGE_ORDER = [...AI_STAGE_ORDER, AI_RUN_ALL_KEY] as const;
+
 export const AI_STAGE_LABELS: Record<
   AIDetectStageKey,
   { title: string; shortTitle: string; description: string }

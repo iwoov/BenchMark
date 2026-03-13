@@ -42,6 +42,8 @@ export type AIDetectStageKey =
   | "independent_solving"
   | "final_verdict";
 
+export type AIDetectRunKey = AIDetectStageKey | "all";
+
 export interface AIDetectProfile {
   provider: "openai" | "gemini";
   url: string;

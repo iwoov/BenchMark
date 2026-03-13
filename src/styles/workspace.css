@@ -147,12 +147,20 @@
 
 .list-table tbody tr {
     cursor: pointer;
-    transition: background var(--transition-fast);
+    transition: background-color var(--transition-fast);
+    --ai-progress: 0%;
+    background-image: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent) 18%, transparent) 0%,
+        color-mix(in srgb, var(--accent) 18%, transparent) var(--ai-progress),
+        transparent var(--ai-progress),
+        transparent 100%
+    );
 }
 
 .list-table tbody tr:hover,
 .list-table tbody tr.active {
-    background: var(--accent-soft);
+    background-color: var(--accent-soft);
 }
 
 .list-table-check-col,

@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { FileViewState, ParsedColumn, ParsedRow } from "../../types";
+import { AI_STAGE_ORDER } from "../constants";
 
 interface ListPageProps {
   activeFile: FileViewState;
@@ -57,10 +58,24 @@ export function ListPage({
             {paginatedRows.map((row, index) => {
               const checked = batchSelectedRowIdSet.has(row.rowId);
               const rowNumber = (listPage - 1) * listPageSize + index + 1;
+              const completedStages = AI_STAGE_ORDER.reduce((count, stageKey) => {
+                const value = row.aiResults?.[stageKey];
+                return typeof value === "string" && value.trim().length > 0
+                  ? count + 1
+                  : count;
+              }, 0);
+              const progressPercent = Math.round(
+                (completedStages / AI_STAGE_ORDER.length) * 100,
+              );
               return (
                 <tr
                   key={row.rowId}
                   className={selectedRowId === row.rowId ? "active" : ""}
+                  style={
+                    {
+                      "--ai-progress": `${progressPercent}%`,
+                    } as CSSProperties
+                  }
                   onClick={() => onOpenRowDetail(row.rowId)}
                 >
                   <td

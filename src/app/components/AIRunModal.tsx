@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
-import type { AIDetectStageKey } from "../../types";
-import { AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
+import type { AIDetectRunKey, AIDetectStageKey } from "../../types";
+import {
+  AI_RUN_ALL_LABEL,
+  AI_RUN_STAGE_ORDER,
+  AI_STAGE_LABELS,
+} from "../constants";
 
 type AIRunTab = "response" | "request";
 
 interface AIRunModalProps {
   isOpen: boolean;
   rowId?: string;
-  aiStageKey: AIDetectStageKey;
-  onSelectAIStage: (stageKey: AIDetectStageKey) => void;
+  aiStageKey: AIDetectRunKey;
+  onSelectAIStage: (stageKey: AIDetectRunKey) => void;
   aiConfigLoading: boolean;
   isAIDetecting: boolean;
   isAIBatchRunning: boolean;
@@ -77,13 +81,16 @@ export function AIRunModal({
             <select
               value={aiStageKey}
               onChange={(event) =>
-                onSelectAIStage(event.target.value as AIDetectStageKey)
+                onSelectAIStage(event.target.value as AIDetectRunKey)
               }
               disabled={aiConfigLoading || isAIDetecting || isAIBatchRunning}
             >
-              {AI_STAGE_ORDER.map((stageKey) => (
+              {AI_RUN_STAGE_ORDER.map((stageKey) => (
                 <option key={stageKey} value={stageKey}>
-                  {AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey}
+                  {stageKey === "all"
+                    ? AI_RUN_ALL_LABEL
+                    : (AI_STAGE_LABELS[stageKey as AIDetectStageKey]
+                        ?.shortTitle ?? stageKey)}
                 </option>
               ))}
             </select>
