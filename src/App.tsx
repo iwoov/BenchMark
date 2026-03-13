@@ -129,6 +129,12 @@ function App() {
   const [aiBatchConcurrency, setAIBatchConcurrency] = useState<number>(
     DEFAULT_AI_BATCH_CONCURRENCY,
   );
+  const [rowStreamProgress, setRowStreamProgress] = useState<
+    Record<string, Partial<Record<AIDetectStageKey, number>>>
+  >({});
+  const [rowBatchStatuses, setRowBatchStatuses] = useState<
+    Record<string, "success" | "failed">
+  >({});
   const [selectedRowId, setSelectedRowId] = useState<string | null>(
     initialRoute.rowId ?? null,
   );
@@ -174,6 +180,14 @@ function App() {
   const aiStreamAbortRef = useRef<AbortController | null>(null);
   const aiBatchAbortRef = useRef<AbortController | null>(null);
   const aiDetectStartedAtRef = useRef<number | null>(null);
+  const persistAIResultsQueueRef = useRef<Record<string, Promise<void>>>({});
+  const rowStreamCharsRef = useRef<
+    Record<string, Partial<Record<AIDetectStageKey, number>>>
+  >({});
+  const rowStreamProgressRef = useRef<
+    Record<string, Partial<Record<AIDetectStageKey, number>>>
+  >({});
+  const rowStreamFlushTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -183,6 +197,41 @@ function App() {
   useEffect(() => {
     let disposed = false;
     const controller = new AbortController();
+    const shouldLogAIResults =
+      typeof window !== "undefined" &&
+      window.localStorage.getItem("debug_ai_results") === "1";
+
+    const logAIResultsSummary = (loadedFiles: FileViewState[]) => {
+      loadedFiles.forEach((file) => {
+        const stageCounts: Record<AIDetectStageKey, number> = {
+          precheck: 0,
+          context_audit: 0,
+          independent_solving: 0,
+          final_verdict: 0,
+        };
+        let rowsWithAI = 0;
+        file.rows.forEach((row) => {
+          const aiResults = row.aiResults ?? {};
+          let hasAny = false;
+          AI_STAGE_ORDER.forEach((stageKey) => {
+            const value = aiResults[stageKey];
+            if (typeof value === "string" && value.trim().length > 0) {
+              stageCounts[stageKey] += 1;
+              hasAny = true;
+            }
+          });
+          if (hasAny) {
+            rowsWithAI += 1;
+          }
+        });
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIResultsLoaded] fileId=${file.fileId} fileName=${file.fileName} rows=${file.rows.length} rowsWithAI=${rowsWithAI} stageCounts=${JSON.stringify(
+            stageCounts,
+          )}`,
+        );
+      });
+    };
 
     const loadPersistedFiles = async () => {
       try {
@@ -199,6 +248,10 @@ function App() {
         const restoredFiles = rawFiles
           .map((item) => normalizeLoadedFileState(item))
           .filter((item): item is FileViewState => item !== null);
+
+        if (shouldLogAIResults && restoredFiles.length > 0) {
+          logAIResultsSummary(restoredFiles);
+        }
 
         if (disposed) {
           return;
@@ -243,6 +296,12 @@ function App() {
       aiStreamAbortRef.current = null;
       aiBatchAbortRef.current?.abort();
       aiBatchAbortRef.current = null;
+      if (rowStreamFlushTimerRef.current !== null) {
+        window.clearTimeout(rowStreamFlushTimerRef.current);
+        rowStreamFlushTimerRef.current = null;
+      }
+      rowStreamCharsRef.current = {};
+      rowStreamProgressRef.current = {};
       Object.values(persistTimersRef.current).forEach((timerId) => {
         window.clearTimeout(timerId);
       });
@@ -468,6 +527,11 @@ function App() {
     setAIDetectElapsedMs(0);
     setIsAIDetecting(false);
   }, [activeFileId, selectedRowId]);
+
+  useEffect(() => {
+    resetRowStreamProgress();
+    resetRowBatchStatuses();
+  }, [activeFileId]);
 
   const filterColumns = useMemo(() => {
     if (!activeFile) {
@@ -729,23 +793,31 @@ function App() {
     if (Object.keys(results).length === 0) {
       return;
     }
-    fetch(`/api/files/${encodeURIComponent(fileId)}/ai-results`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stageKey, results }),
-    })
-      .then((response) => {
+    const enqueuePersist = (job: () => Promise<void>) => {
+      const previous = persistAIResultsQueueRef.current[fileId] ?? Promise.resolve();
+      const next = previous
+        .then(job)
+        .catch((error) => {
+          // eslint-disable-next-line no-console
+          console.error("[PersistAIResults] Failed to save AI results:", error);
+          if (fallbackState) {
+            persistFileState(fallbackState);
+          }
+        });
+      persistAIResultsQueueRef.current[fileId] = next;
+    };
+
+    enqueuePersist(() =>
+      fetch(`/api/files/${encodeURIComponent(fileId)}/ai-results`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stageKey, results }),
+      }).then((response) => {
         if (!response.ok) {
           throw new Error("Failed to save AI results");
         }
-      })
-      .catch((error) => {
-        // eslint-disable-next-line no-console
-        console.error("[PersistAIResults] Failed to save AI results:", error);
-        if (fallbackState) {
-          persistFileState(fallbackState);
-        }
-      });
+      }),
+    );
   };
 
   const cancelScheduledPersist = (fileId: string) => {
@@ -772,6 +844,96 @@ function App() {
       delete persistTimersRef.current[file.fileId];
     }, delayMs);
     persistTimersRef.current[file.fileId] = timerId;
+  };
+
+  const scheduleRowStreamFlush = () => {
+    if (rowStreamFlushTimerRef.current !== null) {
+      return;
+    }
+    rowStreamFlushTimerRef.current = window.setTimeout(() => {
+      rowStreamFlushTimerRef.current = null;
+      setRowStreamProgress({ ...rowStreamProgressRef.current });
+    }, 120);
+  };
+
+  const resetRowStreamProgress = () => {
+    if (rowStreamFlushTimerRef.current !== null) {
+      window.clearTimeout(rowStreamFlushTimerRef.current);
+      rowStreamFlushTimerRef.current = null;
+    }
+    rowStreamCharsRef.current = {};
+    rowStreamProgressRef.current = {};
+    setRowStreamProgress({});
+  };
+
+  const resetRowBatchStatuses = () => {
+    setRowBatchStatuses({});
+  };
+
+  const markRowBatchStatus = (rowId: string, status: "success" | "failed") => {
+    setRowBatchStatuses((previous) => {
+      if (previous[rowId] === status) {
+        return previous;
+      }
+      return { ...previous, [rowId]: status };
+    });
+  };
+
+  const setRowStageProgress = (
+    rowId: string,
+    stageKey: AIDetectStageKey,
+    nextProgress: number,
+  ) => {
+    const rowProgress = rowStreamProgressRef.current[rowId] ?? {};
+    const current = rowProgress[stageKey] ?? 0;
+    if (nextProgress <= current) {
+      return;
+    }
+    rowProgress[stageKey] = nextProgress;
+    rowStreamProgressRef.current[rowId] = rowProgress;
+    scheduleRowStreamFlush();
+  };
+
+  const primeRowStageProgress = (
+    rows: ParsedRow[],
+    stageKeys: readonly AIDetectStageKey[],
+    value: number = 2,
+  ) => {
+    if (rows.length === 0) {
+      return;
+    }
+    rows.forEach((row) => {
+      stageKeys.forEach((stageKey) => {
+        setRowStageProgress(row.rowId, stageKey, value);
+      });
+    });
+  };
+
+  const markRowStageRunning = (rowId: string, stageKey: AIDetectStageKey) => {
+    setRowStageProgress(rowId, stageKey, 2);
+  };
+
+  const updateRowStageProgress = (
+    rowId: string,
+    stageKey: AIDetectStageKey,
+    chunkLength: number,
+  ) => {
+    if (chunkLength <= 0) {
+      return;
+    }
+    const rowChars = rowStreamCharsRef.current[rowId] ?? {};
+    const nextChars = (rowChars[stageKey] ?? 0) + chunkLength;
+    rowChars[stageKey] = nextChars;
+    rowStreamCharsRef.current[rowId] = rowChars;
+    const computed = Math.min(95, Math.round(10 + Math.log1p(nextChars) * 12));
+    setRowStageProgress(rowId, stageKey, computed);
+  };
+
+  const finalizeRowStageProgress = (
+    rowId: string,
+    stageKey: AIDetectStageKey,
+  ) => {
+    setRowStageProgress(rowId, stageKey, 100);
   };
 
   const patchActiveFile = (updater: (file: FileViewState) => FileViewState) => {
@@ -829,12 +991,13 @@ function App() {
     stageKey: AIDetectStageKey,
     resultText: string,
   ) => {
-    let nextFileToPersist: FileViewState | null = null;
+    let shouldPersist = false;
     setFiles((previous) =>
       previous.map((file) => {
         if (file.fileId !== fileId) {
           return file;
         }
+        shouldPersist = true;
         const nextRows = file.rows.map((row) => {
           if (row.rowId !== rowId) {
             return row;
@@ -851,19 +1014,17 @@ function App() {
           ...file,
           rows: nextRows,
         };
-        nextFileToPersist = nextFile;
         return nextFile;
       }),
     );
 
-    if (nextFileToPersist) {
+    if (shouldPersist) {
       // Persist AI results immediately (no delay) to ensure data is saved
-      cancelScheduledPersist(nextFileToPersist.fileId);
+      cancelScheduledPersist(fileId);
       persistAIResults(
-        nextFileToPersist.fileId,
+        fileId,
         stageKey,
         { [rowId]: resultText },
-        nextFileToPersist,
       );
     }
   };
@@ -936,14 +1097,21 @@ function App() {
     profile,
     fields,
     signal,
+    rowId,
+    stageKey,
   }: {
     stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
     profile: AIDetectConfig["profiles"][number]["profile"];
     fields: ReturnType<typeof buildAIDetectFieldsForRow>;
     signal: AbortSignal;
+    rowId?: string;
+    stageKey?: AIDetectStageKey;
   }): Promise<string> => {
     if (fields.length === 0) {
       throw new Error("没有可提交的回答字段");
+    }
+    if (rowId && stageKey) {
+      markRowStageRunning(rowId, stageKey);
     }
     const streamResult = await requestAIDetectResult(
       {
@@ -956,7 +1124,19 @@ function App() {
         reasoningEffort: profile.reasoningEffort,
         retryCount: profile.retryCount,
       },
-      { signal },
+      {
+        signal,
+        onAnswerChunk: (chunk) => {
+          if (rowId && stageKey) {
+            updateRowStageProgress(rowId, stageKey, chunk.length);
+          }
+        },
+        onThinkingChunk: (chunk) => {
+          if (rowId && stageKey) {
+            updateRowStageProgress(rowId, stageKey, chunk.length);
+          }
+        },
+      },
     );
     const text = composeAISaveText(
       streamResult.answerText,
@@ -964,6 +1144,9 @@ function App() {
     );
     if (text.trim().length === 0) {
       throw new Error("AI 返回为空");
+    }
+    if (rowId && stageKey && !signal.aborted) {
+      finalizeRowStageProgress(rowId, stageKey);
     }
     return text;
   };
@@ -1015,12 +1198,6 @@ function App() {
       return;
     }
 
-    const resultMaps: Record<AIDetectStageKey, Map<string, string>> = {
-      precheck: new Map(),
-      context_audit: new Map(),
-      independent_solving: new Map(),
-      final_verdict: new Map(),
-    };
     let nextCursor = 0;
     const requestedConcurrency =
       normalizeAIBatchConcurrency(aiBatchConcurrency);
@@ -1029,6 +1206,8 @@ function App() {
     aiBatchAbortRef.current?.abort();
     const controller = new AbortController();
     aiBatchAbortRef.current = controller;
+    resetRowStreamProgress();
+    resetRowBatchStatuses();
     setAIBatchTask({
       status: "running",
       fileId: targetFileId,
@@ -1044,6 +1223,7 @@ function App() {
     });
     setErrorMessage("");
     setAIResultMessage("");
+    primeRowStageProgress(targetRows, AI_STAGE_ORDER);
 
     const runWorker = async () => {
       while (!controller.signal.aborted) {
@@ -1066,6 +1246,8 @@ function App() {
               precheckConfig.stageConfig,
             ),
             signal: controller.signal,
+            rowId: row.rowId,
+            stageKey: "precheck",
           });
           const contextPromise = runStageRequest({
             stageConfig: contextConfig.stageConfig,
@@ -1077,6 +1259,8 @@ function App() {
               contextConfig.stageConfig,
             ),
             signal: controller.signal,
+            rowId: row.rowId,
+            stageKey: "context_audit",
           });
           const independentPromise = runStageRequest({
             stageConfig: independentConfig.stageConfig,
@@ -1088,12 +1272,19 @@ function App() {
               independentConfig.stageConfig,
             ),
             signal: controller.signal,
+            rowId: row.rowId,
+            stageKey: "independent_solving",
           });
 
           let independentResult: string | null = null;
           try {
             independentResult = await independentPromise;
-            resultMaps.independent_solving.set(row.rowId, independentResult);
+            updateRowAIResult(
+              targetFileId,
+              row.rowId,
+              "independent_solving",
+              independentResult,
+            );
           } catch {
             rowFailed = true;
           }
@@ -1111,8 +1302,15 @@ function App() {
                   independentResult,
                 ),
                 signal: controller.signal,
+                rowId: row.rowId,
+                stageKey: "final_verdict",
               });
-              resultMaps.final_verdict.set(row.rowId, finalText);
+              updateRowAIResult(
+                targetFileId,
+                row.rowId,
+                "final_verdict",
+                finalText,
+              );
             } catch {
               rowFailed = true;
             }
@@ -1125,12 +1323,22 @@ function App() {
             contextPromise,
           ]);
           if (precheckSettled.status === "fulfilled") {
-            resultMaps.precheck.set(row.rowId, precheckSettled.value);
+            updateRowAIResult(
+              targetFileId,
+              row.rowId,
+              "precheck",
+              precheckSettled.value,
+            );
           } else {
             rowFailed = true;
           }
           if (contextSettled.status === "fulfilled") {
-            resultMaps.context_audit.set(row.rowId, contextSettled.value);
+            updateRowAIResult(
+              targetFileId,
+              row.rowId,
+              "context_audit",
+              contextSettled.value,
+            );
           } else {
             rowFailed = true;
           }
@@ -1141,6 +1349,7 @@ function App() {
         if (controller.signal.aborted) {
           return;
         }
+        markRowBatchStatus(row.rowId, rowFailed ? "failed" : "success");
         setAIBatchTask((previous) => ({
           ...previous,
           completed: previous.completed + 1,
@@ -1156,23 +1365,6 @@ function App() {
       if (controller.signal.aborted) {
         return;
       }
-
-      applyBatchAIResultsToFile(targetFileId, "precheck", resultMaps.precheck);
-      applyBatchAIResultsToFile(
-        targetFileId,
-        "context_audit",
-        resultMaps.context_audit,
-      );
-      applyBatchAIResultsToFile(
-        targetFileId,
-        "independent_solving",
-        resultMaps.independent_solving,
-      );
-      applyBatchAIResultsToFile(
-        targetFileId,
-        "final_verdict",
-        resultMaps.final_verdict,
-      );
 
       setAIBatchTask((previous) => ({
         ...previous,
@@ -1196,6 +1388,7 @@ function App() {
       if (aiBatchAbortRef.current === controller) {
         aiBatchAbortRef.current = null;
       }
+      resetRowStreamProgress();
     }
   };
 
@@ -1785,61 +1978,6 @@ function App() {
     }
   };
 
-  const applyBatchAIResultsToFile = (
-    fileId: string,
-    stageKey: AIDetectStageKey,
-    resultMap: Map<string, string>,
-  ) => {
-    if (resultMap.size === 0) {
-      return;
-    }
-
-    let nextFileToPersist: FileViewState | null = null;
-    setFiles((previous) =>
-      previous.map((file) => {
-        if (file.fileId !== fileId) {
-          return file;
-        }
-
-        const nextRows = file.rows.map((row) => {
-          const result = resultMap.get(row.rowId);
-          if (result === undefined) {
-            return row;
-          }
-          return {
-            ...row,
-            aiResults: {
-              ...(row.aiResults ?? {}),
-              [stageKey]: result,
-            },
-          };
-        });
-
-        const nextFile: FileViewState = {
-          ...file,
-          rows: nextRows,
-        };
-        nextFileToPersist = nextFile;
-        return nextFile;
-      }),
-    );
-
-    if (nextFileToPersist) {
-      // Persist batch AI results immediately to ensure data is saved
-      cancelScheduledPersist(nextFileToPersist.fileId);
-      const results: Record<string, string> = {};
-      resultMap.forEach((value, key) => {
-        results[key] = value;
-      });
-      persistAIResults(
-        nextFileToPersist.fileId,
-        stageKey,
-        results,
-        nextFileToPersist,
-      );
-    }
-  };
-
   const onRunBatchAIAnswer = async (rowIds?: string[]) => {
     if (!activeFile) {
       return;
@@ -1942,7 +2080,6 @@ function App() {
       }
     }
 
-    const resultMap = new Map<string, string>();
     let nextCursor = 0;
     const requestedConcurrency =
       normalizeAIBatchConcurrency(aiBatchConcurrency);
@@ -1951,6 +2088,8 @@ function App() {
     aiBatchAbortRef.current?.abort();
     const controller = new AbortController();
     aiBatchAbortRef.current = controller;
+    resetRowStreamProgress();
+    resetRowBatchStatuses();
     setAIBatchTask({
       status: "running",
       fileId: targetFileId,
@@ -1976,7 +2115,9 @@ function App() {
         }
 
         const row = targetRows[currentIndex];
+        let success = false;
         try {
+          markRowStageRunning(row.rowId, stageKey);
           const fields = buildAIDetectFieldsForRow(
             targetColumns,
             row,
@@ -2009,7 +2150,15 @@ function App() {
               reasoningEffort: profile.reasoningEffort,
               retryCount: profile.retryCount,
             },
-            { signal: controller.signal },
+            {
+              signal: controller.signal,
+              onAnswerChunk: (chunk) => {
+                updateRowStageProgress(row.rowId, stageKey, chunk.length);
+              },
+              onThinkingChunk: (chunk) => {
+                updateRowStageProgress(row.rowId, stageKey, chunk.length);
+              },
+            },
           );
           const text = composeAISaveText(
             streamResult.answerText,
@@ -2019,7 +2168,9 @@ function App() {
           if (text.trim().length === 0) {
             throw new Error("AI 返回为空");
           }
-          resultMap.set(row.rowId, text);
+          updateRowAIResult(targetFileId, row.rowId, stageKey, text);
+          success = true;
+          markRowBatchStatus(row.rowId, "success");
           setAIBatchTask((previous) => ({
             ...previous,
             completed: previous.completed + 1,
@@ -2029,11 +2180,16 @@ function App() {
           if (controller.signal.aborted) {
             return;
           }
+          markRowBatchStatus(row.rowId, "failed");
           setAIBatchTask((previous) => ({
             ...previous,
             completed: previous.completed + 1,
             failed: previous.failed + 1,
           }));
+        } finally {
+          if (!controller.signal.aborted && success) {
+            finalizeRowStageProgress(row.rowId, stageKey);
+          }
         }
       }
     };
@@ -2044,8 +2200,6 @@ function App() {
       if (controller.signal.aborted) {
         return;
       }
-
-      applyBatchAIResultsToFile(targetFileId, stageKey, resultMap);
 
       setAIBatchTask((previous) => ({
         ...previous,
@@ -2070,6 +2224,7 @@ function App() {
       if (aiBatchAbortRef.current === controller) {
         aiBatchAbortRef.current = null;
       }
+      resetRowStreamProgress();
     }
   };
 
@@ -3008,6 +3163,10 @@ function App() {
                       listPageSizeOptions={LIST_PAGE_SIZE_OPTIONS}
                       batchSelectedRowIdSet={batchSelectedRowIdSet}
                       selectedRowId={selectedRowId}
+                      rowStreamProgress={rowStreamProgress}
+                      isAIBatchRunning={isAIBatchRunning}
+                      activeAIRunKey={activeAIRunKey}
+                      rowBatchStatuses={rowBatchStatuses}
                       onToggleBatchRowSelection={onToggleBatchRowSelection}
                       onOpenRowDetail={openRowDetail}
                       onPageChange={setListPage}

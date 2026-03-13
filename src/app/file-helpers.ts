@@ -325,15 +325,64 @@ function toSafeStringRecord(value: unknown): Record<string, string> {
 function normalizeRowAIResults(
   value: unknown,
 ): Partial<Record<AIDetectStageKey, string>> {
-  if (!value || typeof value !== "object") {
+  if (!value) {
     return {};
   }
+
+  let raw: Record<string, unknown> | null = null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (parsed && typeof parsed === "object") {
+          raw = parsed as Record<string, unknown>;
+        }
+      } catch {
+        raw = null;
+      }
+    }
+  } else if (typeof value === "object") {
+    raw = value as Record<string, unknown>;
+  }
+
+  if (!raw) {
+    return {};
+  }
+
   const result: Partial<Record<AIDetectStageKey, string>> = {};
-  const raw = value as Record<string, unknown>;
   AI_STAGE_ORDER.forEach((stageKey) => {
     const item = raw[stageKey];
     if (typeof item === "string") {
       result[stageKey] = item;
+      return;
+    }
+    if (item === null || item === undefined) {
+      return;
+    }
+    if (typeof item === "number" || typeof item === "boolean") {
+      result[stageKey] = String(item);
+      return;
+    }
+    if (typeof item === "object") {
+      const candidate = item as Record<string, unknown>;
+      const textCandidate =
+        typeof candidate.resultText === "string"
+          ? candidate.resultText
+          : typeof candidate.text === "string"
+            ? candidate.text
+            : typeof candidate.value === "string"
+              ? candidate.value
+              : null;
+      if (textCandidate) {
+        result[stageKey] = textCandidate;
+        return;
+      }
+      try {
+        result[stageKey] = JSON.stringify(candidate);
+      } catch {
+        // Ignore non-serializable payloads.
+      }
     }
   });
   return result;
@@ -465,7 +514,13 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         values[column.key] = normalizeLoadedCell(rawValues[column.key]);
       });
 
-      const aiResults = normalizeRowAIResults(item.aiResults);
+      const legacyAIResults =
+        (item as Record<string, unknown>).ai_results ??
+        (item as Record<string, unknown>).aiResult ??
+        (item as Record<string, unknown>).ai_result;
+      const aiResults = normalizeRowAIResults(
+        item.aiResults ?? legacyAIResults,
+      );
       return aiResults
         ? {
             rowId: item.rowId,

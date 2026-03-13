@@ -151,6 +151,64 @@ const DEFAULT_AI_PROFILE_NAME = "默认接口";
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
+const SHOULD_LOG_AI_RESULTS = process.env.DEBUG_AI_RESULTS === "1";
+
+function summarizeFileStateAIResults(state: unknown): {
+  fileId: string;
+  fileName: string;
+  rows: number;
+  rowsWithAI: number;
+  stageCounts: Record<AIDetectStageKey, number>;
+} | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+  const record = state as {
+    fileId?: unknown;
+    fileName?: unknown;
+    rows?: unknown;
+  };
+  if (!Array.isArray(record.rows)) {
+    return null;
+  }
+  const fileId = typeof record.fileId === "string" ? record.fileId : "unknown";
+  const fileName =
+    typeof record.fileName === "string" ? record.fileName : "unknown";
+  const stageCounts: Record<AIDetectStageKey, number> = {
+    precheck: 0,
+    context_audit: 0,
+    independent_solving: 0,
+    final_verdict: 0,
+  };
+  let rowsWithAI = 0;
+  record.rows.forEach((row) => {
+    if (!row || typeof row !== "object") {
+      return;
+    }
+    const aiResults = (row as { aiResults?: unknown }).aiResults;
+    if (!aiResults || typeof aiResults !== "object") {
+      return;
+    }
+    let hasAny = false;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      const value = (aiResults as Record<string, unknown>)[stageKey];
+      if (typeof value === "string" && value.trim().length > 0) {
+        stageCounts[stageKey] += 1;
+        hasAny = true;
+      }
+    });
+    if (hasAny) {
+      rowsWithAI += 1;
+    }
+  });
+  return {
+    fileId,
+    fileName,
+    rows: record.rows.length,
+    rowsWithAI,
+    stageCounts,
+  };
+}
 
 function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
   return value === "low" || value === "medium" || value === "high";
@@ -1038,6 +1096,72 @@ function extractGeminiStreamTextPayload(payload: unknown): {
   };
 }
 
+function parseGeminiStreamErrorPayload(
+  data: string,
+): { status: number; message: string; retryable: boolean } | null {
+  const trimmed = data.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(trimmed) as unknown;
+  } catch {
+    return null;
+  }
+  const root = asRecord(payload);
+  if (!root) {
+    return null;
+  }
+  const errorRecord = asRecord(root.error) ?? root;
+  if (!errorRecord) {
+    return null;
+  }
+
+  let statusText =
+    typeof errorRecord.status === "string" ? errorRecord.status : "";
+  let code =
+    typeof errorRecord.code === "number" ? errorRecord.code : Number.NaN;
+  let message =
+    typeof errorRecord.message === "string" ? errorRecord.message : "";
+
+  if (message.trim().startsWith("{")) {
+    try {
+      const innerPayload = JSON.parse(message) as unknown;
+      const innerRoot = asRecord(innerPayload);
+      const innerError = innerRoot ? asRecord(innerRoot.error) ?? innerRoot : null;
+      if (innerError) {
+        if (!Number.isFinite(code)) {
+          const innerCode =
+            typeof innerError.code === "number"
+              ? innerError.code
+              : Number(innerError.code);
+          if (Number.isFinite(innerCode)) {
+            code = innerCode;
+          }
+        }
+        if (!statusText && typeof innerError.status === "string") {
+          statusText = innerError.status;
+        }
+        if (typeof innerError.message === "string" && innerError.message) {
+          message = innerError.message;
+        }
+      }
+    } catch {
+      // Ignore nested parse errors.
+    }
+  }
+
+  if (!Number.isFinite(code) && statusText === "RESOURCE_EXHAUSTED") {
+    code = 429;
+  }
+
+  const status = Number.isFinite(code) ? Math.trunc(code) : 500;
+  const finalMessage = message || "AI 检测请求失败";
+  const retryable = status === 429 || statusText === "RESOURCE_EXHAUSTED";
+  return { status, message: finalMessage, retryable };
+}
+
 function toAIDetectFields(value: unknown): AIDetectField[] | null {
   if (!Array.isArray(value)) {
     return null;
@@ -1180,6 +1304,20 @@ app.post("/api/files/upload", upload.single("file"), async (req, res) => {
 
 app.get("/api/files", (_req, res) => {
   const files = listFileStates().map((item) => item.state);
+  if (SHOULD_LOG_AI_RESULTS) {
+    files.forEach((state) => {
+      const summary = summarizeFileStateAIResults(state);
+      if (!summary) {
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        `[FileStateList] fileId=${summary.fileId} fileName=${summary.fileName} rows=${summary.rows} rowsWithAI=${summary.rowsWithAI} stageCounts=${JSON.stringify(
+          summary.stageCounts,
+        )}`,
+      );
+    });
+  }
   return res.json({ files });
 });
 
@@ -1204,6 +1342,18 @@ app.put("/api/files/:fileId/state", (req, res) => {
     return res
       .status(400)
       .json({ message: "state.fileName must be a non-empty string" });
+  }
+
+  if (SHOULD_LOG_AI_RESULTS) {
+    const summary = summarizeFileStateAIResults(state);
+    if (summary) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[FileStateSave] fileId=${summary.fileId} fileName=${summary.fileName} rows=${summary.rows} rowsWithAI=${summary.rowsWithAI} stageCounts=${JSON.stringify(
+          summary.stageCounts,
+        )}`,
+      );
+    }
   }
 
   saveFileState(fileId, nextState.fileName, state);
@@ -1239,6 +1389,15 @@ app.put("/api/files/:fileId/ai-results", (req, res) => {
     return res.status(400).json({ message: "results must have string values" });
   }
 
+  if (SHOULD_LOG_AI_RESULTS) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[AIResultsPersist] fileId=${fileId} stageKey=${String(
+        stageKey,
+      )} entries=${entries.length}`,
+    );
+  }
+
   const updatedCount = updateFileStateAIResults(
     fileId,
     stageKey,
@@ -1246,6 +1405,14 @@ app.put("/api/files/:fileId/ai-results", (req, res) => {
   );
   if (updatedCount === null) {
     return res.status(404).json({ message: "file state not found" });
+  }
+  if (SHOULD_LOG_AI_RESULTS) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[AIResultsPersist] fileId=${fileId} stageKey=${String(
+        stageKey,
+      )} updated=${updatedCount}`,
+    );
   }
   return res.json({ ok: true, updatedCount });
 });
@@ -2321,44 +2488,20 @@ app.post("/api/ai-detect/stream", async (req, res) => {
       },
     };
 
-    let upstream: Response | null = null;
+    let completed = false;
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
       // eslint-disable-next-line no-console
       console.log(
         `[AIUpstream][${aiRequestId}] provider=gemini dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${normalizedGeminiUrl}`,
       );
+      let candidate: Response | null = null;
       try {
-        const candidate = await fetch(normalizedGeminiUrl, {
+        candidate = await fetch(normalizedGeminiUrl, {
           method: "POST",
           signal: controller.signal,
           headers: geminiAuth.headers,
           body: JSON.stringify(geminiRequestBody),
         });
-        upstreamStatusCode = candidate.status;
-        const hasBody = Boolean(candidate.body);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[AIUpstream][${aiRequestId}] provider=gemini connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
-        );
-
-        if (candidate.status === 200 && hasBody) {
-          upstream = candidate;
-          break;
-        }
-
-        if (candidate.status !== 200) {
-          const rawText = await candidate.text().catch(() => "");
-          lastFailedStatus = candidate.status || 500;
-          lastFailedMessage = parseUpstreamErrorMessage(rawText);
-        } else {
-          lastFailedStatus = 502;
-          lastFailedMessage = "AI 响应流为空";
-        }
-
-        // eslint-disable-next-line no-console
-        console.log(
-          `[AIUpstreamRetry][${aiRequestId}] provider=gemini attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
-        );
       } catch (error) {
         if (controller.signal.aborted) {
           throw error;
@@ -2370,66 +2513,119 @@ app.post("/api/ai-detect/stream", async (req, res) => {
         console.log(
           `[AIUpstreamRetry][${aiRequestId}] provider=gemini attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
         );
-      }
-    }
-
-    if (!upstream || !upstream.body) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
-      );
-      return res.status(lastFailedStatus).json({ message: lastFailedMessage });
-    }
-
-    res.status(200);
-    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders();
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let rawStreamPreview = "";
-
-    const reader = upstream.body.getReader();
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-      if (!value) {
         continue;
       }
 
-      const current = decoder.decode(value, { stream: true });
-      if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
-        rawStreamPreview += current;
-      }
-      buffer += current;
+      upstreamStatusCode = candidate.status;
+      const hasBody = Boolean(candidate.body);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[AIUpstream][${aiRequestId}] provider=gemini connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
+      );
 
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) {
-          continue;
+      if (candidate.status !== 200 || !hasBody) {
+        if (candidate.status !== 200) {
+          const rawText = await candidate.text().catch(() => "");
+          lastFailedStatus = candidate.status || 500;
+          lastFailedMessage = parseUpstreamErrorMessage(rawText);
+        } else {
+          lastFailedStatus = 502;
+          lastFailedMessage = "AI 响应流为空";
         }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamRetry][${aiRequestId}] provider=gemini attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
+        );
+        continue;
+      }
 
-        const data = trimmed.slice(5).trim();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let rawStreamPreview = "";
+      let currentEventType = "";
+      let headersSent = false;
+      const pendingEvents: AIClientStreamEvent[] = [];
+
+      const ensureHeaders = () => {
+        if (headersSent) {
+          return;
+        }
+        res.status(200);
+        res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.flushHeaders();
+        headersSent = true;
+      };
+
+      const flushPendingEvents = () => {
+        if (pendingEvents.length === 0) {
+          return;
+        }
+        ensureHeaders();
+        pendingEvents.forEach((event) => writeAIClientStreamEvent(res, event));
+        pendingEvents.length = 0;
+      };
+
+      const enqueueEvent = (event: AIClientStreamEvent) => {
+        if (headersSent) {
+          writeAIClientStreamEvent(res, event);
+        } else {
+          pendingEvents.push(event);
+        }
+      };
+
+      const commitIfReady = () => {
+        if (!headersSent && pendingEvents.length > 0) {
+          flushPendingEvents();
+        }
+      };
+
+      const handleGeminiData = (
+        data: string,
+        eventType: string,
+      ): "continue" | "retry" | "fail" | "done" => {
         if (data === "[DONE]") {
           doneByDoneToken = true;
+          flushPendingEvents();
+          ensureHeaders();
           logAIResponseById(aiRequestId, aiResponseText);
           if (aiThinkingText.trim().length > 0) {
             logAIThinkingById(aiRequestId, aiThinkingText);
           }
           writeAIClientStreamEvent(res, { type: "done" });
           res.end();
-          return;
+          return "done";
         }
+        if (eventType === "error") {
+          const parsedError = parseGeminiStreamErrorPayload(data);
+          if (parsedError) {
+            lastFailedStatus = parsedError.status;
+            lastFailedMessage = parsedError.message;
+            // eslint-disable-next-line no-console
+            console.log(
+              `[AIUpstreamRetry][${aiRequestId}] provider=gemini attempt=${attempt}/${totalAttempts} streamError status=${parsedError.status} message=${parsedError.message}`,
+            );
+            if (!headersSent && parsedError.retryable) {
+              return "retry";
+            }
+            if (!headersSent) {
+              return "fail";
+            }
+            doneByNaturalEnd = true;
+            logAIResponseById(aiRequestId, aiResponseText);
+            if (aiThinkingText.trim().length > 0) {
+              logAIThinkingById(aiRequestId, aiThinkingText);
+            }
+            writeAIClientStreamEvent(res, { type: "done" });
+            res.end();
+            return "done";
+          }
+        }
+
         if (data.length === 0) {
-          continue;
+          return "continue";
         }
 
         try {
@@ -2439,7 +2635,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
             aiThinkingText += extracted.thinkingText;
             streamThinkingChunkCount += 1;
             streamThinkingTextLength += extracted.thinkingText.length;
-            writeAIClientStreamEvent(res, {
+            enqueueEvent({
               type: "thinking",
               text: extracted.thinkingText,
             });
@@ -2448,70 +2644,143 @@ app.post("/api/ai-detect/stream", async (req, res) => {
             aiResponseText += extracted.answerText;
             streamChunkCount += 1;
             streamTextLength += extracted.answerText.length;
-            writeAIClientStreamEvent(res, {
+            enqueueEvent({
               type: "answer",
               text: extracted.answerText,
             });
           }
+          commitIfReady();
         } catch {
           // Ignore non-JSON stream chunks.
         }
-      }
-    }
+        return "continue";
+      };
 
-    buffer += decoder.decode();
-    if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
-      rawStreamPreview += buffer;
-    }
+      const reader = candidate.body!.getReader();
+      let shouldRetry = false;
+      let shouldFail = false;
 
-    if (buffer.length > 0 && buffer.includes("data:")) {
-      const maybeData = buffer
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find((line) => line.startsWith("data:"));
-      const value = maybeData ? maybeData.slice(5).trim() : "";
-      if (value && value !== "[DONE]") {
-        try {
-          const payload = JSON.parse(value) as unknown;
-          const extracted = extractGeminiStreamTextPayload(payload);
-          if (extracted.thinkingText.length > 0) {
-            aiThinkingText += extracted.thinkingText;
-            streamThinkingChunkCount += 1;
-            streamThinkingTextLength += extracted.thinkingText.length;
-            writeAIClientStreamEvent(res, {
-              type: "thinking",
-              text: extracted.thinkingText,
-            });
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (!value) {
+          continue;
+        }
+
+        const current = decoder.decode(value, { stream: true });
+        if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+          rawStreamPreview += current;
+        }
+        buffer += current;
+
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.length === 0) {
+            currentEventType = "";
+            continue;
           }
-          if (extracted.answerText.length > 0) {
-            aiResponseText += extracted.answerText;
-            streamChunkCount += 1;
-            streamTextLength += extracted.answerText.length;
-            writeAIClientStreamEvent(res, {
-              type: "answer",
-              text: extracted.answerText,
-            });
+          if (trimmed.startsWith("event:")) {
+            currentEventType = trimmed.slice(6).trim().toLowerCase();
+            continue;
           }
-        } catch {
-          // Ignore trailing invalid chunk.
+          if (!trimmed.startsWith("data:")) {
+            continue;
+          }
+
+          const data = trimmed.slice(5).trim();
+          const action = handleGeminiData(data, currentEventType);
+          currentEventType = "";
+
+          if (action === "retry") {
+            shouldRetry = true;
+            break;
+          }
+          if (action === "fail") {
+            shouldFail = true;
+            break;
+          }
+          if (action === "done") {
+            completed = true;
+            break;
+          }
+        }
+
+        if (completed || shouldRetry || shouldFail) {
+          break;
         }
       }
+
+      if (completed) {
+        return;
+      }
+
+      if (shouldRetry || shouldFail) {
+        await reader.cancel().catch(() => {});
+        if (shouldRetry) {
+          continue;
+        }
+        break;
+      }
+
+      buffer += decoder.decode();
+      if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+        rawStreamPreview += buffer;
+      }
+
+      if (buffer.length > 0 && buffer.includes("data:")) {
+        const maybeData = buffer
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line.startsWith("data:"));
+        const value = maybeData ? maybeData.slice(5).trim() : "";
+        if (value && value !== "[DONE]") {
+          const action = handleGeminiData(value, currentEventType);
+          if (action === "retry") {
+            await reader.cancel().catch(() => {});
+            continue;
+          }
+          if (action === "fail") {
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          if (action === "done") {
+            completed = true;
+            return;
+          }
+        }
+      }
+
+      doneByNaturalEnd = true;
+      flushPendingEvents();
+      ensureHeaders();
+      logAIResponseById(aiRequestId, aiResponseText);
+      if (aiThinkingText.trim().length > 0) {
+        logAIThinkingById(aiRequestId, aiThinkingText);
+      }
+      if (
+        aiResponseText.trim().length === 0 &&
+        rawStreamPreview.trim().length > 0
+      ) {
+        logAIRawResponseById(aiRequestId, rawStreamPreview);
+      }
+      writeAIClientStreamEvent(res, { type: "done" });
+      res.end();
+      completed = true;
+      return;
     }
 
-    doneByNaturalEnd = true;
-    logAIResponseById(aiRequestId, aiResponseText);
-    if (aiThinkingText.trim().length > 0) {
-      logAIThinkingById(aiRequestId, aiThinkingText);
+    if (!completed) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
+      );
+      return res.status(lastFailedStatus).json({ message: lastFailedMessage });
     }
-    if (
-      aiResponseText.trim().length === 0 &&
-      rawStreamPreview.trim().length > 0
-    ) {
-      logAIRawResponseById(aiRequestId, rawStreamPreview);
-    }
-    writeAIClientStreamEvent(res, { type: "done" });
-    res.end();
-    return;
   } catch (error) {
     if (controller.signal.aborted) {
       // eslint-disable-next-line no-console

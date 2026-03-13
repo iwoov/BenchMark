@@ -18,6 +18,8 @@ const LEVEL1_ALIASES = ["level1"];
 const LEVEL2_ALIASES = ["level2"];
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
 const IMAGE_SEARCH_MAX_DEPTH = 6;
+const DEBUG_IMAGE_PARSE = process.env.DEBUG_IMAGE_PARSE === "1";
+const IMAGE_DEBUG_MAX_LOGS = 120;
 const IMAGE_SEARCH_SKIP_DIRS = new Set([
   ".git",
   "node_modules",
@@ -613,6 +615,18 @@ function buildRows(
 } {
   const rows: ParsedRow[] = [];
   const stats = createWorkbookImageParseStats();
+  let debugLogCount = 0;
+  const maybeLogImageDebug = (message: string): void => {
+    if (!DEBUG_IMAGE_PARSE) {
+      return;
+    }
+    if (debugLogCount >= IMAGE_DEBUG_MAX_LOGS) {
+      return;
+    }
+    debugLogCount += 1;
+    // eslint-disable-next-line no-console
+    console.log(message);
+  };
 
   for (
     let rowIndex = headerRowIndex + 1;
@@ -637,6 +651,9 @@ function buildRows(
       if (imageSrc) {
         stats.hyperlinkCells += 1;
         stats.resolvedImageCells += 1;
+        maybeLogImageDebug(
+          `[ImageLinkResolved] R${rowIndex}C${column.colNumber} hyperlink=${hyperlink} normalized=${resolveResult?.normalizedHyperlink ?? ""} imageSrc=${imageSrc}`,
+        );
         values[column.key] = textValue
           ? {
               type: "image",
@@ -657,6 +674,9 @@ function buildRows(
         stats.hyperlinkCells += 1;
         stats.unresolvedHyperlinkCells += 1;
         const reason = resolveResult?.reason ?? "path_unresolved";
+        maybeLogImageDebug(
+          `[ImageLinkUnresolved] R${rowIndex}C${column.colNumber} reason=${reason} hyperlink=${hyperlink} normalized=${resolveResult?.normalizedHyperlink ?? ""}`,
+        );
         if (reason === "invalid_http_url") {
           stats.invalidHttpUrlCells += 1;
         } else if (reason === "http_unsupported_ext") {

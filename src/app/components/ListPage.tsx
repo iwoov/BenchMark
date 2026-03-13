@@ -1,5 +1,11 @@
 import type { CSSProperties, ReactNode } from "react";
-import type { FileViewState, ParsedColumn, ParsedRow } from "../../types";
+import type {
+  AIDetectRunKey,
+  AIDetectStageKey,
+  FileViewState,
+  ParsedColumn,
+  ParsedRow,
+} from "../../types";
 import { AI_STAGE_ORDER } from "../constants";
 
 interface ListPageProps {
@@ -12,6 +18,10 @@ interface ListPageProps {
   listPageSizeOptions: readonly number[];
   batchSelectedRowIdSet: Set<string>;
   selectedRowId: string | null;
+  rowStreamProgress?: Record<string, Partial<Record<AIDetectStageKey, number>>>;
+  isAIBatchRunning: boolean;
+  activeAIRunKey: AIDetectRunKey;
+  rowBatchStatuses?: Record<string, "success" | "failed">;
   onToggleBatchRowSelection: (rowId: string) => void;
   onOpenRowDetail: (rowId: string) => void;
   onPageChange: (nextPage: number) => void;
@@ -30,6 +40,10 @@ export function ListPage({
   listPageSizeOptions,
   batchSelectedRowIdSet,
   selectedRowId,
+  rowStreamProgress,
+  isAIBatchRunning,
+  activeAIRunKey,
+  rowBatchStatuses,
   onToggleBatchRowSelection,
   onOpenRowDetail,
   onPageChange,
@@ -58,22 +72,58 @@ export function ListPage({
             {paginatedRows.map((row, index) => {
               const checked = batchSelectedRowIdSet.has(row.rowId);
               const rowNumber = (listPage - 1) * listPageSize + index + 1;
+              const rowStatus = rowBatchStatuses?.[row.rowId];
               const completedStages = AI_STAGE_ORDER.reduce((count, stageKey) => {
                 const value = row.aiResults?.[stageKey];
                 return typeof value === "string" && value.trim().length > 0
                   ? count + 1
                   : count;
               }, 0);
-              const progressPercent = Math.round(
+              let progressPercent = Math.round(
                 (completedStages / AI_STAGE_ORDER.length) * 100,
               );
+              const streamProgress = rowStreamProgress?.[row.rowId];
+              if (isAIBatchRunning && streamProgress) {
+                if (activeAIRunKey === "all") {
+                  const sum = AI_STAGE_ORDER.reduce(
+                    (acc, stageKey) => acc + (streamProgress[stageKey] ?? 0),
+                    0,
+                  );
+                  const hasAny = AI_STAGE_ORDER.some(
+                    (stageKey) => (streamProgress[stageKey] ?? 0) > 0,
+                  );
+                  if (hasAny) {
+                    progressPercent = Math.round(
+                      sum / AI_STAGE_ORDER.length,
+                    );
+                  }
+                } else if (
+                  AI_STAGE_ORDER.includes(activeAIRunKey as AIDetectStageKey)
+                ) {
+                  const value =
+                    streamProgress[activeAIRunKey as AIDetectStageKey];
+                  if (typeof value === "number") {
+                    progressPercent = Math.round(value);
+                  }
+                }
+              }
+              const rowClassName = [
+                selectedRowId === row.rowId ? "active" : "",
+                rowStatus === "failed" ? "ai-row-failed" : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
               return (
                 <tr
                   key={row.rowId}
-                  className={selectedRowId === row.rowId ? "active" : ""}
+                  className={rowClassName}
                   style={
                     {
                       "--ai-progress": `${progressPercent}%`,
+                      "--ai-progress-color":
+                        rowStatus === "failed"
+                          ? "var(--warning)"
+                          : "var(--accent)",
                     } as CSSProperties
                   }
                   onClick={() => onOpenRowDetail(row.rowId)}
