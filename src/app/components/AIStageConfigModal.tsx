@@ -4,18 +4,18 @@ import type {
   AIDetectConfig,
   AIDetectStageKey,
   FileViewState,
-  NamedAIDetectConfig,
   ParsedColumn,
 } from "../../types";
-import { AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
+import {
+  AI_PROVIDER_OPTIONS,
+  AI_STAGE_LABELS,
+  AI_STAGE_ORDER,
+} from "../constants";
 
 interface AIStageConfigModalProps {
   isOpen: boolean;
   activeFile: FileViewState | null;
   aiConfigFormMessage: string;
-  aiConfigList: NamedAIDetectConfig[];
-  draftAIConfigName: string;
-  setDraftAIConfigName: (value: string) => void;
   draftAIConfig: AIDetectConfig;
   setDraftAIConfig: Dispatch<SetStateAction<AIDetectConfig>>;
   aiSubmitFieldColumns: ParsedColumn[];
@@ -32,9 +32,6 @@ export function AIStageConfigModal({
   isOpen,
   activeFile,
   aiConfigFormMessage,
-  aiConfigList,
-  draftAIConfigName,
-  setDraftAIConfigName,
   draftAIConfig,
   setDraftAIConfig,
   aiSubmitFieldColumns,
@@ -50,7 +47,7 @@ export function AIStageConfigModal({
     if (isOpen) {
       setActiveStageKey("precheck");
     }
-  }, [isOpen, draftAIConfigName]);
+  }, [isOpen]);
 
   if (!isOpen || !activeFile) {
     return null;
@@ -62,6 +59,11 @@ export function AIStageConfigModal({
     profileOptions.find((item) => item.name === stageConfig.profileName) ??
     profileOptions[0] ??
     null;
+  const getProviderLabel = (
+    provider: AIDetectConfig["profiles"][number]["profile"]["provider"],
+  ) =>
+    AI_PROVIDER_OPTIONS.find((item) => item.value === provider)?.label ??
+    "未配置供应商";
 
   const updateStageConfig = (
     updater: (
@@ -86,21 +88,6 @@ export function AIStageConfigModal({
           <div className="column-modal-notice">{aiConfigFormMessage}</div>
         ) : null}
         <div className="ai-config-form">
-          <label className="ai-config-field">
-            <span>配置名称（输入新名称即新增）</span>
-            <input
-              type="text"
-              value={draftAIConfigName}
-              onChange={(event) => setDraftAIConfigName(event.target.value)}
-              placeholder="例如：默认配置 / 低成本模型 / 高质量模型"
-              list="ai-config-name-options"
-            />
-          </label>
-          <datalist id="ai-config-name-options">
-            {aiConfigList.map((item) => (
-              <option key={item.name} value={item.name} />
-            ))}
-          </datalist>
           <div className="ai-config-stage-tabs">
             {AI_STAGE_ORDER.map((stageKey) => {
               const label = AI_STAGE_LABELS[stageKey];
@@ -142,7 +129,7 @@ export function AIStageConfigModal({
             </select>
             {activeProfile ? (
               <small className="ai-config-hint">
-                {`${activeProfile.profile.provider === "openai" ? "OpenAI 兼容" : "Gemini"} · ${activeProfile.profile.model || "未配置模型"}`}
+                {`${getProviderLabel(activeProfile.profile.provider)} · ${activeProfile.profile.model || "未配置模型"}`}
               </small>
             ) : (
               <small className="ai-config-hint">尚未配置接口</small>

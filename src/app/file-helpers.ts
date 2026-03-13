@@ -447,7 +447,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
   }
 
   const rows: ParsedRow[] = candidate.rows
-    .map((row) => {
+    .map((row): ParsedRow | null => {
       if (!row || typeof row !== "object") {
         return null;
       }
@@ -465,11 +465,17 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         values[column.key] = normalizeLoadedCell(rawValues[column.key]);
       });
 
-      return {
-        rowId: item.rowId,
-        values,
-        aiResults: normalizeRowAIResults(item.aiResults),
-      };
+      const aiResults = normalizeRowAIResults(item.aiResults);
+      return aiResults
+        ? {
+            rowId: item.rowId,
+            values,
+            aiResults,
+          }
+        : {
+            rowId: item.rowId,
+            values,
+          };
     })
     .filter((row): row is ParsedRow => row !== null);
 

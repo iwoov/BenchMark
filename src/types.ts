@@ -46,6 +46,8 @@ export interface AIDetectProfile {
   provider: "openai" | "gemini";
   url: string;
   model: string;
+  modelProvider?: string;
+  modelName?: string;
   apiKey: string;
   reasoningEffort: "low" | "medium" | "high";
   retryCount: number;

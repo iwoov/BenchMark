@@ -2,7 +2,6 @@ import type {
   AIDetectConfig,
   AIDetectProfile,
   AIDetectStageConfigMap,
-  AIDetectStageKey,
   NamedAIDetectProfile,
   AIDetectStageConfig,
   NamedAIDetectConfig,
@@ -17,8 +16,8 @@ import {
   DEFAULT_AI_CONFIG_NAME,
   DEFAULT_AI_STAGE_CONFIGS,
   DEFAULT_AI_RETRY_COUNT,
-  DEFAULT_GEMINI_URL,
-  DEFAULT_OPENAI_URL,
+  DEFAULT_IDEALAB_GEMINI_URL,
+  DEFAULT_IDEALAB_OPENAI_URL,
   MAX_AI_BATCH_CONCURRENCY,
   MAX_AI_RETRY_COUNT,
   MIN_AI_BATCH_CONCURRENCY,
@@ -32,7 +31,36 @@ import type {
 import { getCellImageSources } from "./file-helpers";
 
 export function getDefaultAIUrl(provider: AIDetectProfile["provider"]): string {
-  return provider === "openai" ? DEFAULT_OPENAI_URL : DEFAULT_GEMINI_URL;
+  return provider === "gemini"
+    ? DEFAULT_IDEALAB_GEMINI_URL
+    : DEFAULT_IDEALAB_OPENAI_URL;
+}
+
+function splitModelId(
+  value: string,
+  fallbackProvider: string,
+): { provider: string; name: string } {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { provider: fallbackProvider, name: "" };
+  }
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex > 0) {
+    return {
+      provider: trimmed.slice(0, slashIndex),
+      name: trimmed.slice(slashIndex + 1),
+    };
+  }
+  return { provider: fallbackProvider, name: trimmed };
+}
+
+function composeModelId(provider: string, name: string): string {
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    return "";
+  }
+  const trimmedProvider = provider.trim();
+  return trimmedProvider ? `${trimmedProvider}/${trimmedName}` : trimmedName;
 }
 
 export function getAIBatchTaskStatusText(task: AIBatchTaskState): string {
@@ -159,7 +187,29 @@ function normalizeLoadedAIDetectProfile(
       ? rawProvider
       : rawProvider === "vertex"
         ? "gemini"
-        : fallback.provider;
+        : rawProvider === "idealab"
+          ? "openai"
+          : fallback.provider;
+  const rawModel =
+    typeof candidate.model === "string" && candidate.model.trim().length > 0
+      ? candidate.model
+      : "";
+  const rawModelProvider =
+    typeof candidate.modelProvider === "string"
+      ? candidate.modelProvider.trim()
+      : "";
+  const rawModelName =
+    typeof candidate.modelName === "string" ? candidate.modelName.trim() : "";
+  const resolvedModel =
+    rawModel.length > 0
+      ? rawModel
+      : rawModelName.length > 0
+        ? composeModelId(rawModelProvider, rawModelName)
+        : fallback.model;
+  const derivedModel = splitModelId(
+    resolvedModel,
+    provider === "gemini" ? "google" : "openai",
+  );
 
   return {
     provider,
@@ -167,10 +217,9 @@ function normalizeLoadedAIDetectProfile(
       typeof candidate.url === "string" && candidate.url.trim().length > 0
         ? candidate.url
         : getDefaultAIUrl(provider),
-    model:
-      typeof candidate.model === "string" && candidate.model.trim().length > 0
-        ? candidate.model
-        : fallback.model,
+    model: resolvedModel.trim().length > 0 ? resolvedModel : fallback.model,
+    modelProvider: rawModelProvider || derivedModel.provider,
+    modelName: rawModelName || derivedModel.name,
     apiKey: typeof candidate.apiKey === "string" ? candidate.apiKey : "",
     reasoningEffort:
       candidate.reasoningEffort === "low" ||

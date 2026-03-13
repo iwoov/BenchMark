@@ -15,6 +15,7 @@ import {
   AI_STAGE_ORDER,
   DEFAULT_AI_BATCH_CONCURRENCY,
   DEFAULT_AI_CONFIG_NAME,
+  DEFAULT_AI_PROFILE,
   INITIAL_AI_BATCH_TASK,
   LIST_PAGE_SIZE_OPTIONS,
   MAX_AI_BATCH_CONCURRENCY,
@@ -105,12 +106,7 @@ function App() {
       ];
     },
   );
-  const [selectedAIConfigName, setSelectedAIConfigName] = useState<string>(
-    DEFAULT_AI_CONFIG_NAME,
-  );
-  const [draftAIConfigName, setDraftAIConfigName] = useState<string>(
-    DEFAULT_AI_CONFIG_NAME,
-  );
+  const selectedAIConfigName = DEFAULT_AI_CONFIG_NAME;
   const [aiConfig, setAIConfig] = useState<AIDetectConfig>(() =>
     createDefaultAIDetectConfig(),
   );
@@ -324,8 +320,6 @@ function App() {
           config: nextConfig,
         },
       ]);
-      setSelectedAIConfigName(DEFAULT_AI_CONFIG_NAME);
-      setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
       setAIConfig(nextConfig);
       setDraftAIConfig(cloneAIDetectConfig(nextConfig));
       setAIConfigFormMessage("");
@@ -376,20 +370,12 @@ function App() {
           loadedConfigs,
           activeFile.columns,
         );
-        const activeConfigName = pickAIConfigName(
-          normalizedConfigs,
-          payload.activeConfigName,
-        );
-        const activeConfig =
-          normalizedConfigs.find((item) => item.name === activeConfigName)
-            ?.config ?? normalizedConfigs[0].config;
+        const activeConfig = normalizedConfigs[0].config;
 
         if (disposed) {
           return;
         }
         setAIConfigList(normalizedConfigs);
-        setSelectedAIConfigName(activeConfigName);
-        setDraftAIConfigName(activeConfigName);
         setAIConfig(activeConfig);
         setDraftAIConfig(cloneAIDetectConfig(activeConfig));
         setAIConfigFormMessage("");
@@ -407,8 +393,6 @@ function App() {
             config: fallbackConfig,
           },
         ]);
-        setSelectedAIConfigName(DEFAULT_AI_CONFIG_NAME);
-        setDraftAIConfigName(DEFAULT_AI_CONFIG_NAME);
         setAIConfig(fallbackConfig);
         setDraftAIConfig(cloneAIDetectConfig(fallbackConfig));
         setAIConfigFormMessage("");
@@ -447,22 +431,10 @@ function App() {
               ),
             },
           ];
-    const nextSelectedName = pickAIConfigName(
-      nextConfigList,
-      selectedAIConfigName,
-    );
-    const nextSelectedConfig =
-      nextConfigList.find((item) => item.name === nextSelectedName)?.config ??
-      nextConfigList[0].config;
+    const nextSelectedConfig = nextConfigList[0].config;
 
     setAIConfigList(nextConfigList);
-    setSelectedAIConfigName(nextSelectedName);
     setAIConfig(nextSelectedConfig);
-    setDraftAIConfigName((previous) =>
-      nextConfigList.some((item) => item.name === previous)
-        ? previous
-        : nextSelectedName,
-    );
     setDraftAIConfig((previous) =>
       normalizeAIDetectConfigForColumns(previous, activeFile.columns),
     );
@@ -546,6 +518,7 @@ function App() {
     );
     return matched ?? profiles[0] ?? null;
   }, [aiConfig.profiles, activeStageConfig?.profileName]);
+  const resolvedActiveProfile = activeProfile?.profile ?? DEFAULT_AI_PROFILE;
 
   const isAIBatchRunning = aiBatchTask.status === "running";
   const aiBatchProgressPercent =
@@ -641,10 +614,10 @@ function App() {
         stageKey: activeAIStageKey,
         stageTitle: AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "",
         profileName: activeProfile?.name ?? "",
-        provider: activeProfile?.profile.provider,
-        model: activeProfile?.profile.model,
-        reasoningEffort: activeProfile?.profile.reasoningEffort,
-        retryCount: activeProfile?.profile.retryCount,
+        provider: resolvedActiveProfile.provider,
+        model: resolvedActiveProfile.model,
+        reasoningEffort: resolvedActiveProfile.reasoningEffort,
+        retryCount: resolvedActiveProfile.retryCount,
         prompt: activeStageConfig?.prompt,
         fields,
       },
@@ -657,6 +630,7 @@ function App() {
     activeStageConfig,
     activeAIStageKey,
     activeProfile,
+    resolvedActiveProfile,
     selectedAIConfigName,
   ]);
 
@@ -861,48 +835,6 @@ function App() {
     );
   };
 
-  const onSelectAIConfigForRun = (configName: string) => {
-    if (!activeFile) {
-      return;
-    }
-    const matched = aiConfigList.find((item) => item.name === configName);
-    if (!matched) {
-      return;
-    }
-
-    const normalized = normalizeAIDetectConfigForColumns(
-      matched.config,
-      activeFile.columns,
-    );
-    setSelectedAIConfigName(configName);
-    setAIConfig(normalized);
-    setAIConfigList((previous) =>
-      previous.map((item) =>
-        item.name === configName
-          ? {
-              ...item,
-              config: normalized,
-            }
-          : item,
-      ),
-    );
-    if (!isAIStageConfigModalOpen && !isAIProfileModalOpen) {
-      setDraftAIConfigName(configName);
-      setDraftAIConfig(cloneAIDetectConfig(normalized));
-    }
-    setAIConfigFormMessage("");
-
-    fetch(`/api/ai-config/${encodeURIComponent(activeFile.fileName)}/active`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: configName,
-      }),
-    }).catch(() => {});
-  };
-
   const prepareDraftAIConfig = () => {
     if (!activeFile) {
       return false;
@@ -912,7 +844,6 @@ function App() {
         normalizeAIDetectConfigForColumns(aiConfig, activeFile.columns),
       ),
     );
-    setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
     return true;
   };
@@ -937,14 +868,12 @@ function App() {
 
   const onCancelAIStageConfigModal = () => {
     setDraftAIConfig(cloneAIDetectConfig(aiConfig));
-    setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
     setIsAIStageConfigModalOpen(false);
   };
 
   const onCancelAIProfileModal = () => {
     setDraftAIConfig(cloneAIDetectConfig(aiConfig));
-    setDraftAIConfigName(selectedAIConfigName);
     setAIConfigFormMessage("");
     setIsAIProfileModalOpen(false);
   };
@@ -985,11 +914,7 @@ function App() {
       return;
     }
 
-    const nextConfigName = normalizeAIConfigName(draftAIConfigName);
-    if (draftAIConfigName.trim().length === 0) {
-      setAIConfigFormMessage("配置名称不能为空");
-      return;
-    }
+    const nextConfigName = DEFAULT_AI_CONFIG_NAME;
 
     const nextConfig = normalizeAIDetectConfigForColumns(
       draftAIConfig,
@@ -1018,29 +943,13 @@ function App() {
         setAIConfigFormMessage(`【${profileName}】模型不能为空`);
         return;
       }
-      if (profile.provider === "openai") {
-        if (profile.url.trim().length === 0) {
-          setAIConfigFormMessage(
-            `【${profileName}】OpenAI 兼容接口 URL 不能为空`,
-          );
-          return;
-        }
-        if (profile.apiKey.trim().length === 0) {
-          setAIConfigFormMessage(`【${profileName}】OpenAI API Key 不能为空`);
-          return;
-        }
+      if (profile.url.trim().length === 0) {
+        setAIConfigFormMessage(`【${profileName}】Base URL 不能为空`);
+        return;
       }
-      if (profile.provider === "gemini") {
-        if (profile.url.trim().length === 0) {
-          setAIConfigFormMessage(
-            `【${profileName}】Gemini 接口 Endpoint 不能为空`,
-          );
-          return;
-        }
-        if (profile.apiKey.trim().length === 0) {
-          setAIConfigFormMessage(`【${profileName}】Gemini API Key 不能为空`);
-          return;
-        }
+      if (profile.apiKey.trim().length === 0) {
+        setAIConfigFormMessage(`【${profileName}】Idealab API Key 不能为空`);
+        return;
       }
     }
 
@@ -1100,9 +1009,7 @@ function App() {
         },
         ...previous.filter((item) => item.name !== nextConfigName),
       ]);
-      setSelectedAIConfigName(nextConfigName);
       setAIConfig(nextConfig);
-      setDraftAIConfigName(nextConfigName);
       setDraftAIConfig(cloneAIDetectConfig(nextConfig));
       setAIConfigFormMessage("");
       setIsAIStageConfigModalOpen(false);
@@ -1153,25 +1060,13 @@ function App() {
       setAIResultMessage("请先配置模型");
       return;
     }
-    if (profile.provider === "openai") {
-      if (profile.url.trim().length === 0) {
-        setAIResultMessage("请先配置 OpenAI 兼容接口 URL");
-        return;
-      }
-      if (profile.apiKey.trim().length === 0) {
-        setAIResultMessage("请先配置 OpenAI API Key");
-        return;
-      }
+    if (profile.url.trim().length === 0) {
+      setAIResultMessage("请先配置 Base URL");
+      return;
     }
-    if (profile.provider === "gemini") {
-      if (profile.url.trim().length === 0) {
-        setAIResultMessage("请先配置 Gemini 接口 Endpoint");
-        return;
-      }
-      if (profile.apiKey.trim().length === 0) {
-        setAIResultMessage("请先配置 Gemini API Key");
-        return;
-      }
+    if (profile.apiKey.trim().length === 0) {
+      setAIResultMessage("请先配置 Idealab API Key");
+      return;
     }
     if (stageConfig.submitFieldKeys.length === 0) {
       setAIResultMessage("请先在 AI 配置中选择提交回答字段");
@@ -1362,25 +1257,13 @@ function App() {
       setErrorMessage("请先配置模型");
       return;
     }
-    if (profile.provider === "openai") {
-      if (profile.url.trim().length === 0) {
-        setErrorMessage("请先配置 OpenAI 兼容接口 URL");
-        return;
-      }
-      if (profile.apiKey.trim().length === 0) {
-        setErrorMessage("请先配置 OpenAI API Key");
-        return;
-      }
+    if (profile.url.trim().length === 0) {
+      setErrorMessage("请先配置 Base URL");
+      return;
     }
-    if (profile.provider === "gemini") {
-      if (profile.url.trim().length === 0) {
-        setErrorMessage("请先配置 Gemini 接口 Endpoint");
-        return;
-      }
-      if (profile.apiKey.trim().length === 0) {
-        setErrorMessage("请先配置 Gemini API Key");
-        return;
-      }
+    if (profile.apiKey.trim().length === 0) {
+      setErrorMessage("请先配置 Idealab API Key");
+      return;
     }
     if (stageConfig.submitFieldKeys.length === 0) {
       setErrorMessage("请先在 AI 配置中选择提交回答字段");
@@ -2509,7 +2392,6 @@ function App() {
                       activeFile={activeFile}
                       displayColumns={displayColumns}
                       aiConfigList={aiConfigList}
-                      selectedAIConfigName={selectedAIConfigName}
                       aiConfig={aiConfig}
                       onOpenActiveFileConfig={onOpenActiveFileConfig}
                       onOpenAIStageConfigModal={onOpenAIStageConfigModal}
@@ -2546,9 +2428,6 @@ function App() {
         isOpen={isAIStageConfigModalOpen}
         activeFile={activeFile}
         aiConfigFormMessage={aiConfigFormMessage}
-        aiConfigList={aiConfigList}
-        draftAIConfigName={draftAIConfigName}
-        setDraftAIConfigName={setDraftAIConfigName}
         draftAIConfig={draftAIConfig}
         setDraftAIConfig={setDraftAIConfig}
         aiSubmitFieldColumns={aiSubmitFieldColumns}
@@ -2562,9 +2441,6 @@ function App() {
         isOpen={isAIProfileModalOpen}
         activeFile={activeFile}
         aiConfigFormMessage={aiConfigFormMessage}
-        aiConfigList={aiConfigList}
-        draftAIConfigName={draftAIConfigName}
-        setDraftAIConfigName={setDraftAIConfigName}
         draftAIConfig={draftAIConfig}
         setDraftAIConfig={setDraftAIConfig}
         aiConfigSaving={aiConfigSaving}

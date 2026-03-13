@@ -19,9 +19,10 @@ export const FEEDBACK_TITLE_ALIASES = [
 ] as const;
 export const OPENSOURCE_TITLE_ALIASES = ["是否开源"] as const;
 
-export const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
-export const DEFAULT_GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse";
+export const DEFAULT_IDEALAB_OPENAI_URL =
+  "https://idealab.alibaba-inc.com/api/openai/v1/";
+export const DEFAULT_IDEALAB_GEMINI_URL =
+  "https://idealab.alibaba-inc.com/api/vetex/v1beta/";
 
 export const AI_STAGE_ORDER = [
   "precheck",
@@ -71,11 +72,13 @@ export const DEFAULT_AI_PROFILE_NAME = "默认接口";
 
 export const DEFAULT_AI_PROFILE: AIDetectProfile = {
   provider: "openai",
-  url: DEFAULT_OPENAI_URL,
-  model: "gpt-4.1-mini",
+  url: DEFAULT_IDEALAB_OPENAI_URL,
+  model: "openai/gpt-5.2",
+  modelProvider: "openai",
+  modelName: "gpt-5.2",
   apiKey: "",
   reasoningEffort: "high",
-  retryCount: 2,
+  retryCount: 5,
 };
 
 export const DEFAULT_AI_PROFILES: NamedAIDetectProfile[] = [
@@ -114,10 +117,10 @@ export const DEFAULT_AI_CONFIG: AIDetectConfig = {
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
 export const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
 export const AI_PROVIDER_OPTIONS = [
-  { value: "openai", label: "OpenAI兼容接口" },
-  { value: "gemini", label: "Google Gemini 原生" },
+  { value: "openai", label: "OpenAI 兼容 (Idealab)" },
+  { value: "gemini", label: "Gemini 原生 (Idealab)" },
 ] as const;
-export const DEFAULT_AI_RETRY_COUNT = 2;
+export const DEFAULT_AI_RETRY_COUNT = 5;
 export const MIN_AI_RETRY_COUNT = 0;
 export const MAX_AI_RETRY_COUNT = 10;
 export const DEFAULT_AI_BATCH_CONCURRENCY = 4;

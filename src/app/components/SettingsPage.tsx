@@ -17,7 +17,6 @@ interface SettingsPageProps {
   activeFile: FileViewState;
   displayColumns: ParsedColumn[];
   aiConfigList: NamedAIDetectConfig[];
-  selectedAIConfigName: string;
   aiConfig: AIDetectConfig;
   onOpenActiveFileConfig: () => void;
   onOpenAIStageConfigModal: () => void;
@@ -29,7 +28,6 @@ export function SettingsPage({
   activeFile,
   displayColumns,
   aiConfigList,
-  selectedAIConfigName,
   aiConfig,
   onOpenActiveFileConfig,
   onOpenAIStageConfigModal,
@@ -39,9 +37,7 @@ export function SettingsPage({
   const editableColumns = activeFile.columns.filter((column) =>
     activeFile.selectedEditableColumnKeys.includes(column.key),
   );
-  const activeConfig =
-    aiConfigList.find((item) => item.name === selectedAIConfigName)?.config ??
-    aiConfig;
+  const activeConfig = aiConfigList[0]?.config ?? aiConfig;
   const profiles = activeConfig.profiles ?? [];
   const profileMap = new Map(profiles.map((item) => [item.name, item.profile]));
   const openaiConfigs = profiles.filter(
@@ -132,7 +128,7 @@ export function SettingsPage({
             <div className="settings-subsection">
               <div className="settings-subsection-head">
                 <h4>阶段任务</h4>
-                <span>{`当前配置：${selectedAIConfigName}`}</span>
+                <span>{`共 ${AI_STAGE_ORDER.length} 个阶段`}</span>
               </div>
               <div className="settings-stage-list">
                 {AI_STAGE_ORDER.map((stageKey) => {
@@ -181,7 +177,7 @@ export function SettingsPage({
               </div>
               <div className="settings-config-grid">
                 <div className="settings-config-group">
-                  <h5>OpenAI 兼容</h5>
+                  <h5>OpenAI 兼容 (Idealab)</h5>
                   {openaiConfigs.length > 0 ? (
                     openaiConfigs.map((item) => {
                       return (
@@ -199,7 +195,7 @@ export function SettingsPage({
                   )}
                 </div>
                 <div className="settings-config-group">
-                  <h5>Gemini 接口</h5>
+                  <h5>Gemini 原生 (Idealab)</h5>
                   {geminiConfigs.length > 0 ? (
                     geminiConfigs.map((item) => {
                       return (
@@ -207,7 +203,7 @@ export function SettingsPage({
                           <strong>{item.name}</strong>
                           <span>{item.profile.model || "未配置模型"}</span>
                           <span className="settings-config-url">
-                            {item.profile.url || "未配置 Endpoint"}
+                            {item.profile.url || "未配置接口 URL"}
                           </span>
                         </div>
                       );

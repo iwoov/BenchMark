@@ -53,7 +53,7 @@ const AI_STAGE_ORDER: AIDetectStageKey[] = [
   "final_verdict",
 ];
 const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
-const DEFAULT_AI_RETRY_COUNT = 2;
+const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
 
@@ -269,6 +269,9 @@ function ensureAIDetectConfigTable(): void {
     "UPDATE ai_configs SET provider = 'gemini' WHERE provider = 'vertex'",
   );
   db.exec(
+    "UPDATE ai_configs SET provider = 'openai' WHERE provider = 'idealab'",
+  );
+  db.exec(
     "UPDATE ai_configs SET provider = 'openai' WHERE provider NOT IN ('openai', 'gemini')",
   );
   db.exec(
@@ -405,6 +408,9 @@ function normalizeAIProvider(value: string | null | undefined): AIProvider {
   if (value === "vertex") {
     return "gemini";
   }
+  if (value === "idealab") {
+    return "openai";
+  }
   return "openai";
 }
 
@@ -430,6 +436,9 @@ function normalizeStageProvider(
   }
   if (value === "vertex") {
     return "gemini";
+  }
+  if (value === "idealab") {
+    return "openai";
   }
   return fallback;
 }

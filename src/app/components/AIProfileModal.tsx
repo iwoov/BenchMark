@@ -3,15 +3,12 @@ import type {
   AIDetectConfig,
   AIDetectStageConfigMap,
   FileViewState,
-  NamedAIDetectConfig,
 } from "../../types";
 import {
   AI_PROVIDER_OPTIONS,
   AI_REASONING_EFFORT_OPTIONS,
   AI_STAGE_ORDER,
   DEFAULT_AI_PROFILE,
-  DEFAULT_GEMINI_URL,
-  DEFAULT_OPENAI_URL,
   MAX_AI_RETRY_COUNT,
   MIN_AI_RETRY_COUNT,
 } from "../constants";
@@ -21,13 +18,49 @@ import {
   normalizeAIRetryCount,
 } from "../ai-helpers";
 
+const MODEL_PROVIDER_OPTIONS = ["openai", "google", "anthropic"] as const;
+
+const MODEL_OPTIONS_BY_PROVIDER: Record<string, string[]> = {
+  openai: ["gpt-5.2", "gpt-5.2-mini", "gpt-5.1"],
+  google: ["gemini-3.0-pro", "gemini-3.0-flash", "gemini-2.5-flash"],
+  anthropic: ["claude-4.1", "claude-4-sonnet", "claude-3.7-sonnet"],
+};
+
+const getDefaultModelProvider = (
+  provider: AIDetectConfig["profiles"][number]["profile"]["provider"],
+): string => (provider === "gemini" ? "google" : "openai");
+
+const splitModelId = (
+  value: string,
+  fallbackProvider: string,
+): { provider: string; name: string } => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { provider: fallbackProvider, name: "" };
+  }
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex > 0) {
+    return {
+      provider: trimmed.slice(0, slashIndex),
+      name: trimmed.slice(slashIndex + 1),
+    };
+  }
+  return { provider: fallbackProvider, name: trimmed };
+};
+
+const composeModelId = (provider: string, name: string): string => {
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    return "";
+  }
+  const trimmedProvider = provider.trim();
+  return trimmedProvider ? `${trimmedProvider}/${trimmedName}` : trimmedName;
+};
+
 interface AIProfileModalProps {
   isOpen: boolean;
   activeFile: FileViewState | null;
   aiConfigFormMessage: string;
-  aiConfigList: NamedAIDetectConfig[];
-  draftAIConfigName: string;
-  setDraftAIConfigName: (value: string) => void;
   draftAIConfig: AIDetectConfig;
   setDraftAIConfig: Dispatch<SetStateAction<AIDetectConfig>>;
   aiConfigSaving: boolean;
@@ -55,9 +88,6 @@ export function AIProfileModal({
   isOpen,
   activeFile,
   aiConfigFormMessage,
-  aiConfigList,
-  draftAIConfigName,
-  setDraftAIConfigName,
   draftAIConfig,
   setDraftAIConfig,
   aiConfigSaving,
@@ -153,29 +183,21 @@ export function AIProfileModal({
           <div className="column-modal-notice">{aiConfigFormMessage}</div>
         ) : null}
         <div className="ai-config-form">
-          <label className="ai-config-field">
-            <span>配置名称（输入新名称即新增）</span>
-            <input
-              type="text"
-              value={draftAIConfigName}
-              onChange={(event) => setDraftAIConfigName(event.target.value)}
-              placeholder="例如：默认配置 / 低成本模型 / 高质量模型"
-              list="ai-config-name-options"
-            />
-          </label>
-          <datalist id="ai-config-name-options">
-            {aiConfigList.map((item) => (
-              <option key={item.name} value={item.name} />
-            ))}
-          </datalist>
           <div className="ai-profile-list">
             {profiles.map((profileItem, index) => {
               const profile = profileItem.profile;
+              const derivedModelParts = splitModelId(
+                profile.model,
+                getDefaultModelProvider(profile.provider),
+              );
+              const modelProvider =
+                profile.modelProvider?.trim() || derivedModelParts.provider;
+              const modelName =
+                profile.modelName?.trim() || derivedModelParts.name;
+              const modelOptions =
+                MODEL_OPTIONS_BY_PROVIDER[modelProvider] ?? [];
               return (
-                <div
-                  key={`${profileItem.name}-${index}`}
-                  className="ai-profile-card"
-                >
+                <div key={index} className="ai-profile-card">
                   <div className="ai-profile-card-head">
                     <label className="ai-config-field ai-profile-card-title">
                       <span>接口名称</span>
@@ -201,6 +223,12 @@ export function AIProfileModal({
                   </div>
                   <div className="ai-profile-card-grid">
                     <label className="ai-config-field">
+                      <span>供应商</span>
+                      <select value="idealab" disabled>
+                        <option value="idealab">Idealab</option>
+                      </select>
+                    </label>
+                    <label className="ai-config-field">
                       <span>接口类型</span>
                       <select
                         value={profile.provider}
@@ -212,12 +240,30 @@ export function AIProfileModal({
                               previous.url.trim().length === 0 ||
                               previous.url.trim() ===
                                 getDefaultAIUrl(previous.provider);
+                            const fallbackModelProvider =
+                              previous.modelProvider?.trim().length
+                                ? previous.modelProvider
+                                : getDefaultModelProvider(nextProvider);
+                            const fallbackModelName = previous.modelName?.trim()
+                              .length
+                              ? previous.modelName
+                              : (MODEL_OPTIONS_BY_PROVIDER[
+                                  fallbackModelProvider
+                                ]?.[0] ?? modelName);
                             return {
                               ...previous,
                               provider: nextProvider,
                               url: shouldSwitchToProviderDefaultUrl
                                 ? getDefaultAIUrl(nextProvider)
                                 : previous.url,
+                              modelProvider: fallbackModelProvider,
+                              modelName: fallbackModelName,
+                              model: fallbackModelName?.trim().length
+                                ? composeModelId(
+                                    fallbackModelProvider ?? "",
+                                    fallbackModelName ?? "",
+                                  )
+                                : previous.model,
                             };
                           })
                         }
@@ -230,11 +276,7 @@ export function AIProfileModal({
                       </select>
                     </label>
                     <label className="ai-config-field">
-                      <span>
-                        {profile.provider === "openai"
-                          ? "OpenAI兼容接口 URL"
-                          : "Gemini 接口 Endpoint"}
-                      </span>
+                      <span>Base URL</span>
                       <input
                         type="text"
                         value={profile.url}
@@ -244,33 +286,82 @@ export function AIProfileModal({
                             url: event.target.value,
                           }))
                         }
-                        placeholder={
-                          profile.provider === "openai"
-                            ? `例如：${DEFAULT_OPENAI_URL}`
-                            : `例如：${DEFAULT_GEMINI_URL}`
-                        }
+                        placeholder={`例如：${getDefaultAIUrl(profile.provider)}`}
                       />
                     </label>
                     <label className="ai-config-field">
-                      <span>模型</span>
+                      <span>模型提供商</span>
                       <input
                         type="text"
-                        value={profile.model}
+                        list={`ai-model-provider-options-${index}`}
+                        value={modelProvider}
                         onChange={(event) =>
-                          updateProfile(index, (previous) => ({
-                            ...previous,
-                            model: event.target.value,
-                          }))
+                          updateProfile(index, (previous) => {
+                            const nextProvider = event.target.value;
+                            const nextModelName = MODEL_OPTIONS_BY_PROVIDER[
+                              nextProvider
+                            ]?.includes(previous.modelName?.trim() ?? "")
+                              ? (previous.modelName ?? "")
+                              : (MODEL_OPTIONS_BY_PROVIDER[nextProvider]?.[0] ??
+                                previous.modelName ??
+                                modelName);
+                            return {
+                              ...previous,
+                              modelProvider: nextProvider,
+                              modelName: nextModelName,
+                              model: composeModelId(
+                                nextProvider,
+                                nextModelName ?? "",
+                              ),
+                            };
+                          })
                         }
-                        placeholder={
-                          profile.provider === "openai"
-                            ? "例如：gpt-4.1-mini"
-                            : "例如：gemini-2.5-flash"
-                        }
+                        placeholder="例如：openai / google / anthropic"
                       />
+                      <datalist id={`ai-model-provider-options-${index}`}>
+                        {MODEL_PROVIDER_OPTIONS.map((item) => (
+                          <option key={item} value={item} />
+                        ))}
+                      </datalist>
                     </label>
                     <label className="ai-config-field">
-                      <span>Reasoning 级别</span>
+                      <span>模型名称</span>
+                      <input
+                        type="text"
+                        list={`ai-model-options-${index}`}
+                        value={modelName}
+                        onChange={(event) =>
+                          updateProfile(index, (previous) => {
+                            const nextModelName = event.target.value;
+                            const nextModelProvider =
+                              previous.modelProvider?.trim().length
+                                ? previous.modelProvider
+                                : modelProvider;
+                            return {
+                              ...previous,
+                              modelProvider: nextModelProvider,
+                              modelName: nextModelName,
+                              model: composeModelId(
+                                nextModelProvider ?? "",
+                                nextModelName,
+                              ),
+                            };
+                          })
+                        }
+                        placeholder="例如：gpt-5.2 / gemini-3.0 / claude-3"
+                      />
+                      <datalist id={`ai-model-options-${index}`}>
+                        {modelOptions.map((item) => (
+                          <option key={item} value={item} />
+                        ))}
+                      </datalist>
+                    </label>
+                    <label className="ai-config-field">
+                      <span>
+                        {profile.provider === "gemini"
+                          ? "Thinking 级别"
+                          : "Reasoning Effort"}
+                      </span>
                       <select
                         value={profile.reasoningEffort}
                         onChange={(event) =>
@@ -307,11 +398,7 @@ export function AIProfileModal({
                       />
                     </label>
                     <label className="ai-config-field">
-                      <span>
-                        {profile.provider === "openai"
-                          ? "OpenAI API Key"
-                          : "Gemini API Key"}
-                      </span>
+                      <span>Idealab API Key</span>
                       <input
                         type="password"
                         value={profile.apiKey}

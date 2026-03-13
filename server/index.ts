@@ -147,7 +147,7 @@ const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
   final_verdict: "Final Verdict",
 };
 const DEFAULT_AI_PROFILE_NAME = "默认接口";
-const DEFAULT_AI_RETRY_COUNT = 2;
+const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
 
@@ -1376,13 +1376,14 @@ app.put("/api/ai-config/:fileName", (req, res) => {
         candidate.profile && typeof candidate.profile === "object"
           ? candidate.profile
           : candidate;
-      const normalizedProvider: AIProvider = isAIProvider(
-        (profileSource as { provider?: unknown }).provider,
-      )
-        ? (profileSource as { provider?: AIProvider }).provider
-        : (profileSource as { provider?: unknown }).provider === "vertex"
+      const rawProvider = (profileSource as { provider?: unknown }).provider;
+      const normalizedProvider: AIProvider = isAIProvider(rawProvider)
+        ? rawProvider
+        : rawProvider === "vertex"
           ? "gemini"
-          : "openai";
+          : rawProvider === "idealab"
+            ? "openai"
+            : "openai";
       if (
         (profileSource as { url?: unknown }).url !== undefined &&
         typeof (profileSource as { url?: unknown }).url !== "string"
@@ -1414,11 +1415,13 @@ app.put("/api/ai-config/:fileName", (req, res) => {
           message: `【${rawName}】apiKey must be a non-empty string`,
         });
       }
-      const reasoningEffort = isAIReasoningEffort(
-        (profileSource as { reasoningEffort?: unknown }).reasoningEffort,
+      const rawReasoningEffort = (
+        profileSource as { reasoningEffort?: unknown }
+      ).reasoningEffort;
+      const reasoningEffort: AIReasoningEffort = isAIReasoningEffort(
+        rawReasoningEffort,
       )
-        ? (profileSource as { reasoningEffort?: AIReasoningEffort })
-            .reasoningEffort
+        ? rawReasoningEffort
         : "high";
       const retryCount = normalizeAIRetryCount(
         (profileSource as { retryCount?: unknown }).retryCount,
@@ -1550,7 +1553,9 @@ app.put("/api/ai-config/:fileName", (req, res) => {
           ? stage.provider
           : stage.provider === "vertex"
             ? "gemini"
-            : "openai";
+            : stage.provider === "idealab"
+              ? "openai"
+              : "openai";
 
         if (stage.url !== undefined && typeof stage.url !== "string") {
           return res
@@ -1651,7 +1656,9 @@ app.put("/api/ai-config/:fileName", (req, res) => {
       ? provider
       : provider === "vertex"
         ? "gemini"
-        : "openai";
+        : provider === "idealab"
+          ? "openai"
+          : "openai";
 
     if (url !== undefined && typeof url !== "string") {
       return res.status(400).json({ message: "url must be a string" });
@@ -1801,7 +1808,9 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     ? provider
     : provider === "vertex"
       ? "gemini"
-      : "openai";
+      : provider === "idealab"
+        ? "openai"
+        : "openai";
 
   if (url !== undefined && typeof url !== "string") {
     return res.status(400).json({ message: "url must be a string" });
@@ -1912,7 +1921,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     try {
       new URL(normalizedGeminiUrl);
     } catch {
-      return res.status(400).json({ message: "gemini endpoint is invalid" });
+      return res.status(400).json({ message: "url is invalid" });
     }
   }
 
