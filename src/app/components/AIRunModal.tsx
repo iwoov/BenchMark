@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AIDetectStageKey, NamedAIDetectConfig } from "../../types";
+import type { AIDetectStageKey } from "../../types";
 import { AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
 
 type AIRunTab = "response" | "request";
@@ -7,9 +7,6 @@ type AIRunTab = "response" | "request";
 interface AIRunModalProps {
   isOpen: boolean;
   rowId?: string;
-  aiConfigList: NamedAIDetectConfig[];
-  selectedAIConfigName: string;
-  onSelectAIConfigForRun: (configName: string) => void;
   aiStageKey: AIDetectStageKey;
   onSelectAIStage: (stageKey: AIDetectStageKey) => void;
   aiConfigLoading: boolean;
@@ -29,9 +26,6 @@ interface AIRunModalProps {
 export function AIRunModal({
   isOpen,
   rowId,
-  aiConfigList,
-  selectedAIConfigName,
-  onSelectAIConfigForRun,
   aiStageKey,
   onSelectAIStage,
   aiConfigLoading,
@@ -78,20 +72,6 @@ export function AIRunModal({
         </div>
 
         <div className="ai-run-controls">
-          <label className="ai-run-config">
-            <span>运行配置</span>
-            <select
-              value={selectedAIConfigName}
-              onChange={(event) => onSelectAIConfigForRun(event.target.value)}
-              disabled={aiConfigLoading || isAIDetecting || isAIBatchRunning}
-            >
-              {aiConfigList.map((item) => (
-                <option key={item.name} value={item.name}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
           <label className="ai-run-config">
             <span>运行阶段</span>
             <select

@@ -48,10 +48,8 @@ import {
   normalizeAIBatchConcurrency,
   normalizeAIDetectConfigForColumns,
   normalizeLoadedAIDetectConfig,
-  normalizeAIConfigName,
   normalizeLoadedNamedAIDetectConfigs,
   normalizeNamedAIDetectConfigsForColumns,
-  pickAIConfigName,
   requestAIDetectResult,
 } from "./app/ai-helpers";
 import { IconFile } from "./app/icons";
@@ -106,7 +104,6 @@ function App() {
       ];
     },
   );
-  const selectedAIConfigName = DEFAULT_AI_CONFIG_NAME;
   const [aiConfig, setAIConfig] = useState<AIDetectConfig>(() =>
     createDefaultAIDetectConfig(),
   );
@@ -375,7 +372,12 @@ function App() {
         if (disposed) {
           return;
         }
-        setAIConfigList(normalizedConfigs);
+        setAIConfigList([
+          {
+            name: DEFAULT_AI_CONFIG_NAME,
+            config: activeConfig,
+          },
+        ]);
         setAIConfig(activeConfig);
         setDraftAIConfig(cloneAIDetectConfig(activeConfig));
         setAIConfigFormMessage("");
@@ -419,21 +421,19 @@ function App() {
       aiConfigList,
       activeFile.columns,
     );
-    const nextConfigList =
-      normalizedConfigs.length > 0
-        ? normalizedConfigs
-        : [
-            {
-              name: DEFAULT_AI_CONFIG_NAME,
-              config: normalizeAIDetectConfigForColumns(
-                createDefaultAIDetectConfig(),
-                activeFile.columns,
-              ),
-            },
-          ];
-    const nextSelectedConfig = nextConfigList[0].config;
+    const nextSelectedConfig =
+      normalizedConfigs[0]?.config ??
+      normalizeAIDetectConfigForColumns(
+        createDefaultAIDetectConfig(),
+        activeFile.columns,
+      );
 
-    setAIConfigList(nextConfigList);
+    setAIConfigList([
+      {
+        name: DEFAULT_AI_CONFIG_NAME,
+        config: nextSelectedConfig,
+      },
+    ]);
     setAIConfig(nextSelectedConfig);
     setDraftAIConfig((previous) =>
       normalizeAIDetectConfigForColumns(previous, activeFile.columns),
@@ -610,7 +610,6 @@ function App() {
     );
     return JSON.stringify(
       {
-        configName: selectedAIConfigName,
         stageKey: activeAIStageKey,
         stageTitle: AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "",
         profileName: activeProfile?.name ?? "",
@@ -631,7 +630,6 @@ function App() {
     activeAIStageKey,
     activeProfile,
     resolvedActiveProfile,
-    selectedAIConfigName,
   ]);
 
   const openRowDetail = (rowId: string) => {
@@ -823,16 +821,12 @@ function App() {
 
   const syncActiveAIConfigState = (nextConfig: AIDetectConfig) => {
     setAIConfig(nextConfig);
-    setAIConfigList((previous) =>
-      previous.map((item) =>
-        item.name === selectedAIConfigName
-          ? {
-              ...item,
-              config: nextConfig,
-            }
-          : item,
-      ),
-    );
+    setAIConfigList([
+      {
+        name: DEFAULT_AI_CONFIG_NAME,
+        config: nextConfig,
+      },
+    ]);
   };
 
   const prepareDraftAIConfig = () => {
@@ -1043,7 +1037,6 @@ function App() {
       activeFile.columns,
     );
     syncActiveAIConfigState(normalizedConfig);
-    const runningConfigName = selectedAIConfigName;
     const stageConfig = normalizedConfig.stages[activeAIStageKey];
     const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
     const profileItem =
@@ -1160,7 +1153,7 @@ function App() {
           composedText,
         );
         setAIResultMessage(
-          `AI 回答完成（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}），已写入 AI 检测结果`,
+          `AI 回答完成${stageLabel ? `（${stageLabel}）` : ""}，已写入 AI 检测结果`,
         );
       }
     } catch (error) {
@@ -1240,7 +1233,6 @@ function App() {
       activeFile.columns,
     );
     syncActiveAIConfigState(normalizedConfig);
-    const runningConfigName = selectedAIConfigName;
     const stageConfig = normalizedConfig.stages[activeAIStageKey];
     const stageLabel = AI_STAGE_LABELS[activeAIStageKey]?.shortTitle ?? "";
     const profileItem =
@@ -1424,7 +1416,7 @@ function App() {
       setAIBatchTask((previous) => ({
         ...previous,
         status: "completed",
-        message: `结果已写入 AI 检测结果（配置：${runningConfigName}${stageLabel ? ` / ${stageLabel}` : ""}）`,
+        message: `结果已写入 AI 检测结果${stageLabel ? `（${stageLabel}）` : ""}`,
       }));
       setErrorMessage("");
     } catch (error) {
@@ -2188,7 +2180,6 @@ function App() {
                           当前分区{" "}
                           {activeSettingsSection === "ai" ? "AI" : "字段"}
                         </span>
-                        <span>当前配置 {selectedAIConfigName}</span>
                       </>
                     ) : null}
                   </div>
@@ -2450,9 +2441,6 @@ function App() {
       <AIRunModal
         isOpen={isAIRunModalOpen}
         rowId={selectedRow?.rowId}
-        aiConfigList={aiConfigList}
-        selectedAIConfigName={selectedAIConfigName}
-        onSelectAIConfigForRun={onSelectAIConfigForRun}
         aiStageKey={activeAIStageKey}
         onSelectAIStage={setActiveAIStageKey}
         aiConfigLoading={aiConfigLoading}
