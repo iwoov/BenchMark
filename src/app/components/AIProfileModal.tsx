@@ -26,6 +26,15 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<string, string[]> = {
   anthropic: ["claude-4.1", "claude-4-sonnet", "claude-3.7-sonnet"],
 };
 
+const MODEL_PROVIDER_PREFIXES = new Set([
+  "openai",
+  "google",
+  "anthropic",
+  "gemini",
+  "vertex",
+  "idealab",
+]);
+
 const getDefaultModelProvider = (
   provider: AIDetectConfig["profiles"][number]["profile"]["provider"],
 ): string => (provider === "gemini" ? "google" : "openai");
@@ -48,13 +57,26 @@ const splitModelId = (
   return { provider: fallbackProvider, name: trimmed };
 };
 
-const composeModelId = (provider: string, name: string): string => {
+const composeModelId = (_provider: string, name: string): string => {
   const trimmedName = name.trim();
-  if (!trimmedName) {
+  return trimmedName;
+};
+
+const stripModelProviderPrefix = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
     return "";
   }
-  const trimmedProvider = provider.trim();
-  return trimmedProvider ? `${trimmedProvider}/${trimmedName}` : trimmedName;
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0) {
+    return trimmed;
+  }
+  const prefix = trimmed.slice(0, slashIndex).toLowerCase();
+  if (!MODEL_PROVIDER_PREFIXES.has(prefix)) {
+    return trimmed;
+  }
+  const remainder = trimmed.slice(slashIndex + 1).trim();
+  return remainder.length > 0 ? remainder : trimmed;
 };
 
 interface AIProfileModalProps {
@@ -192,8 +214,9 @@ export function AIProfileModal({
               );
               const modelProvider =
                 profile.modelProvider?.trim() || derivedModelParts.provider;
-              const modelName =
+              const rawModelName =
                 profile.modelName?.trim() || derivedModelParts.name;
+              const modelName = stripModelProviderPrefix(rawModelName);
               const modelOptions =
                 MODEL_OPTIONS_BY_PROVIDER[modelProvider] ?? [];
               return (
@@ -244,9 +267,9 @@ export function AIProfileModal({
                               previous.modelProvider?.trim().length
                                 ? previous.modelProvider
                                 : getDefaultModelProvider(nextProvider);
-                            const fallbackModelName = previous.modelName?.trim()
-                              .length
-                              ? previous.modelName
+                            const fallbackModelName =
+                              previous.modelName?.trim().length
+                              ? stripModelProviderPrefix(previous.modelName)
                               : (MODEL_OPTIONS_BY_PROVIDER[
                                   fallbackModelProvider
                                 ]?.[0] ?? modelName);
@@ -298,12 +321,15 @@ export function AIProfileModal({
                         onChange={(event) =>
                           updateProfile(index, (previous) => {
                             const nextProvider = event.target.value;
+                            const previousModelName = stripModelProviderPrefix(
+                              previous.modelName ?? "",
+                            );
                             const nextModelName = MODEL_OPTIONS_BY_PROVIDER[
                               nextProvider
-                            ]?.includes(previous.modelName?.trim() ?? "")
-                              ? (previous.modelName ?? "")
+                            ]?.includes(previousModelName)
+                              ? previousModelName
                               : (MODEL_OPTIONS_BY_PROVIDER[nextProvider]?.[0] ??
-                                previous.modelName ??
+                                previousModelName ??
                                 modelName);
                             return {
                               ...previous,
@@ -332,7 +358,9 @@ export function AIProfileModal({
                         value={modelName}
                         onChange={(event) =>
                           updateProfile(index, (previous) => {
-                            const nextModelName = event.target.value;
+                            const nextModelName = stripModelProviderPrefix(
+                              event.target.value,
+                            );
                             const nextModelProvider =
                               previous.modelProvider?.trim().length
                                 ? previous.modelProvider

@@ -36,6 +36,15 @@ export function getDefaultAIUrl(provider: AIDetectProfile["provider"]): string {
     : DEFAULT_IDEALAB_OPENAI_URL;
 }
 
+const MODEL_PROVIDER_PREFIXES = new Set([
+  "openai",
+  "google",
+  "anthropic",
+  "gemini",
+  "vertex",
+  "idealab",
+]);
+
 function splitModelId(
   value: string,
   fallbackProvider: string,
@@ -54,13 +63,26 @@ function splitModelId(
   return { provider: fallbackProvider, name: trimmed };
 }
 
-function composeModelId(provider: string, name: string): string {
-  const trimmedName = name.trim();
-  if (!trimmedName) {
+function stripModelProviderPrefix(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
     return "";
   }
-  const trimmedProvider = provider.trim();
-  return trimmedProvider ? `${trimmedProvider}/${trimmedName}` : trimmedName;
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0) {
+    return trimmed;
+  }
+  const prefix = trimmed.slice(0, slashIndex).toLowerCase();
+  if (!MODEL_PROVIDER_PREFIXES.has(prefix)) {
+    return trimmed;
+  }
+  const remainder = trimmed.slice(slashIndex + 1).trim();
+  return remainder.length > 0 ? remainder : trimmed;
+}
+
+function composeModelId(_provider: string, name: string): string {
+  const trimmedName = name.trim();
+  return trimmedName;
 }
 
 export function getAIBatchTaskStatusText(task: AIBatchTaskState): string {
@@ -192,22 +214,25 @@ function normalizeLoadedAIDetectProfile(
           : fallback.provider;
   const rawModel =
     typeof candidate.model === "string" && candidate.model.trim().length > 0
-      ? candidate.model
+      ? stripModelProviderPrefix(candidate.model)
       : "";
   const rawModelProvider =
     typeof candidate.modelProvider === "string"
       ? candidate.modelProvider.trim()
       : "";
   const rawModelName =
-    typeof candidate.modelName === "string" ? candidate.modelName.trim() : "";
+    typeof candidate.modelName === "string"
+      ? stripModelProviderPrefix(candidate.modelName)
+      : "";
   const resolvedModel =
     rawModel.length > 0
       ? rawModel
       : rawModelName.length > 0
         ? composeModelId(rawModelProvider, rawModelName)
         : fallback.model;
+  const normalizedModel = stripModelProviderPrefix(resolvedModel);
   const derivedModel = splitModelId(
-    resolvedModel,
+    normalizedModel,
     provider === "gemini" ? "google" : "openai",
   );
 
@@ -217,7 +242,10 @@ function normalizeLoadedAIDetectProfile(
       typeof candidate.url === "string" && candidate.url.trim().length > 0
         ? candidate.url
         : getDefaultAIUrl(provider),
-    model: resolvedModel.trim().length > 0 ? resolvedModel : fallback.model,
+    model:
+      normalizedModel.trim().length > 0
+        ? normalizedModel
+        : stripModelProviderPrefix(fallback.model),
     modelProvider: rawModelProvider || derivedModel.provider,
     modelName: rawModelName || derivedModel.name,
     apiKey: typeof candidate.apiKey === "string" ? candidate.apiKey : "",
@@ -567,13 +595,17 @@ export async function requestAIDetectResult(
     onChunk?: (chunk: string) => void;
   },
 ): Promise<AIDetectStreamResult> {
+  const normalizedModel = stripModelProviderPrefix(payload.model);
   const response = await fetch("/api/ai-detect/stream", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     signal: options?.signal,
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      model: normalizedModel,
+    }),
   });
 
   if (!response.ok) {

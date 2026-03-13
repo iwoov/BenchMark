@@ -191,6 +191,32 @@ function normalizeOpenAIUrl(rawUrl: string): string {
   return `${normalized}/v1/chat/completions`;
 }
 
+const MODEL_PROVIDER_PREFIXES = new Set([
+  "openai",
+  "google",
+  "anthropic",
+  "gemini",
+  "vertex",
+  "idealab",
+]);
+
+function normalizeModelName(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0) {
+    return trimmed;
+  }
+  const prefix = trimmed.slice(0, slashIndex).toLowerCase();
+  if (!MODEL_PROVIDER_PREFIXES.has(prefix)) {
+    return trimmed;
+  }
+  const remainder = trimmed.slice(slashIndex + 1).trim();
+  return remainder.length > 0 ? remainder : trimmed;
+}
+
 function appendQueryParam(url: URL, key: string, value: string): void {
   if (!url.searchParams.has(key)) {
     url.searchParams.set(key, value);
@@ -1857,10 +1883,11 @@ app.post("/api/ai-detect/stream", async (req, res) => {
     ? reasoningEffort
     : "high";
   const normalizedRetryCount = normalizeAIRetryCount(retryCount);
+  const normalizedModel = normalizeModelName(model as string);
   const normalizedOpenAIUrl =
     typeof url === "string" ? normalizeOpenAIUrl(url) : "";
   const normalizedGeminiUrl =
-    typeof url === "string" ? normalizeGeminiEndpoint(url, model) : "";
+    typeof url === "string" ? normalizeGeminiEndpoint(url, normalizedModel) : "";
   const normalizedOpenAIApiKey = typeof apiKey === "string" ? apiKey : "";
 
   const aiRequestId = randomUUID().slice(0, 8);
@@ -1904,7 +1931,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
   }));
   // eslint-disable-next-line no-console
   console.log(
-    `[AIRequest][${aiRequestId}] provider=${normalizedProvider} model=${model} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
+    `[AIRequest][${aiRequestId}] provider=${normalizedProvider} model=${normalizedModel} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
   );
   // eslint-disable-next-line no-console
   console.log(
@@ -2030,7 +2057,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
               Authorization: `Bearer ${normalizedOpenAIApiKey}`,
             },
             body: JSON.stringify({
-              model,
+              model: normalizedModel,
               stream: true,
               messages: [{ role: "user", content: userContent }],
               reasoning: {
@@ -2222,7 +2249,7 @@ app.post("/api/ai-detect/stream", async (req, res) => {
 
     const geminiParts = buildGeminiUserParts(promptContent);
     const geminiThinkingConfig = buildGeminiThinkingConfig(
-      model,
+      normalizedModel,
       normalizedReasoningEffort,
     );
     const geminiAuth = buildGeminiAuthHeaders(
