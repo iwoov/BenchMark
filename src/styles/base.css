@@ -260,8 +260,8 @@ body::before {
     align-items: center;
     gap: 16px;
     height: 60px;
-    max-width: 1600px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     width: 100%;
 }
 

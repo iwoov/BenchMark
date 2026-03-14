@@ -39,8 +39,8 @@
     display: flex;
     flex-direction: column;
     padding: 20px 24px;
-    max-width: 1600px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     width: 100%;
     min-height: 0;
     overflow: hidden;
@@ -284,7 +284,9 @@
 
 .filter-group select {
     height: 34px;
-    min-width: 140px;
+    width: 160px;
+    min-width: 160px;
+    max-width: 160px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--bg-elevated);
@@ -1932,8 +1934,8 @@
     grid-template-columns: auto minmax(0, 1fr);
     gap: 16px;
     padding: 20px 24px 24px;
-    max-width: 1800px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     width: 100%;
     min-height: 0;
     align-items: stretch;
