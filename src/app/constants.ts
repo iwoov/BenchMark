@@ -22,7 +22,7 @@ export const OPENSOURCE_TITLE_ALIASES = ["是否开源"] as const;
 export const DEFAULT_IDEALAB_OPENAI_URL =
   "https://idealab.alibaba-inc.com/api/openai/v1/";
 export const DEFAULT_IDEALAB_GEMINI_URL =
-  "https://idealab.alibaba-inc.com/api/vetex/v1beta/";
+  "https://idealab.alibaba-inc.com/api/vertex/v1beta/";
 
 export const AI_STAGE_ORDER = [
   "precheck",

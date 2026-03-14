@@ -37,6 +37,9 @@ export function SettingsPage({
   const editableColumns = activeFile.columns.filter((column) =>
     activeFile.selectedEditableColumnKeys.includes(column.key),
   );
+  const filterColumns = activeFile.columns.filter((column) =>
+    activeFile.selectedFilterColumnKeys.includes(column.key),
+  );
   const activeConfig = aiConfigList[0]?.config ?? aiConfig;
   const profiles = activeConfig.profiles ?? [];
   const profileMap = new Map(profiles.map((item) => [item.name, item.profile]));
@@ -110,6 +113,28 @@ export function SettingsPage({
                 {editableColumns.length > 12 ? (
                   <span className="settings-pill">{`还有 ${
                     editableColumns.length - 12
+                  } 个字段`}</span>
+                ) : null}
+              </div>
+            </div>
+            <div className="settings-subsection">
+              <div className="settings-subsection-head">
+                <h4>筛选字段</h4>
+                <span>{`已选择 ${filterColumns.length} 个`}</span>
+              </div>
+              <div className="settings-pill-list">
+                {filterColumns.length > 0 ? (
+                  filterColumns.slice(0, 12).map((column) => (
+                    <span key={column.key} className="settings-pill">
+                      {column.title}
+                    </span>
+                  ))
+                ) : (
+                  <span className="settings-empty">暂无筛选字段</span>
+                )}
+                {filterColumns.length > 12 ? (
+                  <span className="settings-pill">{`还有 ${
+                    filterColumns.length - 12
                   } 个字段`}</span>
                 ) : null}
               </div>

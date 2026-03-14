@@ -110,80 +110,162 @@
     flex-wrap: wrap;
 }
 
-.batch-toolbar {
+.list-toolbar {
     display: flex;
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-    padding: 6px 10px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border);
-    background: var(--bg-elevated);
+    width: 100%;
 }
 
-.batch-control {
-    display: inline-flex;
+.filter-bar,
+.batch-bar {
+    display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    border-radius: var(--radius-sm);
-    border: 1px dashed var(--border);
-    background: var(--bg-base);
-    font-size: 12px;
-    color: var(--text-muted);
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 0;
+    border: none;
+    background: transparent;
 }
 
-.batch-control span {
+.filter-bar {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.batch-bar {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+.filter-bar .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    min-width: 120px;
+}
+
+.filter-bar .filter-group label,
+.filter-bar .filter-group span {
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--text-secondary);
+    text-transform: none;
     white-space: nowrap;
 }
 
-.batch-control input {
-    width: 64px;
+.filter-bar .filter-group select {
     height: 30px;
-    border-radius: var(--radius-sm);
+    min-width: 120px;
+    border-radius: 8px;
     border: 1px solid var(--border);
-    background: var(--bg-elevated);
+    background: var(--bg-surface);
     color: var(--text-primary);
-    padding: 0 8px;
-    font-size: 12px;
+    padding: 0 10px;
+    padding-right: 26px;
     font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+        border-color var(--transition-fast),
+        background var(--transition-fast);
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%238b90a0' fill='none' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
 }
 
-.batch-control select {
-    height: 30px;
-    min-width: 150px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    padding: 0 8px;
-    font-size: 12px;
-    font-family: inherit;
-}
-
-.batch-control input:focus {
+.filter-bar .filter-group select:hover,
+.filter-bar .filter-group select:focus {
     border-color: var(--accent);
     outline: none;
 }
 
+.batch-bar-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.batch-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.batch-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    min-width: 0;
+}
+
+.batch-control span {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    white-space: nowrap;
+}
+
+.batch-control input,
+.batch-control select {
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    padding: 0 10px;
+    font-size: 12px;
+    font-family: inherit;
+    transition:
+        border-color var(--transition-fast),
+        background var(--transition-fast);
+}
+
+.batch-control input {
+    width: 56px;
+}
+
+.batch-control select {
+    min-width: 140px;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%238b90a0' fill='none' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 26px;
+}
+
+.batch-control input:focus,
 .batch-control select:focus {
     border-color: var(--accent);
     outline: none;
 }
 
-.batch-buttons {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
+.batch-bar .btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    border-radius: 8px;
+    background: var(--bg-surface);
+    box-shadow: none;
 }
 
-.batch-toolbar .btn {
-    padding: 6px 12px;
-    font-size: 12px;
+.batch-bar .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: none;
 }
 
 .filter-group {

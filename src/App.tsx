@@ -271,88 +271,90 @@ function App() {
             <>
               <section className="workspace-topbar">
                 <div className="toolbar page-toolbar">
-                  {activeSection === "list"
-                    ? filterColumns.map((column) => {
-                        const options = filterOptionsMap.get(column.key) ?? [];
-                        return (
-                          <div className="filter-group" key={column.key}>
-                            <label htmlFor={`filter-${column.key}`}>
-                              {column.title}
-                            </label>
+                  {activeSection === "list" ? (
+                    <div className="list-toolbar">
+                      <div className="filter-bar">
+                        {filterColumns.map((column) => {
+                          const options =
+                            filterOptionsMap.get(column.key) ?? [];
+                          return (
+                            <div className="filter-group" key={column.key}>
+                              <label htmlFor={`filter-${column.key}`}>
+                                {column.title}
+                              </label>
+                              <select
+                                id={`filter-${column.key}`}
+                                value={
+                                  activeFile.columnFilterValues[column.key] ??
+                                  ALL_FILTER_VALUE
+                                }
+                                onChange={(event) =>
+                                  onColumnFilterChange(
+                                    column.key,
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <option value={ALL_FILTER_VALUE}>
+                                  {ALL_FILTER_VALUE}
+                                </option>
+                                {options.map((item) => (
+                                  <option key={item} value={item}>
+                                    {item}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="batch-bar">
+                        <div className="batch-bar-controls">
+                          <label className="batch-control">
+                            <span>运行阶段</span>
                             <select
-                              id={`filter-${column.key}`}
-                              value={
-                                activeFile.columnFilterValues[column.key] ??
-                                ALL_FILTER_VALUE
-                              }
+                              value={activeAIRunKey}
                               onChange={(event) =>
-                                onColumnFilterChange(
-                                  column.key,
-                                  event.target.value,
+                                setActiveAIRunKey(
+                                  event.target.value as typeof activeAIRunKey,
                                 )
                               }
+                              disabled={
+                                aiConfigLoading ||
+                                isAIDetecting ||
+                                isAIBatchRunning
+                              }
                             >
-                              <option value={ALL_FILTER_VALUE}>
-                                {ALL_FILTER_VALUE}
-                              </option>
-                              {options.map((item) => (
-                                <option key={item} value={item}>
-                                  {item}
+                              {AI_RUN_STAGE_ORDER.map((stageKey) => (
+                                <option key={stageKey} value={stageKey}>
+                                  {stageKey === AI_RUN_ALL_KEY
+                                    ? AI_RUN_ALL_LABEL
+                                    : (AI_STAGE_LABELS[stageKey]?.shortTitle ??
+                                      stageKey)}
                                 </option>
                               ))}
                             </select>
-                          </div>
-                        );
-                      })
-                    : null}
-                  <div className="toolbar-spacer" />
-                  {activeSection === "list" ? (
-                    <div className="toolbar-actions">
-                      <div className="batch-toolbar">
-                        <label className="batch-control">
-                          <span>运行阶段</span>
-                          <select
-                            value={activeAIRunKey}
-                            onChange={(event) =>
-                              setActiveAIRunKey(
-                                event.target.value as typeof activeAIRunKey,
-                              )
-                            }
-                            disabled={
-                              aiConfigLoading ||
-                              isAIDetecting ||
-                              isAIBatchRunning
-                            }
-                          >
-                            {AI_RUN_STAGE_ORDER.map((stageKey) => (
-                              <option key={stageKey} value={stageKey}>
-                                {stageKey === AI_RUN_ALL_KEY
-                                  ? AI_RUN_ALL_LABEL
-                                  : (AI_STAGE_LABELS[stageKey]?.shortTitle ??
-                                    stageKey)}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="batch-control">
-                          <span>批量并发</span>
-                          <input
-                            type="number"
-                            min={MIN_AI_BATCH_CONCURRENCY}
-                            max={MAX_AI_BATCH_CONCURRENCY}
-                            step={1}
-                            value={aiBatchConcurrency}
-                            onChange={(event) =>
-                              setAIBatchConcurrency(
-                                normalizeAIBatchConcurrency(
-                                  Number(event.target.value),
-                                ),
-                              )
-                            }
-                            disabled={isAIBatchRunning}
-                          />
-                        </label>
-                        <div className="batch-buttons">
+                          </label>
+                          <label className="batch-control">
+                            <span>批量并发</span>
+                            <input
+                              type="number"
+                              min={MIN_AI_BATCH_CONCURRENCY}
+                              max={MAX_AI_BATCH_CONCURRENCY}
+                              step={1}
+                              value={aiBatchConcurrency}
+                              onChange={(event) =>
+                                setAIBatchConcurrency(
+                                  normalizeAIBatchConcurrency(
+                                    Number(event.target.value),
+                                  ),
+                                )
+                              }
+                              disabled={isAIBatchRunning}
+                            />
+                          </label>
+                        </div>
+                        <div className="batch-bar-actions">
                           <button
                             type="button"
                             className="btn"
