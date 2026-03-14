@@ -15,14 +15,12 @@ interface HeaderBarProps {
   isAIBatchRunning: boolean;
   theme: "dark" | "light";
   onToggleTheme: () => void;
-  onOpenAIStageConfigModal: () => void;
   onExportFile: () => void;
   onUploadClick: () => void;
   uploadInputRef: RefObject<HTMLInputElement>;
   onUploadFile: (event: ChangeEvent<HTMLInputElement>) => void;
   isExporting: boolean;
   isUploading: boolean;
-  aiConfigLoading: boolean;
   activeFile: FileViewState | null;
 }
 
@@ -37,14 +35,12 @@ export function HeaderBar({
   isAIBatchRunning,
   theme,
   onToggleTheme,
-  onOpenAIStageConfigModal,
   onExportFile,
   onUploadClick,
   uploadInputRef,
   onUploadFile,
   isExporting,
   isUploading,
-  aiConfigLoading,
   activeFile,
 }: HeaderBarProps) {
   return (
@@ -145,14 +141,6 @@ export function HeaderBar({
             title={theme === "dark" ? "切换浅色主题" : "切换深色主题"}
           >
             {theme === "dark" ? <IconSun /> : <IconMoon />}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={onOpenAIStageConfigModal}
-            disabled={!activeFile || aiConfigLoading}
-          >
-            AI阶段配置
           </button>
           <button
             type="button"

@@ -228,14 +228,12 @@ function App() {
         isAIBatchRunning={isAIBatchRunning}
         theme={theme}
         onToggleTheme={toggleTheme}
-        onOpenAIStageConfigModal={onOpenAIStageConfigModal}
         onExportFile={onExportFile}
         onUploadClick={onUploadClick}
         uploadInputRef={uploadInputRef}
         onUploadFile={onUploadFile}
         isExporting={isExporting}
         isUploading={isUploading}
-        aiConfigLoading={aiConfigLoading}
         activeFile={activeFile}
       />
 

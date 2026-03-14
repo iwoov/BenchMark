@@ -455,24 +455,24 @@
     flex-shrink: 0;
 }
 
+.record-detail-ai-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.record-detail-ai-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
 .record-detail-ai-results {
     display: flex;
     flex-direction: column;
     gap: 10px;
-}
-
-.record-detail-ai-results-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-.record-detail-ai-results-head strong {
-    color: var(--text-primary);
-    font-size: 13px;
 }
 
 .record-detail-ai-results-grid {
@@ -824,13 +824,6 @@
 .ai-run-panel .ai-preview-textarea,
 .ai-run-panel .ai-preview-content {
     max-height: 52vh;
-}
-
-.record-detail-ai-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
 }
 
 .ai-run-config {
@@ -1911,11 +1904,6 @@
         flex-direction: column;
         align-items: flex-start;
         gap: 4px;
-    }
-
-    .record-detail-ai-actions {
-        flex-direction: column;
-        align-items: stretch;
     }
 
     .batch-answer-actions {

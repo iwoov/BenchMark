@@ -40,7 +40,7 @@ export const AI_STAGE_LABELS: Record<
   { title: string; shortTitle: string; description: string }
 > = {
   precheck: {
-    title: "第一阶段：元数据与逻辑自洽性检查",
+    title: "第一阶段：逻辑自洽性检查",
     shortTitle: "Pre-check",
     description: "检查题干与选项的逻辑闭环、错别字与图文依赖性。",
   },
@@ -50,12 +50,12 @@ export const AI_STAGE_LABELS: Record<
     description: "核对图文解答是否一致，是否引入题干外信息。",
   },
   independent_solving: {
-    title: "第三阶段：AI 独立解题与选项推演",
+    title: "第三阶段：AI 独立解题",
     shortTitle: "Independent Solving",
     description: "忽略原解，逐项推演选项并给出独立答案。",
   },
   final_verdict: {
-    title: "第四阶段：真题对标与最终裁定",
+    title: "第四阶段：答案最终裁定",
     shortTitle: "Final Verdict",
     description: "对比 AI 结论与原答案/解答，输出最终裁定。",
   },

@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import type { AIDetectStageKey, ParsedColumn, ParsedRow } from "../../types";
 import { IconChevron } from "../icons";
-import { AI_RUN_ALL_LABEL, AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
+import {
+  AI_RUN_ALL_LABEL,
+  AI_STAGE_LABELS,
+  AI_STAGE_ORDER,
+} from "../constants";
 
 interface AIResultParsed {
   // Pre-check
@@ -109,7 +113,7 @@ function extractFinalAnswerFromText(content: string): string | null {
     return null;
   }
   const answerSection = content.includes("【AI结果】")
-    ? content.split("【AI结果】").pop() ?? ""
+    ? (content.split("【AI结果】").pop() ?? "")
     : content;
 
   const jsonCandidates: string[] = [];
@@ -259,12 +263,9 @@ export function DetailPage({
 
   return (
     <section className="record-detail standalone-record-detail">
-      <div className="record-detail-header">
-        <h3>字段详情</h3>
-        <span>点击字段左侧勾选框可控制显示/隐藏</span>
-      </div>
       <div className="record-detail-ai-toolbar">
-        <div className="record-detail-ai-actions">
+        <div className="record-detail-ai-header">
+          <strong className="record-detail-ai-title">AI自动化检测</strong>
           <button
             type="button"
             className="btn btn-primary"
@@ -277,9 +278,6 @@ export function DetailPage({
           </button>
         </div>
         <div className="record-detail-ai-results">
-          <div className="record-detail-ai-results-head">
-            <strong>AI检测结果</strong>
-          </div>
           <div className="record-detail-ai-results-grid">
             {AI_STAGE_ORDER.map((stageKey) => {
               const label = AI_STAGE_LABELS[stageKey];
@@ -290,7 +288,7 @@ export function DetailPage({
               const buttonLabel = hasResult
                 ? "查看"
                 : isRunAllRunning
-                  ? stageTimer ?? "00:00"
+                  ? (stageTimer ?? "00:00")
                   : "运行";
               const buttonAriaLabel = hasResult
                 ? `查看 ${label.shortTitle}`
@@ -323,6 +321,10 @@ export function DetailPage({
             })}
           </div>
         </div>
+      </div>
+      <div className="record-detail-header">
+        <h3>字段详情</h3>
+        <span>点击字段左侧勾选框可控制显示/隐藏</span>
       </div>
       <div className="detail-fields">
         {displayColumns.map((column) => renderDetailField(column, false))}
