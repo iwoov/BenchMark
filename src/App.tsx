@@ -99,7 +99,6 @@ function App() {
     displayColumns,
     hiddenColumns,
     selectedRow,
-    activeRowIndex,
     previousRow,
     nextRow,
     batchSelectedRowIds,
@@ -107,8 +106,6 @@ function App() {
     onToggleBatchRowSelection,
     onSelectAllBatchRows,
     onClearBatchRows,
-    listRangeStart,
-    listRangeEnd,
   } = useListView({
     activeFile,
     selectedRowId,

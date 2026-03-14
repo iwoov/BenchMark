@@ -55,64 +55,6 @@ const DEFAULT_AI_PROFILE_NAME = "默认接口";
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
-const SHOULD_LOG_AI_RESULTS = process.env.DEBUG_AI_RESULTS === "1";
-
-function summarizeFileStateAIResults(state: unknown): {
-  fileId: string;
-  fileName: string;
-  rows: number;
-  rowsWithAI: number;
-  stageCounts: Record<AIDetectStageKey, number>;
-} | null {
-  if (!state || typeof state !== "object") {
-    return null;
-  }
-  const record = state as {
-    fileId?: unknown;
-    fileName?: unknown;
-    rows?: unknown;
-  };
-  if (!Array.isArray(record.rows)) {
-    return null;
-  }
-  const fileId = typeof record.fileId === "string" ? record.fileId : "unknown";
-  const fileName =
-    typeof record.fileName === "string" ? record.fileName : "unknown";
-  const stageCounts: Record<AIDetectStageKey, number> = {
-    precheck: 0,
-    context_audit: 0,
-    independent_solving: 0,
-    final_verdict: 0,
-  };
-  let rowsWithAI = 0;
-  record.rows.forEach((row) => {
-    if (!row || typeof row !== "object") {
-      return;
-    }
-    const aiResults = (row as { aiResults?: unknown }).aiResults;
-    if (!aiResults || typeof aiResults !== "object") {
-      return;
-    }
-    let hasAny = false;
-    AI_STAGE_ORDER.forEach((stageKey) => {
-      const value = (aiResults as Record<string, unknown>)[stageKey];
-      if (typeof value === "string" && value.trim().length > 0) {
-        stageCounts[stageKey] += 1;
-        hasAny = true;
-      }
-    });
-    if (hasAny) {
-      rowsWithAI += 1;
-    }
-  });
-  return {
-    fileId,
-    fileName,
-    rows: record.rows.length,
-    rowsWithAI,
-    stageCounts,
-  };
-}
 
 function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
   return value === "low" || value === "medium" || value === "high";
@@ -120,10 +62,6 @@ function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
 
 function isAIProvider(value: unknown): value is AIProvider {
   return value === "openai" || value === "gemini";
-}
-
-function isAIDetectStageKey(value: unknown): value is AIDetectStageKey {
-  return AI_STAGE_ORDER.includes(value as AIDetectStageKey);
 }
 
 function isValidAIRetryCount(value: unknown): value is number {
@@ -1064,7 +1002,9 @@ function parseGeminiStreamErrorPayload(
     try {
       const innerPayload = JSON.parse(message) as unknown;
       const innerRoot = asRecord(innerPayload);
-      const innerError = innerRoot ? asRecord(innerRoot.error) ?? innerRoot : null;
+      const innerError = innerRoot
+        ? (asRecord(innerRoot.error) ?? innerRoot)
+        : null;
       if (innerError) {
         if (!Number.isFinite(code)) {
           const innerCode =
@@ -1218,7 +1158,6 @@ function buildPromptContent(
   };
 }
 
-
 export const registerAIRoutes = (app: express.Express) => {
   app.get("/api/ai-config/:fileName", (req, res) => {
     const { fileName } = req.params;
@@ -1261,7 +1200,7 @@ export const registerAIRoutes = (app: express.Express) => {
         : null,
     });
   });
-  
+
   app.put("/api/ai-config/:fileName", (req, res) => {
     const { fileName } = req.params;
     const {
@@ -1293,26 +1232,28 @@ export const registerAIRoutes = (app: express.Express) => {
       stages?: unknown;
       profiles?: unknown;
     };
-  
+
     if (name !== undefined && typeof name !== "string") {
       return res.status(400).json({ message: "name must be a string" });
     }
     if (typeof name === "string" && name.trim().length === 0) {
-      return res.status(400).json({ message: "name must be a non-empty string" });
+      return res
+        .status(400)
+        .json({ message: "name must be a non-empty string" });
     }
     if (setActive !== undefined && typeof setActive !== "boolean") {
       return res.status(400).json({ message: "setActive must be a boolean" });
     }
-  
+
     const configName =
       typeof name === "string" && name.trim().length > 0
         ? name.trim()
         : DEFAULT_AI_CONFIG_NAME;
-  
+
     let normalizedProfiles: NamedAIDetectProfile[] = [];
     let normalizedStages: Record<AIDetectStageKey, AIDetectStageConfig> | null =
       null;
-  
+
     if (profiles !== undefined) {
       if (!Array.isArray(profiles)) {
         return res.status(400).json({ message: "profiles must be an array" });
@@ -1412,7 +1353,7 @@ export const registerAIRoutes = (app: express.Express) => {
       }
       normalizedProfiles = nextProfiles;
     }
-  
+
     if (stages && typeof stages === "object") {
       const rawStages = stages as Record<string, unknown>;
       const hasProfileName = AI_STAGE_ORDER.some((stageKey) => {
@@ -1425,7 +1366,7 @@ export const registerAIRoutes = (app: express.Express) => {
           typeof stageValue.profileName === "string"
         );
       });
-  
+
       if (hasProfileName) {
         if (normalizedProfiles.length === 0) {
           return res
@@ -1436,7 +1377,7 @@ export const registerAIRoutes = (app: express.Express) => {
           normalizedProfiles.map((item) => item.name),
         );
         const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
-  
+
         for (const stageKey of AI_STAGE_ORDER) {
           const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
           const stageValue = rawStages[stageKey];
@@ -1451,7 +1392,7 @@ export const registerAIRoutes = (app: express.Express) => {
             prompt?: unknown;
             resultFieldKey?: unknown;
           };
-  
+
           if (!isNonEmptyString(stage.profileName)) {
             return res.status(400).json({
               message: `${stageLabel} profileName must be a non-empty string`,
@@ -1484,7 +1425,7 @@ export const registerAIRoutes = (app: express.Express) => {
               message: `${stageLabel} resultFieldKey must be a string`,
             });
           }
-  
+
           stageMap[stageKey] = {
             profileName,
             submitFieldKeys: stage.submitFieldKeys as string[],
@@ -1495,12 +1436,12 @@ export const registerAIRoutes = (app: express.Express) => {
                 : "",
           };
         }
-  
+
         normalizedStages = stageMap;
       } else {
         const legacyProfiles: NamedAIDetectProfile[] = [];
         const stageMap = {} as Record<AIDetectStageKey, AIDetectStageConfig>;
-  
+
         for (const [index, stageKey] of AI_STAGE_ORDER.entries()) {
           const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
           const stageValue = rawStages[stageKey];
@@ -1520,7 +1461,7 @@ export const registerAIRoutes = (app: express.Express) => {
             reasoningEffort?: unknown;
             retryCount?: unknown;
           };
-  
+
           const normalizedProvider: AIProvider = isAIProvider(stage.provider)
             ? stage.provider
             : stage.provider === "vertex"
@@ -1528,7 +1469,7 @@ export const registerAIRoutes = (app: express.Express) => {
               : stage.provider === "idealab"
                 ? "openai"
                 : "openai";
-  
+
           if (stage.url !== undefined && typeof stage.url !== "string") {
             return res
               .status(400)
@@ -1547,7 +1488,9 @@ export const registerAIRoutes = (app: express.Express) => {
           if (!isNonEmptyString(stage.url)) {
             return res
               .status(400)
-              .json({ message: `${stageLabel} url must be a non-empty string` });
+              .json({
+                message: `${stageLabel} url must be a non-empty string`,
+              });
           }
           if (!isNonEmptyString(stage.apiKey)) {
             return res.status(400).json({
@@ -1591,7 +1534,7 @@ export const registerAIRoutes = (app: express.Express) => {
               message: `${stageLabel} retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
             });
           }
-  
+
           const profileName =
             AI_STAGE_ORDER.length > 1
               ? `${DEFAULT_AI_PROFILE_NAME}-${index + 1}`
@@ -1619,7 +1562,7 @@ export const registerAIRoutes = (app: express.Express) => {
                 : "",
           };
         }
-  
+
         normalizedProfiles = legacyProfiles;
         normalizedStages = stageMap;
       }
@@ -1631,7 +1574,7 @@ export const registerAIRoutes = (app: express.Express) => {
           : provider === "idealab"
             ? "openai"
             : "openai";
-  
+
       if (url !== undefined && typeof url !== "string") {
         return res.status(400).json({ message: "url must be a string" });
       }
@@ -1684,7 +1627,7 @@ export const registerAIRoutes = (app: express.Express) => {
           message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
         });
       }
-  
+
       const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
         ? reasoningEffort
         : "high";
@@ -1715,14 +1658,14 @@ export const registerAIRoutes = (app: express.Express) => {
       });
       normalizedStages = stageMap;
     }
-  
+
     if (!normalizedStages) {
       return res.status(400).json({ message: "stages is required" });
     }
     if (normalizedProfiles.length === 0) {
       return res.status(400).json({ message: "profiles is required" });
     }
-  
+
     saveAIDetectConfig(
       decodeURIComponent(fileName),
       configName,
@@ -1734,28 +1677,30 @@ export const registerAIRoutes = (app: express.Express) => {
         setActive: setActive !== false,
       },
     );
-  
+
     return res.json({ ok: true });
   });
-  
+
   app.post("/api/ai-config/:fileName/active", (req, res) => {
     const { fileName } = req.params;
     const { name } = req.body as {
       name?: unknown;
     };
     if (!isNonEmptyString(name)) {
-      return res.status(400).json({ message: "name must be a non-empty string" });
+      return res
+        .status(400)
+        .json({ message: "name must be a non-empty string" });
     }
-  
+
     const ok = setAIDetectActiveConfig(decodeURIComponent(fileName), name);
     if (!ok) {
       return res.status(404).json({ message: "AI 配置不存在" });
     }
     return res.json({ ok: true });
   });
-  
+
   // ─── AI Detection Stream ───
-  
+
   app.post("/api/ai-detect/stream", async (req, res) => {
     const {
       provider,
@@ -1783,7 +1728,7 @@ export const registerAIRoutes = (app: express.Express) => {
         : provider === "idealab"
           ? "openai"
           : "openai";
-  
+
     if (url !== undefined && typeof url !== "string") {
       return res.status(400).json({ message: "url must be a string" });
     }
@@ -1801,21 +1746,26 @@ export const registerAIRoutes = (app: express.Express) => {
         .json({ message: "prompt must be a non-empty string" });
     }
     if (!isNonEmptyString(url)) {
-      return res.status(400).json({ message: "url must be a non-empty string" });
+      return res
+        .status(400)
+        .json({ message: "url must be a non-empty string" });
     }
     if (!isNonEmptyString(apiKey)) {
       return res
         .status(400)
         .json({ message: "apiKey must be a non-empty string" });
     }
-  
+
     const fieldPayload = toAIDetectFields(fields);
     if (!fieldPayload || fieldPayload.length === 0) {
       return res
         .status(400)
         .json({ message: "fields must be a non-empty array" });
     }
-    if (reasoningEffort !== undefined && !isAIReasoningEffort(reasoningEffort)) {
+    if (
+      reasoningEffort !== undefined &&
+      !isAIReasoningEffort(reasoningEffort)
+    ) {
       return res
         .status(400)
         .json({ message: "reasoningEffort must be low, medium or high" });
@@ -1833,18 +1783,20 @@ export const registerAIRoutes = (app: express.Express) => {
     const normalizedOpenAIUrl =
       typeof url === "string" ? normalizeOpenAIUrl(url) : "";
     const normalizedGeminiUrl =
-      typeof url === "string" ? normalizeGeminiEndpoint(url, normalizedModel) : "";
+      typeof url === "string"
+        ? normalizeGeminiEndpoint(url, normalizedModel)
+        : "";
     const normalizedOpenAIApiKey = typeof apiKey === "string" ? apiKey : "";
-  
+
     const aiRequestId = randomUUID().slice(0, 8);
     const startedAt = Date.now();
     const elapsedMs = (): number => Date.now() - startedAt;
-  
+
     const aiFields = fieldPayload.map((field): AIDetectField => {
       if (field.type !== "image" || !field.imageUrl) {
         return field;
       }
-  
+
       const normalizedImageUrl = normalizeImageUrlForAI(field.imageUrl);
       if (normalizedImageUrl) {
         return {
@@ -1852,7 +1804,7 @@ export const registerAIRoutes = (app: express.Express) => {
           imageUrl: normalizedImageUrl,
         };
       }
-  
+
       const fallbackValue =
         field.value.trim().length > 0
           ? `${field.value}\n[图片读取失败: ${field.imageUrl}]`
@@ -1863,7 +1815,7 @@ export const registerAIRoutes = (app: express.Express) => {
         value: fallbackValue,
       };
     });
-  
+
     const aiFieldLogs = aiFields.map((field) => ({
       title: field.title,
       type: field.type,
@@ -1918,7 +1870,7 @@ export const registerAIRoutes = (app: express.Express) => {
         return res.status(400).json({ message: "url is invalid" });
       }
     }
-  
+
     const controller = new AbortController();
     let abortReason = "";
     let upstreamStatusCode: number | null = null;
@@ -1928,7 +1880,7 @@ export const registerAIRoutes = (app: express.Express) => {
     let streamThinkingTextLength = 0;
     let doneByDoneToken = false;
     let doneByNaturalEnd = false;
-  
+
     const abortUpstream = (reason: string): void => {
       if (controller.signal.aborted) {
         return;
@@ -1940,7 +1892,7 @@ export const registerAIRoutes = (app: express.Express) => {
       );
       controller.abort();
     };
-  
+
     req.on("aborted", () => {
       // eslint-disable-next-line no-console
       console.log(
@@ -1972,7 +1924,7 @@ export const registerAIRoutes = (app: express.Express) => {
         abortUpstream("res.close(before-end)");
       }
     });
-  
+
     try {
       const promptContent = buildPromptContent(prompt, aiFields);
       let aiResponseText = "";
@@ -2008,7 +1960,7 @@ export const registerAIRoutes = (app: express.Express) => {
                 }),
               ]
             : promptContent.promptText;
-  
+
         let upstream: Response | null = null;
         for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
           // eslint-disable-next-line no-console
@@ -2038,12 +1990,12 @@ export const registerAIRoutes = (app: express.Express) => {
             console.log(
               `[AIUpstream][${aiRequestId}] provider=openai connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
             );
-  
+
             if (candidate.status === 200 && hasBody) {
               upstream = candidate;
               break;
             }
-  
+
             if (candidate.status !== 200) {
               const rawText = await candidate.text().catch(() => "");
               lastFailedStatus = candidate.status || 500;
@@ -2052,7 +2004,7 @@ export const registerAIRoutes = (app: express.Express) => {
               lastFailedStatus = 502;
               lastFailedMessage = "AI 响应流为空";
             }
-  
+
             // eslint-disable-next-line no-console
             console.log(
               `[AIUpstreamRetry][${aiRequestId}] provider=openai attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
@@ -2070,7 +2022,7 @@ export const registerAIRoutes = (app: express.Express) => {
             );
           }
         }
-  
+
         if (!upstream || !upstream.body) {
           // eslint-disable-next-line no-console
           console.log(
@@ -2080,18 +2032,18 @@ export const registerAIRoutes = (app: express.Express) => {
             .status(lastFailedStatus)
             .json({ message: lastFailedMessage });
         }
-  
+
         res.status(200);
         res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-transform");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
-  
+
         const decoder = new TextDecoder();
         let buffer = "";
         let rawStreamPreview = "";
-  
+
         const reader = upstream.body.getReader();
         while (true) {
           const { value, done } = await reader.read();
@@ -2101,22 +2053,22 @@ export const registerAIRoutes = (app: express.Express) => {
           if (!value) {
             continue;
           }
-  
+
           const current = decoder.decode(value, { stream: true });
           if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
             rawStreamPreview += current;
           }
           buffer += current;
-  
+
           const lines = buffer.split(/\r?\n/);
           buffer = lines.pop() ?? "";
-  
+
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed.startsWith("data:")) {
               continue;
             }
-  
+
             const data = trimmed.slice(5).trim();
             if (data === "[DONE]") {
               doneByDoneToken = true;
@@ -2131,7 +2083,7 @@ export const registerAIRoutes = (app: express.Express) => {
             if (data.length === 0) {
               continue;
             }
-  
+
             try {
               const payload = JSON.parse(data) as unknown;
               const extracted = extractStreamTextPayload(payload);
@@ -2158,12 +2110,12 @@ export const registerAIRoutes = (app: express.Express) => {
             }
           }
         }
-  
+
         buffer += decoder.decode();
         if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
           rawStreamPreview += buffer;
         }
-  
+
         if (buffer.length > 0 && buffer.includes("data:")) {
           const maybeData = buffer
             .split(/\r?\n/)
@@ -2197,7 +2149,7 @@ export const registerAIRoutes = (app: express.Express) => {
             }
           }
         }
-  
+
         doneByNaturalEnd = true;
         logAIResponseById(aiRequestId, aiResponseText);
         if (aiThinkingText.trim().length > 0) {
@@ -2213,7 +2165,7 @@ export const registerAIRoutes = (app: express.Express) => {
         res.end();
         return;
       }
-  
+
       const geminiParts = buildGeminiUserParts(promptContent);
       const geminiThinkingConfig = buildGeminiThinkingConfig(
         normalizedModel,
@@ -2224,19 +2176,19 @@ export const registerAIRoutes = (app: express.Express) => {
         normalizedOpenAIApiKey,
       );
       // eslint-disable-next-line no-console
-        if (SHOULD_LOG_AI_VERBOSE) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[AIUpstreamConfig][${aiRequestId}] provider=gemini thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
-          );
-        }
+      if (SHOULD_LOG_AI_VERBOSE) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamConfig][${aiRequestId}] provider=gemini thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
+        );
+      }
       // eslint-disable-next-line no-console
-        if (SHOULD_LOG_AI_VERBOSE) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[AIUpstreamConfig][${aiRequestId}] provider=gemini authMode=${geminiAuth.mode}`,
-          );
-        }
+      if (SHOULD_LOG_AI_VERBOSE) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[AIUpstreamConfig][${aiRequestId}] provider=gemini authMode=${geminiAuth.mode}`,
+        );
+      }
       const geminiRequestBody: GeminiGenerateContentRequest = {
         contents: [
           {
@@ -2248,7 +2200,7 @@ export const registerAIRoutes = (app: express.Express) => {
           thinkingConfig: geminiThinkingConfig,
         },
       };
-  
+
       let completed = false;
       for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
         // eslint-disable-next-line no-console
@@ -2276,14 +2228,14 @@ export const registerAIRoutes = (app: express.Express) => {
           );
           continue;
         }
-  
+
         upstreamStatusCode = candidate.status;
         const hasBody = Boolean(candidate.body);
         // eslint-disable-next-line no-console
         console.log(
           `[AIUpstream][${aiRequestId}] provider=gemini connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
         );
-  
+
         if (candidate.status !== 200 || !hasBody) {
           if (candidate.status !== 200) {
             const rawText = await candidate.text().catch(() => "");
@@ -2299,14 +2251,14 @@ export const registerAIRoutes = (app: express.Express) => {
           );
           continue;
         }
-  
+
         const decoder = new TextDecoder();
         let buffer = "";
         let rawStreamPreview = "";
         let currentEventType = "";
         let headersSent = false;
         const pendingEvents: AIClientStreamEvent[] = [];
-  
+
         const ensureHeaders = () => {
           if (headersSent) {
             return;
@@ -2319,16 +2271,18 @@ export const registerAIRoutes = (app: express.Express) => {
           res.flushHeaders();
           headersSent = true;
         };
-  
+
         const flushPendingEvents = () => {
           if (pendingEvents.length === 0) {
             return;
           }
           ensureHeaders();
-          pendingEvents.forEach((event) => writeAIClientStreamEvent(res, event));
+          pendingEvents.forEach((event) =>
+            writeAIClientStreamEvent(res, event),
+          );
           pendingEvents.length = 0;
         };
-  
+
         const enqueueEvent = (event: AIClientStreamEvent) => {
           if (headersSent) {
             writeAIClientStreamEvent(res, event);
@@ -2336,13 +2290,13 @@ export const registerAIRoutes = (app: express.Express) => {
             pendingEvents.push(event);
           }
         };
-  
+
         const commitIfReady = () => {
           if (!headersSent && pendingEvents.length > 0) {
             flushPendingEvents();
           }
         };
-  
+
         const handleGeminiData = (
           data: string,
           eventType: string,
@@ -2384,11 +2338,11 @@ export const registerAIRoutes = (app: express.Express) => {
               return "done";
             }
           }
-  
+
           if (data.length === 0) {
             return "continue";
           }
-  
+
           try {
             const payload = JSON.parse(data) as unknown;
             const extracted = extractGeminiStreamTextPayload(payload);
@@ -2416,11 +2370,11 @@ export const registerAIRoutes = (app: express.Express) => {
           }
           return "continue";
         };
-  
+
         const reader = candidate.body!.getReader();
         let shouldRetry = false;
         let shouldFail = false;
-  
+
         while (true) {
           const { value, done } = await reader.read();
           if (done) {
@@ -2429,16 +2383,16 @@ export const registerAIRoutes = (app: express.Express) => {
           if (!value) {
             continue;
           }
-  
+
           const current = decoder.decode(value, { stream: true });
           if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
             rawStreamPreview += current;
           }
           buffer += current;
-  
+
           const lines = buffer.split(/\r?\n/);
           buffer = lines.pop() ?? "";
-  
+
           for (const line of lines) {
             const trimmed = line.trim();
             if (trimmed.length === 0) {
@@ -2452,11 +2406,11 @@ export const registerAIRoutes = (app: express.Express) => {
             if (!trimmed.startsWith("data:")) {
               continue;
             }
-  
+
             const data = trimmed.slice(5).trim();
             const action = handleGeminiData(data, currentEventType);
             currentEventType = "";
-  
+
             if (action === "retry") {
               shouldRetry = true;
               break;
@@ -2470,16 +2424,16 @@ export const registerAIRoutes = (app: express.Express) => {
               break;
             }
           }
-  
+
           if (completed || shouldRetry || shouldFail) {
             break;
           }
         }
-  
+
         if (completed) {
           return;
         }
-  
+
         if (shouldRetry || shouldFail) {
           await reader.cancel().catch(() => {});
           if (shouldRetry) {
@@ -2487,12 +2441,12 @@ export const registerAIRoutes = (app: express.Express) => {
           }
           break;
         }
-  
+
         buffer += decoder.decode();
         if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
           rawStreamPreview += buffer;
         }
-  
+
         if (buffer.length > 0 && buffer.includes("data:")) {
           const maybeData = buffer
             .split(/\r?\n/)
@@ -2515,7 +2469,7 @@ export const registerAIRoutes = (app: express.Express) => {
             }
           }
         }
-  
+
         doneByNaturalEnd = true;
         flushPendingEvents();
         ensureHeaders();
@@ -2534,13 +2488,15 @@ export const registerAIRoutes = (app: express.Express) => {
         completed = true;
         return;
       }
-  
+
       if (!completed) {
         // eslint-disable-next-line no-console
         console.log(
           `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
         );
-        return res.status(lastFailedStatus).json({ message: lastFailedMessage });
+        return res
+          .status(lastFailedStatus)
+          .json({ message: lastFailedMessage });
       }
     } catch (error) {
       if (controller.signal.aborted) {
@@ -2566,6 +2522,4 @@ export const registerAIRoutes = (app: express.Express) => {
         .json({ message: parsedError.message });
     }
   });
-  
 };
-
