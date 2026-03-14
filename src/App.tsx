@@ -10,7 +10,6 @@ import {
   MIN_AI_BATCH_CONCURRENCY,
 } from "./app/constants";
 import { normalizeAIBatchConcurrency } from "./app/ai-helpers";
-import { buildHashRoute } from "./app/routes";
 import { HeaderBar } from "./app/components/HeaderBar";
 import { WorkspaceSidebar } from "./app/components/WorkspaceSidebar";
 import { ListPage } from "./app/components/ListPage";
@@ -176,7 +175,12 @@ function App() {
     if (initialLoadComplete && !activeFile) {
       navigateToSection("list", activeSettingsSection, null, { replace: true });
     }
-  }, [initialLoadComplete, activeFile, activeSettingsSection, navigateToSection]);
+  }, [
+    initialLoadComplete,
+    activeFile,
+    activeSettingsSection,
+    navigateToSection,
+  ]);
 
   const aiSubmitFieldColumns = useMemo(
     () => (activeFile ? activeFile.columns : []),
@@ -213,26 +217,6 @@ function App() {
       getLatexToggleKey,
       setPreviewImageSrc,
     });
-
-  const routePathLabel = buildHashRoute(activeSection, activeSettingsSection);
-  const pageTitle =
-    activeSection === "list"
-      ? "题目列表"
-      : activeSection === "detail"
-        ? "题目详情"
-        : activeSettingsSection === "ai"
-          ? "AI 设置"
-          : "字段设置";
-  const pageDescription =
-    activeSection === "list"
-      ? `当前文件共 ${visibleRows.length} 条，正在展示 ${listRangeStart}-${listRangeEnd} 条。`
-      : activeSection === "detail"
-        ? selectedRow
-          ? `当前查看第 ${activeRowIndex + 1} 条，支持字段编辑与 AI 回答。`
-          : "请先在题目列表中选择一条记录。"
-        : activeSettingsSection === "ai"
-          ? "管理接口配置与阶段任务配置，控制提示词与结果保存字段。"
-          : "管理详情页字段展示和可编辑字段。";
 
   return (
     <div className="app-shell">
@@ -286,39 +270,8 @@ function App() {
           ) : (
             <>
               <section className="workspace-topbar">
-                <div className="workspace-topbar-head">
-                  <div className="workspace-topbar-copy">
-                    <span className="workspace-route">{routePathLabel}</span>
-                    <h2>{pageTitle}</h2>
-                    <p>{pageDescription}</p>
-                  </div>
-                  <div className="workspace-topbar-meta">
-                    <span>{activeFile.fileName}</span>
-                    {activeSection === "list" ? (
-                      <>
-                        <span>字段 {activeFile.columns.length}</span>
-                        <span>已勾选 {batchSelectedRowIds.length}</span>
-                      </>
-                    ) : null}
-                    {activeSection === "detail" ? (
-                      <>
-                        <span>展示字段 {displayColumns.length}</span>
-                        <span>隐藏字段 {hiddenColumns.length}</span>
-                      </>
-                    ) : null}
-                    {activeSection === "settings" ? (
-                      <>
-                        <span>
-                          当前分区{" "}
-                          {activeSettingsSection === "ai" ? "AI" : "字段"}
-                        </span>
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-
                 <div className="toolbar page-toolbar">
-                  {activeSection !== "settings"
+                  {activeSection === "list"
                     ? filterColumns.map((column) => {
                         const options = filterOptionsMap.get(column.key) ?? [];
                         return (

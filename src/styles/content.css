@@ -721,7 +721,6 @@
     color: var(--text-muted);
 }
 
-
 .ai-run-tabs {
     display: flex;
     align-items: center;
@@ -1857,19 +1856,17 @@
 
 /* ─── Workspace Refactor ─── */
 .main-workspace {
+    --sidebar-width-expanded: 176px;
+    --sidebar-width-collapsed: 64px;
     display: grid;
-    grid-template-columns: 248px minmax(0, 1fr);
-    gap: 18px;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 16px;
     padding: 20px 24px 24px;
     max-width: 1800px;
     margin: 0 auto;
     width: 100%;
     min-height: 0;
     align-items: stretch;
-}
-
-.main-workspace.sidebar-collapsed {
-    grid-template-columns: 84px minmax(0, 1fr);
 }
 
 .workspace-sidebar {
@@ -1879,45 +1876,37 @@
     position: sticky;
     top: 80px;
     min-height: calc(100vh - 120px);
-    padding: 12px 16px 12px 0;
+    padding: 10px 10px 10px 0;
     border-right: 1px solid var(--border);
+    width: var(--sidebar-width-expanded);
+    transition: width var(--transition-slow);
+    will-change: width;
 }
 
 .workspace-sidebar-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    justify-content: flex-start;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
 }
 
-.workspace-sidebar-title {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-}
-
-.workspace-sidebar-title span {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-
-.workspace-sidebar-title strong {
-    font-size: 15px;
-    color: var(--text-primary);
+.workspace-sidebar-toggle-label {
+    margin-left: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
 }
 
 .workspace-sidebar-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
     border: 1px solid var(--border);
     background: var(--bg-elevated);
     color: var(--text-secondary);
@@ -2007,8 +1996,12 @@
     cursor: not-allowed;
 }
 
-.main-workspace.sidebar-collapsed .workspace-sidebar-title {
-    display: none;
+.main-workspace.sidebar-collapsed .workspace-sidebar {
+    width: var(--sidebar-width-collapsed);
+}
+
+.main-workspace.sidebar-collapsed .workspace-sidebar-header {
+    justify-content: center;
 }
 
 .main-workspace.sidebar-collapsed .workspace-nav-item {

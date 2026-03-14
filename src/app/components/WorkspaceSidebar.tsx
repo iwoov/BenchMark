@@ -27,10 +27,6 @@ export function WorkspaceSidebar({
   return (
     <aside className="workspace-sidebar">
       <div className="workspace-sidebar-header">
-        <div className="workspace-sidebar-title">
-          <span>工作区</span>
-          {!isCollapsed ? <strong>页面导航</strong> : null}
-        </div>
         <button
           type="button"
           className="workspace-sidebar-toggle"
@@ -40,6 +36,9 @@ export function WorkspaceSidebar({
         >
           <IconPanelLeft />
         </button>
+        {!isCollapsed ? (
+          <span className="workspace-sidebar-toggle-label">导航栏</span>
+        ) : null}
       </div>
       <button
         type="button"
@@ -52,7 +51,6 @@ export function WorkspaceSidebar({
         </span>
         <span className="workspace-nav-copy">
           <strong>题目列表</strong>
-          <span>全字段浏览、筛选、分页与批量处理</span>
         </span>
       </button>
       <button
@@ -67,7 +65,6 @@ export function WorkspaceSidebar({
         </span>
         <span className="workspace-nav-copy">
           <strong>题目详情</strong>
-          <span>查看单条记录、字段编辑、AI 回答</span>
         </span>
       </button>
       <button
@@ -82,7 +79,6 @@ export function WorkspaceSidebar({
         </span>
         <span className="workspace-nav-copy">
           <strong>设置区域</strong>
-          <span>字段规则与 AI 配置入口</span>
         </span>
       </button>
     </aside>
