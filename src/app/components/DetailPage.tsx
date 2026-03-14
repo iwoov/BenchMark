@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { AIDetectStageKey, ParsedColumn, ParsedRow } from "../../types";
 import { IconChevron } from "../icons";
-import { AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
+import { AI_RUN_ALL_LABEL, AI_STAGE_LABELS, AI_STAGE_ORDER } from "../constants";
 
 interface AIResultParsed {
   // Pre-check
@@ -228,7 +228,11 @@ interface DetailPageProps {
   hiddenColumns: ParsedColumn[];
   showHiddenFields: boolean;
   onToggleHiddenFields: () => void;
-  onOpenAIRunModal: () => void;
+  onOpenAIRunModal: (stageKey: AIDetectStageKey) => void;
+  onRunAllAIDetect: () => void;
+  canRunAllAIDetect: boolean;
+  runAllTimerText?: string;
+  runAllStageTimers?: Partial<Record<AIDetectStageKey, string>>;
   renderDetailField: (column: ParsedColumn, isHidden: boolean) => ReactNode;
   aiResults?: Partial<Record<AIDetectStageKey, string>>;
 }
@@ -240,6 +244,10 @@ export function DetailPage({
   showHiddenFields,
   onToggleHiddenFields,
   onOpenAIRunModal,
+  onRunAllAIDetect,
+  canRunAllAIDetect,
+  runAllTimerText,
+  runAllStageTimers,
   renderDetailField,
   aiResults,
 }: DetailPageProps) {
@@ -260,25 +268,52 @@ export function DetailPage({
           <button
             type="button"
             className="btn btn-primary"
-            onClick={onOpenAIRunModal}
+            onClick={onRunAllAIDetect}
+            disabled={!canRunAllAIDetect}
           >
-            运行AI检测
+            {runAllTimerText
+              ? `执行全部中 ${runAllTimerText}`
+              : AI_RUN_ALL_LABEL}
           </button>
         </div>
         <div className="record-detail-ai-results">
           <div className="record-detail-ai-results-head">
             <strong>AI检测结果</strong>
-            <span>四阶段结果仅保存到数据库</span>
           </div>
           <div className="record-detail-ai-results-grid">
             {AI_STAGE_ORDER.map((stageKey) => {
               const label = AI_STAGE_LABELS[stageKey];
               const content = aiResults?.[stageKey] ?? "";
+              const stageTimer = runAllStageTimers?.[stageKey];
+              const hasResult = content.trim().length > 0;
+              const isRunAllRunning = Boolean(runAllTimerText);
+              const buttonLabel = hasResult
+                ? "查看"
+                : isRunAllRunning
+                  ? stageTimer ?? "00:00"
+                  : "运行";
+              const buttonAriaLabel = hasResult
+                ? `查看 ${label.shortTitle}`
+                : isRunAllRunning
+                  ? `运行中 ${label.shortTitle}`
+                  : `运行 ${label.shortTitle}`;
+              const isButtonDisabled = !hasResult && isRunAllRunning;
               return (
                 <div key={stageKey} className="record-detail-ai-result-card">
                   <div className="record-detail-ai-result-title">
-                    <span>{label.shortTitle}</span>
-                    <small>{label.title}</small>
+                    <div className="record-detail-ai-result-title-text">
+                      <span>{label.shortTitle}</span>
+                      <small>{label.title}</small>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost ai-stage-run-btn"
+                      aria-label={buttonAriaLabel}
+                      onClick={() => onOpenAIRunModal(stageKey)}
+                      disabled={isButtonDisabled}
+                    >
+                      {buttonLabel}
+                    </button>
                   </div>
                   <div className="record-detail-ai-result-body">
                     {renderAIResultContent(stageKey, content)}

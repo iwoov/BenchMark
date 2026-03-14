@@ -412,20 +412,40 @@
 
 .record-detail-ai-result-title {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     color: var(--text-secondary);
 }
 
-.record-detail-ai-result-title span {
+.record-detail-ai-result-title-text {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.record-detail-ai-result-title-text span {
     font-size: 12px;
     font-weight: 700;
     color: var(--text-primary);
 }
 
-.record-detail-ai-result-title small {
+.record-detail-ai-result-title-text small {
     font-size: 11px;
     color: var(--text-muted);
+}
+
+.ai-stage-run-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    background: var(--bg-elevated);
+    border-color: var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.ai-stage-run-btn:hover {
+    background: var(--bg-glass-hover);
+    border-color: var(--border-hover);
 }
 
 .record-detail-ai-result-body {
@@ -634,7 +654,7 @@
 }
 
 .ai-run-modal {
-    width: min(980px, 94vw);
+    width: min(1120px, 96vw);
     max-height: 88vh;
     display: flex;
     flex-direction: column;
@@ -648,6 +668,59 @@
     padding: 12px 0;
     border-bottom: 1px solid var(--border);
 }
+
+.ai-run-stage-info {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 0 6px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ai-run-stage-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.ai-run-field-tags {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-left: auto;
+    flex: 1;
+    justify-content: flex-end;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ai-run-field-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.ai-run-field-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.ai-run-field-tag {
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+}
+
+.ai-run-field-empty {
+    color: var(--text-muted);
+}
+
 
 .ai-run-tabs {
     display: flex;

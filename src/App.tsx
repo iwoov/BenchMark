@@ -19,7 +19,6 @@ import {
   AI_STAGE_ORDER,
   DEFAULT_AI_BATCH_CONCURRENCY,
   DEFAULT_AI_CONFIG_NAME,
-  DEFAULT_AI_PROFILE,
   INITIAL_AI_BATCH_TASK,
   LIST_PAGE_SIZE_OPTIONS,
   MAX_AI_BATCH_CONCURRENCY,
@@ -82,6 +81,10 @@ import { AIRunModal } from "./app/components/AIRunModal";
 import { ImageLightbox } from "./app/components/ImageLightbox";
 
 function App() {
+  type RunAllStageState = {
+    startedAt: number | null;
+    running: boolean;
+  };
   type PendingConfigMode = "import" | "edit";
   const initialRoute: RouteState =
     typeof window !== "undefined"
@@ -121,8 +124,19 @@ function App() {
   const [aiResultMessage, setAIResultMessage] = useState("");
   const [activeAIRunKey, setActiveAIRunKey] =
     useState<AIDetectRunKey>("precheck");
+  const [aiModalStageKey, setAiModalStageKey] =
+    useState<AIDetectStageKey>("precheck");
   const [aiDetectElapsedMs, setAIDetectElapsedMs] = useState(0);
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
+  const createRunAllStageState = (): Record<AIDetectStageKey, RunAllStageState> => ({
+    precheck: { startedAt: null, running: false },
+    context_audit: { startedAt: null, running: false },
+    independent_solving: { startedAt: null, running: false },
+    final_verdict: { startedAt: null, running: false },
+  });
+  const [runAllStageState, setRunAllStageState] = useState<
+    Record<AIDetectStageKey, RunAllStageState>
+  >(createRunAllStageState);
   const [aiBatchTask, setAIBatchTask] = useState<AIBatchTaskState>(
     INITIAL_AI_BATCH_TASK,
   );
@@ -587,21 +601,6 @@ function App() {
     [activeFile],
   );
 
-  const activeStageConfig = useMemo(() => {
-    if (activeAIRunKey === AI_RUN_ALL_KEY) {
-      return null;
-    }
-    return aiConfig.stages[activeAIRunKey];
-  }, [aiConfig, activeAIRunKey]);
-  const activeProfile = useMemo(() => {
-    const profiles = aiConfig.profiles ?? [];
-    const matched = profiles.find(
-      (item) => item.name === activeStageConfig?.profileName,
-    );
-    return matched ?? profiles[0] ?? null;
-  }, [aiConfig.profiles, activeStageConfig?.profileName]);
-  const resolvedActiveProfile = activeProfile?.profile ?? DEFAULT_AI_PROFILE;
-
   const isAIBatchRunning = aiBatchTask.status === "running";
   const aiBatchProgressPercent =
     aiBatchTask.total > 0
@@ -681,87 +680,104 @@ function App() {
     () => visibleRows.find((row) => row.rowId === selectedRowId) ?? null,
     [visibleRows, selectedRowId],
   );
-  const aiRequestPreview = useMemo(() => {
-    if (!activeFile || !selectedRow) {
-      return "";
+  const canRunAIDetect =
+    Boolean(selectedRow) &&
+    !isAIDetecting &&
+    !aiConfigLoading &&
+    !isAIBatchRunning;
+  const runAllTimerText =
+    isAIDetecting && activeAIRunKey === AI_RUN_ALL_KEY
+      ? aiDetectElapsedText
+      : "";
+  const startRunAllStage = (stageKey: AIDetectStageKey) => {
+    setRunAllStageState((previous) => ({
+      ...previous,
+      [stageKey]: { startedAt: Date.now(), running: true },
+    }));
+  };
+  const stopRunAllStage = (stageKey: AIDetectStageKey) => {
+    setRunAllStageState((previous) => {
+      const current = previous[stageKey];
+      if (!current?.running && current?.startedAt === null) {
+        return previous;
+      }
+      return {
+        ...previous,
+        [stageKey]: { startedAt: null, running: false },
+      };
+    });
+  };
+  const startRunAllStages = () => {
+    const now = Date.now();
+    setRunAllStageState({
+      precheck: { startedAt: now, running: true },
+      context_audit: { startedAt: now, running: true },
+      independent_solving: { startedAt: now, running: true },
+      final_verdict: { startedAt: null, running: false },
+    });
+  };
+  const resetRunAllStageState = () => {
+    setRunAllStageState(createRunAllStageState());
+  };
+  const runAllStageTimers = useMemo(() => {
+    if (!(isAIDetecting && activeAIRunKey === AI_RUN_ALL_KEY)) {
+      return {};
     }
-    if (activeAIRunKey === AI_RUN_ALL_KEY) {
-      const stages = AI_STAGE_ORDER.map((stageKey) => {
-        const stageConfig = aiConfig.stages[stageKey];
-        const profileItem =
-          aiConfig.profiles.find(
-            (item) => item.name === stageConfig.profileName,
-          ) ?? aiConfig.profiles[0];
-        const profile = profileItem?.profile ?? DEFAULT_AI_PROFILE;
-        const fields = buildAIDetectFieldsForRow(
-          activeFile.columns,
-          selectedRow,
-          stageConfig.submitFieldKeys,
-        );
-        if (stageKey === "final_verdict") {
-          fields.push({
-            title: "AI独立解题结果（第三阶段）",
-            type: "text",
-            value: "（等待第三阶段结果）",
-          });
-        }
-        return {
-          stageKey,
-          stageTitle: AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey,
-          profileName: profileItem?.name ?? "",
-          provider: profile.provider,
-          model: profile.model,
-          reasoningEffort: profile.reasoningEffort,
-          retryCount: profile.retryCount,
-          prompt: stageConfig.prompt,
-          fields,
-        };
-      });
-      return JSON.stringify(
-        {
-          runMode: AI_RUN_ALL_LABEL,
-          dependency: "第四阶段依赖第三阶段结果",
-          stages,
-        },
-        null,
-        2,
-      );
+    const now = Date.now();
+    const timers: Partial<Record<AIDetectStageKey, string>> = {};
+    AI_STAGE_ORDER.forEach((stageKey) => {
+      const state = runAllStageState[stageKey];
+      if (state?.running && state.startedAt) {
+        timers[stageKey] = formatDuration(now - state.startedAt);
+      }
+    });
+    return timers;
+  }, [
+    isAIDetecting,
+    activeAIRunKey,
+    runAllStageState,
+    aiDetectElapsedMs,
+  ]);
+  const modalStageKey = aiModalStageKey;
+  const modalStageConfig = activeFile
+    ? aiConfig.stages[modalStageKey]
+    : null;
+  const modalFieldLabels = useMemo(() => {
+    if (!activeFile || !selectedRow || !modalStageConfig) {
+      return [];
     }
-
     const fields = buildAIDetectFieldsForRow(
       activeFile.columns,
       selectedRow,
-      activeStageConfig?.submitFieldKeys ?? [],
+      modalStageConfig.submitFieldKeys,
     );
-    return JSON.stringify(
-      {
-        stageKey: activeAIRunKey,
-        stageTitle: AI_STAGE_LABELS[activeAIRunKey]?.shortTitle ?? "",
-        profileName: activeProfile?.name ?? "",
-        provider: resolvedActiveProfile.provider,
-        model: resolvedActiveProfile.model,
-        reasoningEffort: resolvedActiveProfile.reasoningEffort,
-        retryCount: resolvedActiveProfile.retryCount,
-        prompt: activeStageConfig?.prompt,
-        fields,
-      },
-      null,
-      2,
-    );
-  }, [
-    activeFile,
-    selectedRow,
-    aiConfig,
-    activeStageConfig,
-    activeAIRunKey,
-    activeProfile,
-    resolvedActiveProfile,
-  ]);
+    const labels = fields.map((field) => field.title);
+    if (modalStageKey === "final_verdict") {
+      labels.push("AI独立解题结果（第三阶段）");
+    }
+    return Array.from(new Set(labels));
+  }, [activeFile, selectedRow, modalStageConfig, modalStageKey]);
 
   const openRowDetail = (rowId: string) => {
     setSelectedRowId(rowId);
     navigateToSection("detail", activeSettingsSection, rowId);
   };
+
+  const openAIRunModalForStage = (stageKey: AIDetectStageKey) => {
+    if (!selectedRow) {
+      return;
+    }
+    setAiModalStageKey(stageKey);
+    if (!(isAIDetecting && activeAIRunKey === AI_RUN_ALL_KEY)) {
+      setActiveAIRunKey(stageKey);
+    }
+    const existingResult = selectedRow.aiResults?.[stageKey] ?? "";
+    setAIThinkingText("");
+    setAIResultText(existingResult);
+    setAIResultMessage("");
+    setIsAIRunModalOpen(true);
+  };
+
 
   const activeRowIndex = selectedRow
     ? visibleRows.findIndex((row) => row.rowId === selectedRow.rowId)
@@ -1697,7 +1713,7 @@ function App() {
   // Save stage config (full validation)
   const onSaveAIStageConfig = () => onSaveAIConfig(false);
 
-  const onRunAIDetect = async () => {
+  const onRunAIDetect = async (runKeyOverride?: AIDetectRunKey) => {
     if (!activeFile || !selectedRow) {
       return;
     }
@@ -1706,12 +1722,13 @@ function App() {
       return;
     }
 
+    const runKey = runKeyOverride ?? activeAIRunKey;
     const normalizedConfig = normalizeAIDetectConfigForColumns(
       aiConfig,
       activeFile.columns,
     );
     syncActiveAIConfigState(normalizedConfig);
-    if (activeAIRunKey === AI_RUN_ALL_KEY) {
+    if (runKey === AI_RUN_ALL_KEY) {
       const stageRunMap = new Map<
         AIDetectStageKey,
         {
@@ -1740,6 +1757,7 @@ function App() {
       setAIResultText("");
       setAIResultMessage("");
       setErrorMessage("");
+      startRunAllStages();
 
       const stageResults: Partial<Record<AIDetectStageKey, string>> = {};
       const stageErrors: string[] = [];
@@ -1773,7 +1791,20 @@ function App() {
             precheckConfig.stageConfig,
           ),
           signal: controller.signal,
-        });
+        })
+          .then((text) => {
+            stageResults.precheck = text;
+            updateRowAIResult(
+              activeFile.fileId,
+              selectedRow.rowId,
+              "precheck",
+              text,
+            );
+            return text;
+          })
+          .finally(() => {
+            stopRunAllStage("precheck");
+          });
         const contextPromise = runStageRequest({
           stageConfig: contextConfig.stageConfig,
           profile: contextConfig.profile,
@@ -1784,7 +1815,20 @@ function App() {
             contextConfig.stageConfig,
           ),
           signal: controller.signal,
-        });
+        })
+          .then((text) => {
+            stageResults.context_audit = text;
+            updateRowAIResult(
+              activeFile.fileId,
+              selectedRow.rowId,
+              "context_audit",
+              text,
+            );
+            return text;
+          })
+          .finally(() => {
+            stopRunAllStage("context_audit");
+          });
         const independentPromise = runStageRequest({
           stageConfig: independentConfig.stageConfig,
           profile: independentConfig.profile,
@@ -1795,18 +1839,31 @@ function App() {
             independentConfig.stageConfig,
           ),
           signal: controller.signal,
-        });
+        })
+          .then((text) => {
+            stageResults.independent_solving = text;
+            updateRowAIResult(
+              activeFile.fileId,
+              selectedRow.rowId,
+              "independent_solving",
+              text,
+            );
+            return text;
+          })
+          .finally(() => {
+            stopRunAllStage("independent_solving");
+          });
 
         let independentResult: string | null = null;
         try {
           independentResult = await independentPromise;
-          stageResults.independent_solving = independentResult;
         } catch (error) {
           formatStageError("independent_solving", error);
         }
 
         if (independentResult && !controller.signal.aborted) {
           try {
+            startRunAllStage("final_verdict");
             const finalText = await runStageRequest({
               stageConfig: finalConfig.stageConfig,
               profile: finalConfig.profile,
@@ -1820,8 +1877,16 @@ function App() {
               signal: controller.signal,
             });
             stageResults.final_verdict = finalText;
+            updateRowAIResult(
+              activeFile.fileId,
+              selectedRow.rowId,
+              "final_verdict",
+              finalText,
+            );
           } catch (error) {
             formatStageError("final_verdict", error);
+          } finally {
+            stopRunAllStage("final_verdict");
           }
         } else {
           stageErrors.push(
@@ -1833,14 +1898,10 @@ function App() {
           precheckPromise,
           contextPromise,
         ]);
-        if (precheckSettled.status === "fulfilled") {
-          stageResults.precheck = precheckSettled.value;
-        } else {
+        if (precheckSettled.status !== "fulfilled") {
           formatStageError("precheck", precheckSettled.reason);
         }
-        if (contextSettled.status === "fulfilled") {
-          stageResults.context_audit = contextSettled.value;
-        } else {
+        if (contextSettled.status !== "fulfilled") {
           formatStageError("context_audit", contextSettled.reason);
         }
 
@@ -1848,19 +1909,6 @@ function App() {
           setAIResultMessage("AI 回答已取消");
           return;
         }
-
-        AI_STAGE_ORDER.forEach((stageKey) => {
-          const text = stageResults[stageKey];
-          if (!text) {
-            return;
-          }
-          updateRowAIResult(
-            activeFile.fileId,
-            selectedRow.rowId,
-            stageKey,
-            text,
-          );
-        });
 
         const combinedText = AI_STAGE_ORDER.filter(
           (stageKey) => stageResults[stageKey],
@@ -1901,11 +1949,12 @@ function App() {
           aiDetectStartedAtRef.current = null;
         }
         setIsAIDetecting(false);
+        resetRunAllStageState();
       }
       return;
     }
 
-    const stageKey = activeAIRunKey;
+    const stageKey = runKey as AIDetectStageKey;
     const stageConfig = normalizedConfig.stages[stageKey];
     const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? "";
     const profileItem =
@@ -2042,6 +2091,17 @@ function App() {
       }
       setIsAIDetecting(false);
     }
+  };
+
+  const onRunAllAIDetect = () => {
+    if (!canRunAIDetect) {
+      return;
+    }
+    setActiveAIRunKey(AI_RUN_ALL_KEY);
+    setAIThinkingText("");
+    setAIResultText("");
+    setAIResultMessage("");
+    void onRunAIDetect(AI_RUN_ALL_KEY);
   };
 
   const onRunBatchAIAnswer = async (rowIds?: string[]) => {
@@ -3264,7 +3324,11 @@ function App() {
                       onToggleHiddenFields={() =>
                         setShowHiddenFields((previous) => !previous)
                       }
-                      onOpenAIRunModal={() => setIsAIRunModalOpen(true)}
+                      onOpenAIRunModal={openAIRunModalForStage}
+                      onRunAllAIDetect={onRunAllAIDetect}
+                      canRunAllAIDetect={canRunAIDetect}
+                      runAllTimerText={runAllTimerText}
+                      runAllStageTimers={runAllStageTimers}
                       renderDetailField={renderDetailField}
                       aiResults={selectedRow?.aiResults}
                     />
@@ -3336,31 +3400,18 @@ function App() {
       <AIRunModal
         isOpen={isAIRunModalOpen}
         rowId={selectedRow?.rowId}
-        aiStageKey={activeAIRunKey}
-        onSelectAIStage={setActiveAIRunKey}
-        aiConfigLoading={aiConfigLoading}
+        aiStageKey={modalStageKey}
         isAIDetecting={isAIDetecting}
-        isAIBatchRunning={isAIBatchRunning}
         aiDetectElapsedText={aiDetectElapsedText}
-        canRunAIDetect={
-          Boolean(selectedRow) &&
-          !isAIDetecting &&
-          !aiConfigLoading &&
-          !isAIBatchRunning
-        }
-        onRunAIDetect={onRunAIDetect}
-        aiRetryCount={
-          activeAIRunKey === AI_RUN_ALL_KEY
-            ? 0
-            : (activeProfile?.profile.retryCount ?? 0)
-        }
+        canRunAIDetect={canRunAIDetect}
+        onRunAIDetect={() => onRunAIDetect(modalStageKey)}
         aiMergedStreamText={aiMergedStreamText}
         onAIResultTextChange={(value) => {
           setAIThinkingText("");
           setAIResultText(value);
         }}
         aiResultMessage={aiResultMessage}
-        aiRequestPreview={aiRequestPreview}
+        aiFieldLabels={modalFieldLabels}
         onClose={() => setIsAIRunModalOpen(false)}
       />
 
