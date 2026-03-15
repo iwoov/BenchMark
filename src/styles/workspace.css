@@ -116,10 +116,15 @@
 
 .list-cell-text .plain-text-value,
 .list-cell-text .latex-plain,
-.list-cell-text .latex-rendered {
+.list-cell-text .latex-rendered,
+.list-cell-text .cell-link {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.list-cell-text .cell-link {
+    display: block;
 }
 
 .list-cell-image .image-cell {

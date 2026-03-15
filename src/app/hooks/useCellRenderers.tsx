@@ -1,301 +1,366 @@
 import type { ParsedCell, ParsedColumn, ParsedRow } from "../../types";
 import {
-  getCellText,
-  isFeedbackColumnTitle,
-  isInspectorColumnTitle,
-  isOpensourceColumnTitle,
-  isQualifiedColumnTitle,
-  logUIImageRenderError,
+    getCellText,
+    isFeedbackColumnTitle,
+    isInspectorColumnTitle,
+    isOpensourceColumnTitle,
+    isQualifiedColumnTitle,
+    logUIImageRenderError,
 } from "../file-helpers";
 import {
-  LatexRenderer,
-  hasLatexSyntax,
-  shouldAutoDisplayLatex,
+    LatexRenderer,
+    hasLatexSyntax,
+    shouldAutoDisplayLatex,
 } from "../latex";
 
+function getExternalUrl(value: string): string | null {
+    const trimmed = value.trim();
+    if (!/^https?:\/\//i.test(trimmed)) {
+        return null;
+    }
+
+    try {
+        return new URL(trimmed).toString();
+    } catch {
+        return null;
+    }
+}
+
 export const useCellRenderers = ({
-  selectedRow,
-  latexRenderOverrides,
-  onToggleLatexRender,
-  onToggleDisplayColumn,
-  onEditCell,
-  getLatexToggleKey,
-  setPreviewImageSrc,
+    selectedRow,
+    latexRenderOverrides,
+    onToggleLatexRender,
+    onToggleDisplayColumn,
+    onEditCell,
+    getLatexToggleKey,
+    setPreviewImageSrc,
 }: {
-  selectedRow: ParsedRow | null;
-  latexRenderOverrides: Record<string, boolean>;
-  onToggleLatexRender: (columnKey: string) => void;
-  onToggleDisplayColumn: (columnKey: string) => void;
-  onEditCell: (rowId: string, columnKey: string, value: string) => void;
-  getLatexToggleKey: (columnKey: string) => string;
-  setPreviewImageSrc: (value: string | null) => void;
+    selectedRow: ParsedRow | null;
+    latexRenderOverrides: Record<string, boolean>;
+    onToggleLatexRender: (columnKey: string) => void;
+    onToggleDisplayColumn: (columnKey: string) => void;
+    onEditCell: (rowId: string, columnKey: string, value: string) => void;
+    getLatexToggleKey: (columnKey: string) => string;
+    setPreviewImageSrc: (value: string | null) => void;
 }) => {
-  const renderReadonlyCell = (
-    row: ParsedRow,
-    column: ParsedColumn,
-    cell: ParsedCell | undefined,
-    shouldRenderLatex: boolean,
-  ) => {
-    if (!cell) {
-      return <span className="empty-text">-</span>;
-    }
-
-    if (cell.type === "image" && cell.src) {
-      return (
-        <div className="image-cell">
-          <img
-            src={cell.src}
-            alt={cell.value || "Excel图片"}
-            onClick={() => setPreviewImageSrc(cell.src!)}
-            onError={() => {
-              logUIImageRenderError(row.rowId, column.title, cell.src ?? "");
-            }}
-          />
-          {cell.value ? <span>{cell.value}</span> : null}
-        </div>
-      );
-    }
-
-    const textValue = cell.value ?? "";
-    if (cell.type === "text" && textValue.length > 0) {
-      const hasLatex = hasLatexSyntax(textValue);
-      const autoDisplayLatex = shouldAutoDisplayLatex(textValue);
-      if (hasLatex && shouldRenderLatex) {
-        return (
-          <LatexRenderer value={textValue} forceDisplay={autoDisplayLatex} />
-        );
-      }
-      return hasLatex ? (
-        <div className="latex-plain">{textValue}</div>
-      ) : (
-        <div className="plain-text-value">{textValue}</div>
-      );
-    }
-
-    return cell.value ? (
-      <div className="plain-text-value">{cell.value}</div>
-    ) : (
-      <span className="empty-text">-</span>
-    );
-  };
-
-  const renderCellContent = (
-    row: ParsedRow,
-    column: ParsedColumn,
-    shouldRenderLatex = true,
-  ) => {
-    const cell = row.values[column.key];
-    if (!column.editable) {
-      return renderReadonlyCell(row, column, cell, shouldRenderLatex);
-    }
-
-    const currentValue = cell?.value ?? "";
-
-    if (isQualifiedColumnTitle(column.title)) {
-      const stableOptions = ["", "合格", "不合格"];
-      const shouldAppendCurrent =
-        currentValue.length > 0 && !stableOptions.includes(currentValue);
-      return (
-        <select
-          className="qualified-select"
-          value={currentValue}
-          onChange={(event) =>
-            onEditCell(row.rowId, column.key, event.target.value)
-          }
-        >
-          <option value="">未填写</option>
-          <option value="合格">合格</option>
-          <option value="不合格">不合格</option>
-          {shouldAppendCurrent ? (
-            <option value={currentValue}>{currentValue}</option>
-          ) : null}
-        </select>
-      );
-    }
-
-    if (isOpensourceColumnTitle(column.title)) {
-      const stableOptions = ["", "是", "否"];
-      const shouldAppendCurrent =
-        currentValue.length > 0 && !stableOptions.includes(currentValue);
-      return (
-        <select
-          className="qualified-select"
-          value={currentValue}
-          onChange={(event) =>
-            onEditCell(row.rowId, column.key, event.target.value)
-          }
-        >
-          <option value="">未填写</option>
-          <option value="是">是</option>
-          <option value="否">否</option>
-          {shouldAppendCurrent ? (
-            <option value={currentValue}>{currentValue}</option>
-          ) : null}
-        </select>
-      );
-    }
-
-    if (isInspectorColumnTitle(column.title)) {
-      return (
-        <input
-          className="inspector-input"
-          value={currentValue}
-          onChange={(event) =>
-            onEditCell(row.rowId, column.key, event.target.value)
-          }
-          placeholder="请输入质检员"
-        />
-      );
-    }
-
-    if (isFeedbackColumnTitle(column.title)) {
-      return (
-        <textarea
-          className="feedback-input"
-          value={currentValue}
-          onChange={(event) =>
-            onEditCell(row.rowId, column.key, event.target.value)
-          }
-          placeholder="请输入质检反馈意见"
-        />
-      );
-    }
-
-    if (cell?.type === "image" && cell.src) {
-      return (
-        <div className="image-cell">
-          <img
-            src={cell.src}
-            alt={cell.value || "Excel图片"}
-            onClick={() => setPreviewImageSrc(cell.src!)}
-            onError={() => {
-              logUIImageRenderError(row.rowId, column.title, cell.src ?? "");
-            }}
-          />
-          <input
-            className="editable-text-input"
-            value={currentValue}
-            onChange={(event) =>
-              onEditCell(row.rowId, column.key, event.target.value)
-            }
-            placeholder={`请输入${column.title}`}
-          />
-        </div>
-      );
-    }
-
-    return (
-      <input
-        className="editable-text-input"
-        value={currentValue}
-        onChange={(event) =>
-          onEditCell(row.rowId, column.key, event.target.value)
-        }
-        placeholder={`请输入${column.title}`}
-      />
-    );
-  };
-
-  const renderDetailField = (column: ParsedColumn, isHidden = false) => {
-    if (!selectedRow) {
-      return null;
-    }
-    const isRequired = column.editable;
-    const isChecked = !isHidden;
-    const cell = selectedRow.values[column.key];
-    const hasLatex =
-      !column.editable &&
-      !isHidden &&
-      cell?.type === "text" &&
-      typeof cell.value === "string" &&
-      hasLatexSyntax(cell.value);
-    const latexToggleKey = getLatexToggleKey(column.key);
-    const isLatexRenderingEnabled =
-      latexRenderOverrides[latexToggleKey] ?? false;
-
-    return (
-      <div
-        key={`${selectedRow.rowId}_${column.key}`}
-        className={`detail-field ${isHidden ? "hidden-field" : ""}`}
-      >
-        <div className="detail-label">
-          <button
-            type="button"
-            className={`field-toggle ${isRequired ? "locked" : ""} ${isChecked ? "checked" : ""}`}
-            onClick={() => {
-              if (!isRequired) {
-                onToggleDisplayColumn(column.key);
-              }
-            }}
-            title={
-              isRequired
-                ? "可编辑字段必须展示"
-                : isHidden
-                  ? "点击显示此字段"
-                  : "点击隐藏此字段"
-            }
-          />
-          <div className="field-name-wrap">
-            <span className="field-name">{column.title}</span>
-            {hasLatex ? (
-              <label
-                className="latex-toggle"
-                title="控制该字段是否按 LaTeX 公式渲染"
-              >
-                <input
-                  type="checkbox"
-                  checked={isLatexRenderingEnabled}
-                  onChange={() => onToggleLatexRender(column.key)}
-                  aria-label={`${column.title} 的 LaTeX 渲染开关`}
+    const renderTextValue = (
+        textValue: string,
+        shouldRenderLatex: boolean,
+        variant: "list" | "detail",
+    ) => {
+        const hasLatex = hasLatexSyntax(textValue);
+        const autoDisplayLatex = shouldAutoDisplayLatex(textValue);
+        if (hasLatex && shouldRenderLatex) {
+            return (
+                <LatexRenderer
+                    value={textValue}
+                    forceDisplay={autoDisplayLatex}
                 />
-                <span>LaTeX渲染</span>
-              </label>
-            ) : null}
-          </div>
-          {column.editable ? (
-            <span className="field-badge badge-editable">可编辑</span>
-          ) : null}
-          {isRequired ? (
-            <span className="field-badge badge-locked">必显</span>
-          ) : null}
-        </div>
-        {!isHidden ? (
-          <div className="detail-value">
-            {renderCellContent(selectedRow, column, isLatexRenderingEnabled)}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
+            );
+        }
 
-  const renderListReadonlyCell = (row: ParsedRow, column: ParsedColumn) => {
-    const cell = row.values[column.key];
-    const isImageColumn = /图片/.test(column.title);
-    if (isImageColumn) {
-      const textValue = cell?.value?.trim() || "";
-      return textValue ? (
-        <div className="plain-text-value">{textValue}</div>
-      ) : (
-        <span className="empty-text">-</span>
-      );
-    }
-    return renderReadonlyCell(
-      row,
-      {
-        ...column,
-        editable: false,
-      },
-      cell,
-      false,
-    );
-  };
+        const externalUrl = getExternalUrl(textValue);
+        if (externalUrl) {
+            return (
+                <a
+                    className={`cell-link cell-link-${variant}`}
+                    href={externalUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    onClick={(event) => event.stopPropagation()}
+                    title={externalUrl}
+                >
+                    {textValue}
+                </a>
+            );
+        }
 
-  const getListCellTitle = (row: ParsedRow, column: ParsedColumn) =>
-    getCellText(row, column.key).trim();
+        return hasLatex ? (
+            <div className="latex-plain">{textValue}</div>
+        ) : (
+            <div className="plain-text-value">{textValue}</div>
+        );
+    };
 
-  return {
-    renderDetailField,
-    renderListReadonlyCell,
-    getListCellTitle,
-  };
+    const renderReadonlyCell = (
+        row: ParsedRow,
+        column: ParsedColumn,
+        cell: ParsedCell | undefined,
+        shouldRenderLatex: boolean,
+        variant: "list" | "detail" = "detail",
+    ) => {
+        if (!cell) {
+            return <span className="empty-text">-</span>;
+        }
+
+        if (cell.type === "image" && cell.src) {
+            return (
+                <div className="image-cell">
+                    <img
+                        src={cell.src}
+                        alt={cell.value || "Excel图片"}
+                        onClick={() => setPreviewImageSrc(cell.src!)}
+                        onError={() => {
+                            logUIImageRenderError(
+                                row.rowId,
+                                column.title,
+                                cell.src ?? "",
+                            );
+                        }}
+                    />
+                    {cell.value ? <span>{cell.value}</span> : null}
+                </div>
+            );
+        }
+
+        const textValue = cell.value ?? "";
+        if (cell.type === "text" && textValue.length > 0) {
+            return renderTextValue(textValue, shouldRenderLatex, variant);
+        }
+
+        return cell.value ? (
+            <div className="plain-text-value">{cell.value}</div>
+        ) : (
+            <span className="empty-text">-</span>
+        );
+    };
+
+    const renderCellContent = (
+        row: ParsedRow,
+        column: ParsedColumn,
+        shouldRenderLatex = true,
+    ) => {
+        const cell = row.values[column.key];
+        if (!column.editable) {
+            return renderReadonlyCell(row, column, cell, shouldRenderLatex);
+        }
+
+        const currentValue = cell?.value ?? "";
+
+        if (isQualifiedColumnTitle(column.title)) {
+            const stableOptions = ["", "合格", "不合格"];
+            const shouldAppendCurrent =
+                currentValue.length > 0 &&
+                !stableOptions.includes(currentValue);
+            return (
+                <select
+                    className="qualified-select"
+                    value={currentValue}
+                    onChange={(event) =>
+                        onEditCell(row.rowId, column.key, event.target.value)
+                    }
+                >
+                    <option value="">未填写</option>
+                    <option value="合格">合格</option>
+                    <option value="不合格">不合格</option>
+                    {shouldAppendCurrent ? (
+                        <option value={currentValue}>{currentValue}</option>
+                    ) : null}
+                </select>
+            );
+        }
+
+        if (isOpensourceColumnTitle(column.title)) {
+            const stableOptions = ["", "是", "否"];
+            const shouldAppendCurrent =
+                currentValue.length > 0 &&
+                !stableOptions.includes(currentValue);
+            return (
+                <select
+                    className="qualified-select"
+                    value={currentValue}
+                    onChange={(event) =>
+                        onEditCell(row.rowId, column.key, event.target.value)
+                    }
+                >
+                    <option value="">未填写</option>
+                    <option value="是">是</option>
+                    <option value="否">否</option>
+                    {shouldAppendCurrent ? (
+                        <option value={currentValue}>{currentValue}</option>
+                    ) : null}
+                </select>
+            );
+        }
+
+        if (isInspectorColumnTitle(column.title)) {
+            return (
+                <input
+                    className="inspector-input"
+                    value={currentValue}
+                    onChange={(event) =>
+                        onEditCell(row.rowId, column.key, event.target.value)
+                    }
+                    placeholder="请输入质检员"
+                />
+            );
+        }
+
+        if (isFeedbackColumnTitle(column.title)) {
+            return (
+                <textarea
+                    className="feedback-input"
+                    value={currentValue}
+                    onChange={(event) =>
+                        onEditCell(row.rowId, column.key, event.target.value)
+                    }
+                    placeholder="请输入质检反馈意见"
+                />
+            );
+        }
+
+        if (cell?.type === "image" && cell.src) {
+            return (
+                <div className="image-cell">
+                    <img
+                        src={cell.src}
+                        alt={cell.value || "Excel图片"}
+                        onClick={() => setPreviewImageSrc(cell.src!)}
+                        onError={() => {
+                            logUIImageRenderError(
+                                row.rowId,
+                                column.title,
+                                cell.src ?? "",
+                            );
+                        }}
+                    />
+                    <input
+                        className="editable-text-input"
+                        value={currentValue}
+                        onChange={(event) =>
+                            onEditCell(
+                                row.rowId,
+                                column.key,
+                                event.target.value,
+                            )
+                        }
+                        placeholder={`请输入${column.title}`}
+                    />
+                </div>
+            );
+        }
+
+        return (
+            <input
+                className="editable-text-input"
+                value={currentValue}
+                onChange={(event) =>
+                    onEditCell(row.rowId, column.key, event.target.value)
+                }
+                placeholder={`请输入${column.title}`}
+            />
+        );
+    };
+
+    const renderDetailField = (column: ParsedColumn, isHidden = false) => {
+        if (!selectedRow) {
+            return null;
+        }
+        const isRequired = column.editable;
+        const isChecked = !isHidden;
+        const cell = selectedRow.values[column.key];
+        const hasLatex =
+            !column.editable &&
+            !isHidden &&
+            cell?.type === "text" &&
+            typeof cell.value === "string" &&
+            hasLatexSyntax(cell.value);
+        const latexToggleKey = getLatexToggleKey(column.key);
+        const isLatexRenderingEnabled =
+            latexRenderOverrides[latexToggleKey] ?? false;
+
+        return (
+            <div
+                key={`${selectedRow.rowId}_${column.key}`}
+                className={`detail-field ${isHidden ? "hidden-field" : ""}`}
+            >
+                <div className="detail-label">
+                    <button
+                        type="button"
+                        className={`field-toggle ${isRequired ? "locked" : ""} ${isChecked ? "checked" : ""}`}
+                        onClick={() => {
+                            if (!isRequired) {
+                                onToggleDisplayColumn(column.key);
+                            }
+                        }}
+                        title={
+                            isRequired
+                                ? "可编辑字段必须展示"
+                                : isHidden
+                                  ? "点击显示此字段"
+                                  : "点击隐藏此字段"
+                        }
+                    />
+                    <div className="field-name-wrap">
+                        <span className="field-name">{column.title}</span>
+                        {hasLatex ? (
+                            <label
+                                className="latex-toggle"
+                                title="控制该字段是否按 LaTeX 公式渲染"
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={isLatexRenderingEnabled}
+                                    onChange={() =>
+                                        onToggleLatexRender(column.key)
+                                    }
+                                    aria-label={`${column.title} 的 LaTeX 渲染开关`}
+                                />
+                                <span>LaTeX渲染</span>
+                            </label>
+                        ) : null}
+                    </div>
+                    {column.editable ? (
+                        <span className="field-badge badge-editable">
+                            可编辑
+                        </span>
+                    ) : null}
+                    {isRequired ? (
+                        <span className="field-badge badge-locked">必显</span>
+                    ) : null}
+                </div>
+                {!isHidden ? (
+                    <div className="detail-value">
+                        {renderCellContent(
+                            selectedRow,
+                            column,
+                            isLatexRenderingEnabled,
+                        )}
+                    </div>
+                ) : null}
+            </div>
+        );
+    };
+
+    const renderListReadonlyCell = (row: ParsedRow, column: ParsedColumn) => {
+        const cell = row.values[column.key];
+        const isImageColumn = /图片/.test(column.title);
+        if (isImageColumn) {
+            const textValue = cell?.value?.trim() || "";
+            return textValue ? (
+                <div className="plain-text-value">{textValue}</div>
+            ) : (
+                <span className="empty-text">-</span>
+            );
+        }
+        return renderReadonlyCell(
+            row,
+            {
+                ...column,
+                editable: false,
+            },
+            cell,
+            false,
+            "list",
+        );
+    };
+
+    const getListCellTitle = (row: ParsedRow, column: ParsedColumn) =>
+        getCellText(row, column.key).trim();
+
+    return {
+        renderDetailField,
+        renderListReadonlyCell,
+        getListCellTitle,
+    };
 };

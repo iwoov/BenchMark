@@ -1179,7 +1179,8 @@
 
 .detail-value .latex-rendered *,
 .detail-value .plain-text-value *,
-.detail-value .latex-plain * {
+.detail-value .latex-plain *,
+.detail-value .cell-link * {
     max-width: 100%;
 }
 
@@ -1221,6 +1222,23 @@
 .detail-value .latex-plain {
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.cell-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.cell-link:hover {
+    color: color-mix(in srgb, var(--accent) 82%, #000 18%);
+}
+
+.detail-value .cell-link {
+    display: inline;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .empty-text {
