@@ -17,7 +17,7 @@ pnpm install
 pnpm dev
 ```
 
-- 前端: `http://localhost:5173`
+- 前端: `http://localhost:5174`
 - 后端: `http://localhost:8787`
 
 ## 构建与类型检查

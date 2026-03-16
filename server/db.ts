@@ -39,7 +39,11 @@ db.exec(`
 
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
 const DEFAULT_AI_PROFILE_NAME = "默认接口";
-type AIProvider = "openai" | "gemini";
+type AIProvider =
+    | "openai"
+    | "gemini"
+    | "modelrouter-openai"
+    | "modelrouter-gemini";
 type AIReasoningEffort = "low" | "medium" | "high";
 export type AIDetectStageKey =
     | "precheck"
@@ -272,7 +276,7 @@ function ensureAIDetectConfigTable(): void {
         "UPDATE ai_configs SET provider = 'openai' WHERE provider = 'idealab'",
     );
     db.exec(
-        "UPDATE ai_configs SET provider = 'openai' WHERE provider NOT IN ('openai', 'gemini')",
+        "UPDATE ai_configs SET provider = 'openai' WHERE provider NOT IN ('openai', 'gemini', 'modelrouter-openai', 'modelrouter-gemini')",
     );
     db.exec(
         "UPDATE ai_configs SET vertex_project = '' WHERE vertex_project IS NULL",
@@ -404,7 +408,12 @@ function normalizeReasoningEffort(
 }
 
 function normalizeAIProvider(value: string | null | undefined): AIProvider {
-    if (value === "openai" || value === "gemini") {
+    if (
+        value === "openai" ||
+        value === "gemini" ||
+        value === "modelrouter-openai" ||
+        value === "modelrouter-gemini"
+    ) {
         return value;
     }
     if (value === "vertex") {
@@ -433,7 +442,12 @@ function normalizeStageProvider(
     value: unknown,
     fallback: AIProvider,
 ): AIProvider {
-    if (value === "openai" || value === "gemini") {
+    if (
+        value === "openai" ||
+        value === "gemini" ||
+        value === "modelrouter-openai" ||
+        value === "modelrouter-gemini"
+    ) {
         return value;
     }
     if (value === "vertex") {
@@ -816,6 +830,36 @@ export function listFileStates(): PersistedFileState[] {
             }
         })
         .filter((row): row is PersistedFileState => row !== null);
+}
+
+export function getFileState(fileId: string): PersistedFileState | null {
+    const row = db
+        .prepare(
+            "SELECT file_id, file_name, state_json, updated_at FROM file_states WHERE file_id = ?",
+        )
+        .get(fileId) as
+        | {
+              file_id: string;
+              file_name: string;
+              state_json: string;
+              updated_at: string;
+          }
+        | undefined;
+
+    if (!row) {
+        return null;
+    }
+
+    try {
+        return {
+            fileId: row.file_id,
+            fileName: row.file_name,
+            state: JSON.parse(row.state_json) as unknown,
+            updatedAt: row.updated_at,
+        };
+    } catch {
+        return null;
+    }
 }
 
 export function saveFileState(

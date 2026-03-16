@@ -9,6 +9,8 @@ import type {
 import type { AIBatchTaskState } from "./types";
 
 export const ALL_FILTER_VALUE = "全部";
+export const EMPTY_FILTER_VALUE = "__EMPTY_FILTER__";
+export const EMPTY_FILTER_LABEL = "空值";
 export const QUALIFIED_TITLE_ALIASES = ["是否合格"] as const;
 export const TIME_TITLE_ALIASES = ["创建时间"] as const;
 export const CREATOR_TITLE_ALIASES = ["创建人"] as const;
@@ -23,6 +25,10 @@ export const DEFAULT_IDEALAB_OPENAI_URL =
     "https://idealab.alibaba-inc.com/api/openai/v1/";
 export const DEFAULT_IDEALAB_GEMINI_URL =
     "https://idealab.alibaba-inc.com/api/vertex/v1beta/";
+export const DEFAULT_MODELROUTER_OPENAI_URL =
+    "https://routify.alibaba-inc.com/protocol/openai/v1/";
+export const DEFAULT_MODELROUTER_GEMINI_URL =
+    "https://routify.alibaba-inc.com/protocol/vertex/v1beta/";
 
 export const AI_STAGE_ORDER = [
     "precheck",
@@ -123,6 +129,8 @@ export const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
 export const AI_PROVIDER_OPTIONS = [
     { value: "openai", label: "OpenAI 兼容 (Idealab)" },
     { value: "gemini", label: "Gemini 原生 (Idealab)" },
+    { value: "modelrouter-openai", label: "OpenAI 兼容 (ModelRouter)" },
+    { value: "modelrouter-gemini", label: "Gemini 原生 (ModelRouter)" },
 ] as const;
 export const DEFAULT_AI_RETRY_COUNT = 5;
 export const MIN_AI_RETRY_COUNT = 0;

@@ -559,7 +559,7 @@ export const useAIManager = ({
       return `${prefix}请先配置 Base URL`;
     }
     if (profile.apiKey.trim().length === 0) {
-      return `${prefix}请先配置 Idealab API Key`;
+      return `${prefix}请先配置 API Key`;
     }
     if (stageConfig.submitFieldKeys.length === 0) {
       return `${prefix}请先在 AI 配置中选择提交回答字段`;
@@ -1026,7 +1026,7 @@ export const useAIManager = ({
         return;
       }
       if (profile.apiKey.trim().length === 0) {
-        setAIConfigFormMessage(`【${profileName}】Idealab API Key 不能为空`);
+        setAIConfigFormMessage(`【${profileName}】API Key 不能为空`);
         return;
       }
     }
@@ -1359,7 +1359,7 @@ export const useAIManager = ({
       return;
     }
     if (profile.apiKey.trim().length === 0) {
-      setAIResultMessage("请先配置 Idealab API Key");
+      setAIResultMessage("请先配置 API Key");
       return;
     }
     if (stageConfig.submitFieldKeys.length === 0) {
@@ -1560,7 +1560,7 @@ export const useAIManager = ({
       return;
     }
     if (profile.apiKey.trim().length === 0) {
-      setErrorMessage("请先配置 Idealab API Key");
+      setErrorMessage("请先配置 API Key");
       return;
     }
     if (stageConfig.submitFieldKeys.length === 0) {

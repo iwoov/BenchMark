@@ -5,6 +5,8 @@ import {
   AI_RUN_ALL_LABEL,
   AI_RUN_STAGE_ORDER,
   AI_STAGE_LABELS,
+  EMPTY_FILTER_LABEL,
+  EMPTY_FILTER_VALUE,
   LIST_PAGE_SIZE_OPTIONS,
   MAX_AI_BATCH_CONCURRENCY,
   MIN_AI_BATCH_CONCURRENCY,
@@ -295,7 +297,9 @@ function App() {
                                 </option>
                                 {options.map((item) => (
                                   <option key={item} value={item}>
-                                    {item}
+                                    {item === EMPTY_FILTER_VALUE
+                                      ? EMPTY_FILTER_LABEL
+                                      : item}
                                   </option>
                                 ))}
                               </select>

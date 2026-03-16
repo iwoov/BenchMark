@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FileViewState, ParsedColumn } from "../../types";
-import { ALL_FILTER_VALUE } from "../constants";
+import { ALL_FILTER_VALUE, EMPTY_FILTER_VALUE } from "../constants";
 import { getDistinctOptions, getCellText } from "../file-helpers";
 
 export const useListView = ({
@@ -77,6 +77,12 @@ export const useListView = ({
                     continue;
                 }
                 const value = getCellText(row, column.key).trim();
+                if (filterValue === EMPTY_FILTER_VALUE) {
+                    if (value.length !== 0) {
+                        return false;
+                    }
+                    continue;
+                }
                 if (value !== filterValue) {
                     return false;
                 }
