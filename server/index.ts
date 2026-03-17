@@ -14,7 +14,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientDistDir = path.resolve(__dirname, "..", "dist");
 const clientIndexHtmlPath = path.join(clientDistDir, "index.html");
 const app = express();
-const port = 8787;
+const port = Number(process.env.PORT || 8787);
+const host = process.env.HOST || "0.0.0.0";
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -39,7 +40,10 @@ if (fs.existsSync(clientDistDir) && fs.existsSync(clientIndexHtmlPath)) {
     });
 }
 
-app.listen(port, () => {
+app.listen(port, host, () => {
+    const displayHost = host === "0.0.0.0" ? "localhost" : host;
     // eslint-disable-next-line no-console
-    console.log(`Server running at http://localhost:${port}`);
+    console.log(`App running at http://${displayHost}:${port}/`);
+    // eslint-disable-next-line no-console
+    console.log(`API running at http://${displayHost}:${port}/api/health`);
 });

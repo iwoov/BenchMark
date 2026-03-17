@@ -10,7 +10,7 @@
         "dev:server": "tsx watch server/index.ts",
         "build": "pnpm typecheck && pnpm build:server && vite build",
         "build:server": "tsc -p tsconfig.server.build.json",
-        "start": "node dist-server/index.js",
+        "start": "PORT=5173 node dist-server/index.js",
         "preview": "vite preview",
         "typecheck": "tsc -b",
         "package:zip": "bash ./scripts/package-zip.sh"

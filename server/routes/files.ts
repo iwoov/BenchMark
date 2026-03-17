@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mergeImportedFileState } from "../importState.js";
 import { parseWorkbook } from "../excelParser.js";
 import {
+    createDatabaseBackup,
     deleteFileState,
     getFileState,
     getColumnPrefs,
@@ -150,10 +151,21 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                 sourceFileName: normalizedFileName,
             });
 
+            const backupLabel =
+                uploadMode === "merge"
+                    ? `merge-${projectName}`
+                    : `upload-${normalizedFileName}`;
+            const backupPath = await createDatabaseBackup(backupLabel);
+            // eslint-disable-next-line no-console
+            console.log(
+                `[DatabaseBackup] mode=${uploadMode} file=${normalizedFileName} backup=${backupPath}`,
+            );
+
             saveFileState(projectId, projectName, state);
             return res.json({
                 file: state,
                 summary,
+                backupPath,
             });
         } catch (error) {
             const message =

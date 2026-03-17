@@ -5,10 +5,14 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, "..", "data");
+const backupDir = path.join(dataDir, "backups");
 
 // Ensure data directory exists
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
+}
+if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
 }
 
 const dbPath = path.join(dataDir, "benchmark.db");
@@ -60,6 +64,29 @@ const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
+
+function sanitizeBackupLabel(value: string): string {
+    const normalized = value.trim().replace(/\s+/g, "_");
+    const safe = normalized.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return safe.length > 0 ? safe.slice(0, 80) : "backup";
+}
+
+function formatBackupTimestamp(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    const seconds = String(date.getSeconds()).padStart(2, "0");
+    return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+export async function createDatabaseBackup(label: string): Promise<string> {
+    const fileName = `${formatBackupTimestamp(new Date())}-${sanitizeBackupLabel(label)}.db`;
+    const destination = path.join(backupDir, fileName);
+    await db.backup(destination);
+    return destination;
+}
 
 function getTableColumns(tableName: string): string[] {
     const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{

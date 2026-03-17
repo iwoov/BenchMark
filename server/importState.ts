@@ -314,7 +314,10 @@ function buildMergedColumns(
     const existingDescriptors = buildColumnDescriptors(existingColumns);
     const importedDescriptors = buildColumnDescriptors(importedColumns);
     const existingByIdentity = new Map(
-        existingDescriptors.map((descriptor) => [descriptor.identity, descriptor]),
+        existingDescriptors.map((descriptor) => [
+            descriptor.identity,
+            descriptor,
+        ]),
     );
     const matchedExisting = new Set<string>();
     const mergedColumns: ParsedColumn[] = [];
@@ -332,7 +335,8 @@ function buildMergedColumns(
         mergedColumns.push({
             key: mergedKey,
             title: descriptor.column.title,
-            editable: existingMatch?.column.editable ?? descriptor.column.editable,
+            editable:
+                existingMatch?.column.editable ?? descriptor.column.editable,
             required:
                 descriptor.column.required ||
                 existingMatch?.column.required === true,
@@ -347,7 +351,10 @@ function buildMergedColumns(
     existingDescriptors.forEach((descriptor) => {
         if (matchedExisting.has(descriptor.identity)) {
             if (!existingKeyMap.has(descriptor.column.key)) {
-                existingKeyMap.set(descriptor.column.key, descriptor.column.key);
+                existingKeyMap.set(
+                    descriptor.column.key,
+                    descriptor.column.key,
+                );
             }
             return;
         }
@@ -502,11 +509,8 @@ export function mergeImportedFileState(
         ? options.existingState
         : {};
     const existingState = normalizeFileState(options.existingState);
-    const {
-        mergedColumns,
-        existingKeyMap,
-        importedKeyMap,
-    } = buildMergedColumns(existingState?.columns ?? [], imported.columns);
+    const { mergedColumns, existingKeyMap, importedKeyMap } =
+        buildMergedColumns(existingState?.columns ?? [], imported.columns);
     const idColumnKey = findRecordIdColumnKey(mergedColumns);
 
     if (!idColumnKey) {
@@ -518,7 +522,11 @@ export function mergeImportedFileState(
         idColumnKey,
     );
     const existingRows = existingState
-        ? transformRows(existingState.rows, existingState.columns, existingKeyMap)
+        ? transformRows(
+              existingState.rows,
+              existingState.columns,
+              existingKeyMap,
+          )
         : [];
     const { rows: mergedRows, indexByRecordId } = deduplicateExistingRows(
         existingRows,
@@ -537,7 +545,15 @@ export function mergeImportedFileState(
             insertedCount += 1;
             return;
         }
-        mergedRows[existingIndex] = row;
+        const existingRow = mergedRows[existingIndex];
+        mergedRows[existingIndex] =
+            existingRow?.aiResults &&
+            Object.keys(existingRow.aiResults).length > 0
+                ? {
+                      ...row,
+                      aiResults: { ...existingRow.aiResults },
+                  }
+                : row;
         updatedCount += 1;
     });
 
@@ -552,9 +568,9 @@ export function mergeImportedFileState(
         existingStateRecord.selectedFilterColumnKeys,
     ).filter((key) => validColumnKeys.has(key));
     const columnFilterValues = Object.fromEntries(
-        Object.entries(toSafeStringRecord(existingStateRecord.columnFilterValues)).filter(
-            ([key]) => validColumnKeys.has(key),
-        ),
+        Object.entries(
+            toSafeStringRecord(existingStateRecord.columnFilterValues),
+        ).filter(([key]) => validColumnKeys.has(key)),
     );
 
     const level1Key = findColumnKeyByNormalizedTitle(mergedColumns, "level1");
