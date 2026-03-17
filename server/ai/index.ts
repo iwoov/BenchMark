@@ -279,18 +279,45 @@ const LOCAL_IMAGE_API_PATH = "/api/images/local";
 const SUPPORTED_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"] as const;
 const AI_RESPONSE_LOG_MAX_CHARS = 12000;
 const AI_RESPONSE_RAW_LOG_MAX_CHARS = 6000;
-const AI_LOG_PREVIEW_CHARS = 160;
-const AI_FIELD_PREVIEW_CHARS = 40;
 const SHOULD_LOG_AI_VERBOSE = process.env.DEBUG_AI_VERBOSE === "1";
 const SHOULD_LOG_AI_THINKING =
     process.env.DEBUG_AI_THINKING === "1" || SHOULD_LOG_AI_VERBOSE;
 
-function formatLogPreview(text: string, maxChars: number): string {
-    const normalized = text.replace(/\s+/g, " ").trim();
-    if (normalized.length <= maxChars) {
-        return normalized;
+function formatLogTimestamp(timestamp: number): string {
+    return new Date(timestamp).toISOString();
+}
+
+function summarizeAIFieldForLog(field: AIDetectField, index: number): string {
+    if (field.type === "image") {
+        const imageStatus = field.imageUrl
+            ? field.imageUrl.startsWith("data:image/")
+                ? "data-url"
+                : "remote-url"
+            : "missing";
+        return `${index + 1}.${field.title}:image(${imageStatus})`;
     }
-    return `${normalized.slice(0, maxChars)}...`;
+    return `${index + 1}.${field.title}:text`;
+}
+
+function summarizeAIResponseForLog(text: string): string {
+    const normalized = text.replace(/\r/g, "").trim();
+    if (!normalized) {
+        return "shape=empty";
+    }
+
+    try {
+        const parsed = JSON.parse(normalized) as unknown;
+        if (Array.isArray(parsed)) {
+            return `shape=array items=${parsed.length}`;
+        }
+        if (parsed && typeof parsed === "object") {
+            const keys = Object.keys(parsed as Record<string, unknown>);
+            return `shape=object keys=${keys.length > 0 ? keys.join(",") : "-"}`;
+        }
+        return `shape=${typeof parsed}`;
+    } catch {
+        return "shape=text";
+    }
 }
 
 function getImageMimeType(ext: string): string {
@@ -414,12 +441,9 @@ function normalizeImageUrlForAI(imageUrl: string): string | null {
 function logAIResponseById(requestId: string, text: string): void {
     const normalized = text.replace(/\r/g, "");
     if (!SHOULD_LOG_AI_VERBOSE) {
-        const preview = formatLogPreview(normalized, AI_LOG_PREVIEW_CHARS);
         // eslint-disable-next-line no-console
         console.log(
-            `[AIResponse][${requestId}] len=${normalized.length}${
-                preview ? ` preview=${JSON.stringify(preview)}` : ""
-            }`,
+            `[AIResponse][${requestId}] len=${normalized.length} ${summarizeAIResponseForLog(normalized)}`,
         );
         return;
     }
@@ -1967,6 +1991,7 @@ export const registerAIRoutes = (app: express.Express) => {
 
         const aiRequestId = randomUUID().slice(0, 8);
         const startedAt = Date.now();
+        const startedAtIso = formatLogTimestamp(startedAt);
         const elapsedMs = (): number => Date.now() - startedAt;
 
         const aiFields = fieldPayload.map((field): AIDetectField => {
@@ -2004,27 +2029,10 @@ export const registerAIRoutes = (app: express.Express) => {
                         : "remote-url"
                     : undefined,
         }));
-        const aiFieldSummary = aiFields.map((field, index) => {
-            if (field.type === "image") {
-                const imageStatus = field.imageUrl
-                    ? field.imageUrl.startsWith("data:image/")
-                        ? "data-url"
-                        : "remote-url"
-                    : "missing";
-                const imageNote = field.value.trim().length
-                    ? `, ${formatLogPreview(field.value, AI_FIELD_PREVIEW_CHARS)}`
-                    : "";
-                return `${index + 1}.${field.title}:image(${imageStatus}${imageNote})`;
-            }
-            const textPreview = formatLogPreview(
-                field.value,
-                AI_FIELD_PREVIEW_CHARS,
-            );
-            return `${index + 1}.${field.title}:text(${textPreview})`;
-        });
+        const aiFieldSummary = aiFields.map(summarizeAIFieldForLog);
         // eslint-disable-next-line no-console
         console.log(
-            `[AIRequest][${aiRequestId}] provider=${normalizedProvider} model=${normalizedModel} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
+            `[AIRequest][${aiRequestId}] startedAt=${startedAtIso} provider=${normalizedProvider} model=${normalizedModel} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
         );
         // eslint-disable-next-line no-console
         console.log(
@@ -2068,7 +2076,7 @@ export const registerAIRoutes = (app: express.Express) => {
             abortReason = reason;
             // eslint-disable-next-line no-console
             console.log(
-                `[AIAbort][${aiRequestId}] reason=${reason} elapsedMs=${elapsedMs()} reqAborted=${req.aborted} reqComplete=${req.complete} resEnded=${res.writableEnded} headersSent=${res.headersSent}`,
+                `[AIAbort][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reason=${reason} reqAborted=${req.aborted} reqComplete=${req.complete} resEnded=${res.writableEnded} headersSent=${res.headersSent}`,
             );
             controller.abort();
         };
@@ -2076,14 +2084,14 @@ export const registerAIRoutes = (app: express.Express) => {
         req.on("aborted", () => {
             // eslint-disable-next-line no-console
             console.log(
-                `[AIConn][${aiRequestId}] req.aborted elapsedMs=${elapsedMs()} reqComplete=${req.complete}`,
+                `[AIConn][${aiRequestId}] event=req.aborted startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reqComplete=${req.complete}`,
             );
             abortUpstream("req.aborted");
         });
         req.on("close", () => {
             // eslint-disable-next-line no-console
             console.log(
-                `[AIConn][${aiRequestId}] req.close elapsedMs=${elapsedMs()} reqAborted=${req.aborted} reqComplete=${req.complete}`,
+                `[AIConn][${aiRequestId}] event=req.close startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reqAborted=${req.aborted} reqComplete=${req.complete}`,
             );
             if (req.aborted) {
                 abortUpstream("req.close(aborted)");
@@ -2092,13 +2100,13 @@ export const registerAIRoutes = (app: express.Express) => {
         res.on("finish", () => {
             // eslint-disable-next-line no-console
             console.log(
-                `[AIConn][${aiRequestId}] res.finish elapsedMs=${elapsedMs()} status=${res.statusCode} upstreamStatus=${upstreamStatusCode ?? "-"} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength} doneToken=${doneByDoneToken} naturalEnd=${doneByNaturalEnd}`,
+                `[AIConn][${aiRequestId}] event=res.finish startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${res.statusCode} upstreamStatus=${upstreamStatusCode ?? "-"} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength} doneToken=${doneByDoneToken} naturalEnd=${doneByNaturalEnd}`,
             );
         });
         res.on("close", () => {
             // eslint-disable-next-line no-console
             console.log(
-                `[AIConn][${aiRequestId}] res.close elapsedMs=${elapsedMs()} resEnded=${res.writableEnded} writableFinished=${res.writableFinished} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength}`,
+                `[AIConn][${aiRequestId}] event=res.close startedAt=${startedAtIso} elapsedMs=${elapsedMs()} resEnded=${res.writableEnded} writableFinished=${res.writableFinished} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength}`,
             );
             if (!res.writableEnded) {
                 abortUpstream("res.close(before-end)");
@@ -2143,9 +2151,10 @@ export const registerAIRoutes = (app: express.Express) => {
 
                 let upstream: Response | null = null;
                 for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+                    const attemptStartedAt = Date.now();
                     // eslint-disable-next-line no-console
                     console.log(
-                        `[AIUpstream][${aiRequestId}] provider=${normalizedProvider} dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${normalizedOpenAIUrl}`,
+                        `[AIUpstream][${aiRequestId}] phase=dispatch startedAt=${formatLogTimestamp(attemptStartedAt)} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} model=${normalizedModel} url=${normalizedOpenAIUrl}`,
                     );
                     try {
                         const candidate = await fetch(normalizedOpenAIUrl, {
@@ -2170,7 +2179,7 @@ export const registerAIRoutes = (app: express.Express) => {
                         const hasBody = Boolean(candidate.body);
                         // eslint-disable-next-line no-console
                         console.log(
-                            `[AIUpstream][${aiRequestId}] provider=${normalizedProvider} connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
+                            `[AIUpstream][${aiRequestId}] phase=connected startedAt=${formatLogTimestamp(attemptStartedAt)} connectMs=${Date.now() - attemptStartedAt} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} status=${candidate.status} hasBody=${hasBody}`,
                         );
 
                         if (candidate.status === 200 && hasBody) {
@@ -2192,7 +2201,7 @@ export const registerAIRoutes = (app: express.Express) => {
 
                         // eslint-disable-next-line no-console
                         console.log(
-                            `[AIUpstreamRetry][${aiRequestId}] provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
+                            `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
                         );
                     } catch (error) {
                         if (controller.signal.aborted) {
@@ -2203,7 +2212,7 @@ export const registerAIRoutes = (app: express.Express) => {
                         lastFailedMessage = parsedError.message;
                         // eslint-disable-next-line no-console
                         console.log(
-                            `[AIUpstreamRetry][${aiRequestId}] provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
+                            `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
                         );
                     }
                 }
@@ -2211,7 +2220,7 @@ export const registerAIRoutes = (app: express.Express) => {
                 if (!upstream || !upstream.body) {
                     // eslint-disable-next-line no-console
                     console.log(
-                        `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
+                        `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${lastFailedStatus} message=${lastFailedMessage}`,
                     );
                     return res
                         .status(lastFailedStatus)
@@ -2403,9 +2412,10 @@ export const registerAIRoutes = (app: express.Express) => {
 
             let completed = false;
             for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+                const attemptStartedAt = Date.now();
                 // eslint-disable-next-line no-console
                 console.log(
-                    `[AIUpstream][${aiRequestId}] provider=${normalizedProvider} dispatch elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} url=${normalizedGeminiUrl}`,
+                    `[AIUpstream][${aiRequestId}] phase=dispatch startedAt=${formatLogTimestamp(attemptStartedAt)} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} model=${normalizedModel} url=${normalizedGeminiUrl}`,
                 );
                 let candidate: Response | null = null;
                 try {
@@ -2424,7 +2434,7 @@ export const registerAIRoutes = (app: express.Express) => {
                     lastFailedMessage = parsedError.message;
                     // eslint-disable-next-line no-console
                     console.log(
-                        `[AIUpstreamRetry][${aiRequestId}] provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
+                        `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
                     );
                     continue;
                 }
@@ -2433,7 +2443,7 @@ export const registerAIRoutes = (app: express.Express) => {
                 const hasBody = Boolean(candidate.body);
                 // eslint-disable-next-line no-console
                 console.log(
-                    `[AIUpstream][${aiRequestId}] provider=${normalizedProvider} connected elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} status=${candidate.status} hasBody=${hasBody}`,
+                    `[AIUpstream][${aiRequestId}] phase=connected startedAt=${formatLogTimestamp(attemptStartedAt)} connectMs=${Date.now() - attemptStartedAt} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} status=${candidate.status} hasBody=${hasBody}`,
                 );
 
                 if (candidate.status !== 200 || !hasBody) {
@@ -2447,7 +2457,7 @@ export const registerAIRoutes = (app: express.Express) => {
                     }
                     // eslint-disable-next-line no-console
                     console.log(
-                        `[AIUpstreamRetry][${aiRequestId}] provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
+                        `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
                     );
                     continue;
                 }
@@ -2523,7 +2533,7 @@ export const registerAIRoutes = (app: express.Express) => {
                             lastFailedMessage = parsedError.message;
                             // eslint-disable-next-line no-console
                             console.log(
-                                `[AIUpstreamRetry][${aiRequestId}] provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} streamError status=${parsedError.status} message=${parsedError.message}`,
+                                `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} streamError status=${parsedError.status} message=${parsedError.message}`,
                             );
                             if (!headersSent && parsedError.retryable) {
                                 return "retry";
@@ -2709,7 +2719,7 @@ export const registerAIRoutes = (app: express.Express) => {
             if (!completed) {
                 // eslint-disable-next-line no-console
                 console.log(
-                    `[AIResponseError][${aiRequestId}] status=${lastFailedStatus} message=${lastFailedMessage}`,
+                    `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${lastFailedStatus} message=${lastFailedMessage}`,
                 );
                 return res
                     .status(lastFailedStatus)
@@ -2719,14 +2729,14 @@ export const registerAIRoutes = (app: express.Express) => {
             if (controller.signal.aborted) {
                 // eslint-disable-next-line no-console
                 console.log(
-                    `[AIResponseAborted][${aiRequestId}] reason=${abortReason || "unknown"} elapsedMs=${elapsedMs()} upstreamStatus=${upstreamStatusCode ?? "-"} reqAborted=${req.aborted} reqComplete=${req.complete} resEnded=${res.writableEnded} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength}`,
+                    `[AIResponseAborted][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reason=${abortReason || "unknown"} upstreamStatus=${upstreamStatusCode ?? "-"} reqAborted=${req.aborted} reqComplete=${req.complete} resEnded=${res.writableEnded} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength}`,
                 );
                 return;
             }
             const parsedError = parseUnknownUpstreamError(error);
             // eslint-disable-next-line no-console
             console.log(
-                `[AIResponseException][${aiRequestId}] status=${parsedError.status} message=${parsedError.message}`,
+                `[AIResponseException][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${parsedError.status} message=${parsedError.message}`,
             );
             if (res.headersSent) {
                 if (!res.writableEnded) {
