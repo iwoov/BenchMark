@@ -83,9 +83,9 @@ export const DEFAULT_AI_PROFILE_NAME = "默认接口";
 export const DEFAULT_AI_PROFILE: AIDetectProfile = {
     provider: "openai",
     url: DEFAULT_IDEALAB_OPENAI_URL,
-    model: "gpt-5.2",
+    model: "gpt-5.4-2026-03-05",
     modelProvider: "openai",
-    modelName: "gpt-5.2",
+    modelName: "gpt-5.4-2026-03-05",
     apiKey: "",
     reasoningEffort: "high",
     retryCount: 5,

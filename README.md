@@ -39,3 +39,4 @@ bash scripts/package-zip.sh my-backup.zip --no-sync
 # 自定义本地仓库路径/目标目录
 bash scripts/package-zip.sh my-backup.zip --repo-dir /tmp/mySync --target-dir BenchMark
 ```
+export BENCHMARK_IMAGE_ROOTS="/mnt/d/Data/专家出题表格"

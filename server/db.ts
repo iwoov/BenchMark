@@ -352,6 +352,8 @@ export interface AIDetectProfile {
     provider: AIProvider;
     url: string;
     model: string;
+    modelProvider?: string;
+    modelName?: string;
     apiKey: string;
     reasoningEffort: AIReasoningEffort;
     retryCount: number;
@@ -425,6 +427,29 @@ function normalizeAIProvider(value: string | null | undefined): AIProvider {
     return "openai";
 }
 
+function inferAIProviderFromUrl(
+    provider: AIProvider,
+    url: unknown,
+): AIProvider {
+    if (typeof url !== "string") {
+        return provider;
+    }
+    const trimmed = url.trim().toLowerCase();
+    if (!trimmed) {
+        return provider;
+    }
+    if (!trimmed.includes("routify.alibaba-inc.com")) {
+        return provider;
+    }
+    if (trimmed.includes("/protocol/vertex/")) {
+        return "modelrouter-gemini";
+    }
+    if (trimmed.includes("/protocol/openai/")) {
+        return "modelrouter-openai";
+    }
+    return provider;
+}
+
 function normalizeRetryCount(value: number | null | undefined): number {
     if (typeof value !== "number" || !Number.isInteger(value)) {
         return DEFAULT_AI_RETRY_COUNT;
@@ -477,9 +502,9 @@ function normalizeProfile(
         return { ...fallback };
     }
     const candidate = value as Partial<AIDetectProfile>;
-    const provider = normalizeStageProvider(
-        candidate.provider,
-        fallback.provider,
+    const provider = inferAIProviderFromUrl(
+        normalizeStageProvider(candidate.provider, fallback.provider),
+        candidate.url,
     );
     const reasoningEffort = normalizeStageReasoningEffort(
         candidate.reasoningEffort,
@@ -500,6 +525,14 @@ function normalizeProfile(
             candidate.model.trim().length > 0
                 ? candidate.model
                 : fallback.model,
+        modelProvider:
+            typeof candidate.modelProvider === "string"
+                ? candidate.modelProvider
+                : fallback.modelProvider,
+        modelName:
+            typeof candidate.modelName === "string"
+                ? candidate.modelName
+                : fallback.modelName,
         apiKey:
             typeof candidate.apiKey === "string"
                 ? candidate.apiKey
@@ -610,9 +643,9 @@ function normalizeLegacyStageConfig(
     }
 
     const candidate = value as Partial<LegacyAIDetectStageConfig>;
-    const provider = normalizeStageProvider(
-        candidate.provider,
-        fallback.provider,
+    const provider = inferAIProviderFromUrl(
+        normalizeStageProvider(candidate.provider, fallback.provider),
+        candidate.url,
     );
     const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
         ? candidate.submitFieldKeys.filter(

@@ -34,6 +34,8 @@ function normalizeHeaderTitle(value: string): string {
     return value.replace(/\s+/g, "").toLowerCase();
 }
 
+const RECORD_ID_TITLE_ALIASES = ["id", "uuid"] as const;
+
 function toSafeStringArray(value: unknown): string[] {
     if (!Array.isArray(value)) {
         return [];
@@ -406,6 +408,16 @@ function findColumnKeyByNormalizedTitle(
     )?.column.key;
 }
 
+function findRecordIdColumnKey(columns: ParsedColumn[]): string | undefined {
+    for (const title of RECORD_ID_TITLE_ALIASES) {
+        const key = findColumnKeyByNormalizedTitle(columns, title);
+        if (key) {
+            return key;
+        }
+    }
+    return undefined;
+}
+
 function getDistinctOptions(rows: ParsedRow[], columnKey?: string): string[] {
     if (!columnKey) {
         return [];
@@ -433,10 +445,10 @@ function normalizeImportedRows(
     return rows.map((row, index) => {
         const recordId = getRecordId(row, idColumnKey);
         if (!recordId) {
-            throw new Error(`第 ${index + 1} 条导入数据缺少 id`);
+            throw new Error(`第 ${index + 1} 条导入数据缺少 id/uuid`);
         }
         if (seenIds.has(recordId)) {
-            throw new Error(`导入数据存在重复 id: ${recordId}`);
+            throw new Error(`导入数据存在重复 id/uuid: ${recordId}`);
         }
         seenIds.add(recordId);
         return {
@@ -495,10 +507,10 @@ export function mergeImportedFileState(
         existingKeyMap,
         importedKeyMap,
     } = buildMergedColumns(existingState?.columns ?? [], imported.columns);
-    const idColumnKey = findColumnKeyByNormalizedTitle(mergedColumns, "id");
+    const idColumnKey = findRecordIdColumnKey(mergedColumns);
 
     if (!idColumnKey) {
-        throw new Error("缺少必需列: id");
+        throw new Error("缺少必需列: id/uuid");
     }
 
     const transformedImportedRows = normalizeImportedRows(

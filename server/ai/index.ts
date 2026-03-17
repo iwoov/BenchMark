@@ -35,6 +35,8 @@ type AIDetectProfile = {
     provider: AIProvider;
     url: string;
     model: string;
+    modelProvider?: string;
+    modelName?: string;
     apiKey: string;
     reasoningEffort: AIReasoningEffort;
     retryCount: number;
@@ -71,6 +73,29 @@ function isAIProvider(value: unknown): value is AIProvider {
         value === "modelrouter-openai" ||
         value === "modelrouter-gemini"
     );
+}
+
+function inferAIProviderFromUrl(
+    provider: AIProvider,
+    url: unknown,
+): AIProvider {
+    if (typeof url !== "string") {
+        return provider;
+    }
+    const trimmed = url.trim().toLowerCase();
+    if (!trimmed) {
+        return provider;
+    }
+    if (!trimmed.includes("routify.alibaba-inc.com")) {
+        return provider;
+    }
+    if (trimmed.includes("/protocol/vertex/")) {
+        return "modelrouter-gemini";
+    }
+    if (trimmed.includes("/protocol/openai/")) {
+        return "modelrouter-openai";
+    }
+    return provider;
 }
 
 function isOpenAICompatibleProvider(provider: AIProvider): boolean {
@@ -191,10 +216,7 @@ function buildGeminiAuthHeaders(
     apiKeyOrToken: string,
 ): {
     headers: Record<string, string>;
-    mode:
-        | "x-goog-api-key"
-        | "x-goog-api-key-bearer"
-        | "authorization-bearer";
+    mode: "x-goog-api-key" | "x-goog-api-key-bearer" | "authorization-bearer";
 } {
     const token = stripBearerPrefix(apiKeyOrToken);
     const baseHeaders: Record<string, string> = {
@@ -1363,13 +1385,16 @@ export const registerAIRoutes = (app: express.Express) => {
                         : candidate;
                 const rawProvider = (profileSource as { provider?: unknown })
                     .provider;
-                const normalizedProvider: AIProvider = isAIProvider(rawProvider)
-                    ? rawProvider
-                    : rawProvider === "vertex"
-                      ? "gemini"
-                      : rawProvider === "idealab"
-                        ? "openai"
-                        : "openai";
+                const normalizedProvider: AIProvider = inferAIProviderFromUrl(
+                    isAIProvider(rawProvider)
+                        ? rawProvider
+                        : rawProvider === "vertex"
+                          ? "gemini"
+                          : rawProvider === "idealab"
+                            ? "openai"
+                            : "openai",
+                    (profileSource as { url?: unknown }).url,
+                );
                 if (
                     (profileSource as { url?: unknown }).url !== undefined &&
                     typeof (profileSource as { url?: unknown }).url !== "string"
@@ -1413,6 +1438,26 @@ export const registerAIRoutes = (app: express.Express) => {
                         message: `【${rawName}】apiKey must be a non-empty string`,
                     });
                 }
+                if (
+                    (profileSource as { modelProvider?: unknown })
+                        .modelProvider !== undefined &&
+                    typeof (profileSource as { modelProvider?: unknown })
+                        .modelProvider !== "string"
+                ) {
+                    return res.status(400).json({
+                        message: `【${rawName}】modelProvider must be a string`,
+                    });
+                }
+                if (
+                    (profileSource as { modelName?: unknown }).modelName !==
+                        undefined &&
+                    typeof (profileSource as { modelName?: unknown })
+                        .modelName !== "string"
+                ) {
+                    return res.status(400).json({
+                        message: `【${rawName}】modelName must be a string`,
+                    });
+                }
                 const rawReasoningEffort = (
                     profileSource as { reasoningEffort?: unknown }
                 ).reasoningEffort;
@@ -1431,6 +1476,11 @@ export const registerAIRoutes = (app: express.Express) => {
                         url: (profileSource as { url?: string }).url as string,
                         model: (profileSource as { model?: string })
                             .model as string,
+                        modelProvider: (
+                            profileSource as { modelProvider?: string }
+                        ).modelProvider,
+                        modelName: (profileSource as { modelName?: string })
+                            .modelName,
                         apiKey: (profileSource as { apiKey?: string })
                             .apiKey as string,
                         reasoningEffort,
@@ -1472,11 +1522,9 @@ export const registerAIRoutes = (app: express.Express) => {
                     const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
                     const stageValue = rawStages[stageKey];
                     if (!stageValue || typeof stageValue !== "object") {
-                        return res
-                            .status(400)
-                            .json({
-                                message: `${stageLabel} config must be an object`,
-                            });
+                        return res.status(400).json({
+                            message: `${stageLabel} config must be an object`,
+                        });
                     }
                     const stage = stageValue as {
                         profileName?: unknown;
@@ -1543,11 +1591,9 @@ export const registerAIRoutes = (app: express.Express) => {
                     const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
                     const stageValue = rawStages[stageKey];
                     if (!stageValue || typeof stageValue !== "object") {
-                        return res
-                            .status(400)
-                            .json({
-                                message: `${stageLabel} config must be an object`,
-                            });
+                        return res.status(400).json({
+                            message: `${stageLabel} config must be an object`,
+                        });
                     }
                     const stage = stageValue as {
                         provider?: unknown;
@@ -1561,35 +1607,33 @@ export const registerAIRoutes = (app: express.Express) => {
                         retryCount?: unknown;
                     };
 
-                    const normalizedProvider: AIProvider = isAIProvider(
-                        stage.provider,
-                    )
-                        ? stage.provider
-                        : stage.provider === "vertex"
-                          ? "gemini"
-                          : stage.provider === "idealab"
-                            ? "openai"
-                            : "openai";
+                    const normalizedProvider: AIProvider =
+                        inferAIProviderFromUrl(
+                            isAIProvider(stage.provider)
+                                ? stage.provider
+                                : stage.provider === "vertex"
+                                  ? "gemini"
+                                  : stage.provider === "idealab"
+                                    ? "openai"
+                                    : "openai",
+                            stage.url,
+                        );
 
                     if (
                         stage.url !== undefined &&
                         typeof stage.url !== "string"
                     ) {
-                        return res
-                            .status(400)
-                            .json({
-                                message: `${stageLabel} url must be a string`,
-                            });
+                        return res.status(400).json({
+                            message: `${stageLabel} url must be a string`,
+                        });
                     }
                     if (
                         stage.apiKey !== undefined &&
                         typeof stage.apiKey !== "string"
                     ) {
-                        return res
-                            .status(400)
-                            .json({
-                                message: `${stageLabel} apiKey must be a string`,
-                            });
+                        return res.status(400).json({
+                            message: `${stageLabel} apiKey must be a string`,
+                        });
                     }
                     if (!isNonEmptyString(stage.model)) {
                         return res.status(400).json({
@@ -1680,13 +1724,16 @@ export const registerAIRoutes = (app: express.Express) => {
                 normalizedStages = stageMap;
             }
         } else {
-            const normalizedProvider: AIProvider = isAIProvider(provider)
-                ? provider
-                : provider === "vertex"
-                  ? "gemini"
-                  : provider === "idealab"
-                    ? "openai"
-                    : "openai";
+            const normalizedProvider: AIProvider = inferAIProviderFromUrl(
+                isAIProvider(provider)
+                    ? provider
+                    : provider === "vertex"
+                      ? "gemini"
+                      : provider === "idealab"
+                        ? "openai"
+                        : "openai",
+                url,
+            );
 
             if (url !== undefined && typeof url !== "string") {
                 return res
@@ -1717,11 +1764,9 @@ export const registerAIRoutes = (app: express.Express) => {
                 !Array.isArray(submitFieldKeys) ||
                 !submitFieldKeys.every((item) => typeof item === "string")
             ) {
-                return res
-                    .status(400)
-                    .json({
-                        message: "submitFieldKeys must be a string array",
-                    });
+                return res.status(400).json({
+                    message: "submitFieldKeys must be a string array",
+                });
             }
             if (!isNonEmptyString(prompt)) {
                 return res
@@ -1740,11 +1785,9 @@ export const registerAIRoutes = (app: express.Express) => {
                 reasoningEffort !== undefined &&
                 !isAIReasoningEffort(reasoningEffort)
             ) {
-                return res
-                    .status(400)
-                    .json({
-                        message: "reasoningEffort must be low, medium or high",
-                    });
+                return res.status(400).json({
+                    message: "reasoningEffort must be low, medium or high",
+                });
             }
             if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
                 return res.status(400).json({
@@ -1852,13 +1895,16 @@ export const registerAIRoutes = (app: express.Express) => {
             reasoningEffort?: unknown;
             retryCount?: unknown;
         };
-        const normalizedProvider: AIProvider = isAIProvider(provider)
-            ? provider
-            : provider === "vertex"
-              ? "gemini"
-              : provider === "idealab"
-                ? "openai"
-                : "openai";
+        const normalizedProvider: AIProvider = inferAIProviderFromUrl(
+            isAIProvider(provider)
+                ? provider
+                : provider === "vertex"
+                  ? "gemini"
+                  : provider === "idealab"
+                    ? "openai"
+                    : "openai",
+            url,
+        );
 
         if (url !== undefined && typeof url !== "string") {
             return res.status(400).json({ message: "url must be a string" });
@@ -1897,11 +1943,9 @@ export const registerAIRoutes = (app: express.Express) => {
             reasoningEffort !== undefined &&
             !isAIReasoningEffort(reasoningEffort)
         ) {
-            return res
-                .status(400)
-                .json({
-                    message: "reasoningEffort must be low, medium or high",
-                });
+            return res.status(400).json({
+                message: "reasoningEffort must be low, medium or high",
+            });
         }
         if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
             return res.status(400).json({

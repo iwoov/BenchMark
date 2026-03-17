@@ -22,9 +22,13 @@ import {
 const MODEL_PROVIDER_OPTIONS = ["openai", "google", "anthropic"] as const;
 
 const MODEL_OPTIONS_BY_PROVIDER: Record<string, string[]> = {
-    openai: ["gpt-5.2", "gpt-5.2-mini", "gpt-5.1"],
-    google: ["gemini-3.0-pro", "gemini-3.0-flash", "gemini-2.5-flash"],
-    anthropic: ["claude-4.1", "claude-4-sonnet", "claude-3.7-sonnet"],
+    openai: ["gpt-5.4-2026-03-05", "gpt-5.2-pro-2025-12-11", "gpt-5-pro"],
+    google: [
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    anthropic: ["claude-sonnet-4-6-20260217", "claude-opus-4-6-20260205"],
 };
 
 const MODEL_PROVIDER_PREFIXES = new Set([
@@ -46,6 +50,27 @@ const getSupplierLabel = (
     provider === "modelrouter-openai" || provider === "modelrouter-gemini"
         ? "ModelRouter"
         : "Idealab";
+
+const getProviderBySupplier = (
+    supplier: string,
+    provider: AIDetectConfig["profiles"][number]["profile"]["provider"],
+): AIDetectConfig["profiles"][number]["profile"]["provider"] => {
+    if (supplier === "ModelRouter") {
+        return isGeminiProvider(provider)
+            ? "modelrouter-gemini"
+            : "modelrouter-openai";
+    }
+    return isGeminiProvider(provider) ? "gemini" : "openai";
+};
+
+const getProviderOptionsBySupplier = (
+    supplier: string,
+): readonly (typeof AI_PROVIDER_OPTIONS)[number][] =>
+    AI_PROVIDER_OPTIONS.filter((option) =>
+        supplier === "ModelRouter"
+            ? option.value.startsWith("modelrouter-")
+            : !option.value.startsWith("modelrouter-"),
+    );
 
 const splitModelId = (
     value: string,
@@ -240,6 +265,18 @@ export function AIProfileModal({
                                 stripModelProviderPrefix(rawModelName);
                             const modelOptions =
                                 MODEL_OPTIONS_BY_PROVIDER[modelProvider] ?? [];
+                            const modelSelectOptions = modelOptions.includes(
+                                modelName,
+                            )
+                                ? modelOptions
+                                : modelName.trim().length > 0
+                                  ? [modelName, ...modelOptions]
+                                  : modelOptions;
+                            const supplierLabel = getSupplierLabel(
+                                profile.provider,
+                            );
+                            const providerOptions =
+                                getProviderOptionsBySupplier(supplierLabel);
                             return (
                                 <div key={index} className="ai-profile-card">
                                     <div className="ai-profile-card-head">
@@ -277,7 +314,44 @@ export function AIProfileModal({
                                                 value={getSupplierLabel(
                                                     profile.provider,
                                                 )}
-                                                disabled
+                                                onChange={(event) =>
+                                                    updateProfile(
+                                                        index,
+                                                        (previous) => {
+                                                            const nextProvider =
+                                                                getProviderBySupplier(
+                                                                    event.target
+                                                                        .value,
+                                                                    previous.provider,
+                                                                );
+                                                            const shouldSwitchToProviderDefaultUrl =
+                                                                previous.url.trim()
+                                                                    .length ===
+                                                                    0 ||
+                                                                previous.url.trim() ===
+                                                                    getDefaultAIUrl(
+                                                                        previous.provider,
+                                                                    );
+                                                            return {
+                                                                ...previous,
+                                                                provider:
+                                                                    nextProvider,
+                                                                url: shouldSwitchToProviderDefaultUrl
+                                                                    ? getDefaultAIUrl(
+                                                                          nextProvider,
+                                                                      )
+                                                                    : previous.url,
+                                                                modelProvider:
+                                                                    previous.modelProvider?.trim()
+                                                                        .length
+                                                                        ? previous.modelProvider
+                                                                        : getDefaultModelProvider(
+                                                                              nextProvider,
+                                                                          ),
+                                                            };
+                                                        },
+                                                    )
+                                                }
                                             >
                                                 <option value="Idealab">
                                                     Idealab
@@ -350,7 +424,7 @@ export function AIProfileModal({
                                                     )
                                                 }
                                             >
-                                                {AI_PROVIDER_OPTIONS.map(
+                                                {providerOptions.map(
                                                     (option) => (
                                                         <option
                                                             key={option.value}
@@ -382,9 +456,7 @@ export function AIProfileModal({
                                         </label>
                                         <label className="ai-config-field">
                                             <span>模型提供商</span>
-                                            <input
-                                                type="text"
-                                                list={`ai-model-provider-options-${index}`}
+                                            <select
                                                 value={modelProvider}
                                                 onChange={(event) =>
                                                     updateProfile(
@@ -425,26 +497,22 @@ export function AIProfileModal({
                                                         },
                                                     )
                                                 }
-                                                placeholder="例如：openai / google / anthropic"
-                                            />
-                                            <datalist
-                                                id={`ai-model-provider-options-${index}`}
                                             >
                                                 {MODEL_PROVIDER_OPTIONS.map(
                                                     (item) => (
                                                         <option
                                                             key={item}
                                                             value={item}
-                                                        />
+                                                        >
+                                                            {item}
+                                                        </option>
                                                     ),
                                                 )}
-                                            </datalist>
+                                            </select>
                                         </label>
                                         <label className="ai-config-field">
                                             <span>模型名称</span>
-                                            <input
-                                                type="text"
-                                                list={`ai-model-options-${index}`}
+                                            <select
                                                 value={modelName}
                                                 onChange={(event) =>
                                                     updateProfile(
@@ -475,18 +543,23 @@ export function AIProfileModal({
                                                         },
                                                     )
                                                 }
-                                                placeholder="例如：gpt-5.2 / gemini-3.0 / claude-3"
-                                            />
-                                            <datalist
-                                                id={`ai-model-options-${index}`}
                                             >
-                                                {modelOptions.map((item) => (
-                                                    <option
-                                                        key={item}
-                                                        value={item}
-                                                    />
-                                                ))}
-                                            </datalist>
+                                                {modelSelectOptions.map(
+                                                    (item) => (
+                                                        <option
+                                                            key={item}
+                                                            value={item}
+                                                        >
+                                                            {item}
+                                                        </option>
+                                                    ),
+                                                )}
+                                            </select>
+                                            {modelSelectOptions.length === 0 ? (
+                                                <small className="ai-config-hint">
+                                                    当前模型提供商没有可选模型
+                                                </small>
+                                            ) : null}
                                         </label>
                                         <label className="ai-config-field">
                                             <span>

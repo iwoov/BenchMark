@@ -51,6 +51,29 @@ export function isGeminiProvider(
     return provider === "gemini" || provider === "modelrouter-gemini";
 }
 
+function inferAIProviderFromUrl(
+    provider: AIDetectProfile["provider"],
+    url: unknown,
+): AIDetectProfile["provider"] {
+    if (typeof url !== "string") {
+        return provider;
+    }
+    const trimmed = url.trim().toLowerCase();
+    if (!trimmed) {
+        return provider;
+    }
+    if (!trimmed.includes("routify.alibaba-inc.com")) {
+        return provider;
+    }
+    if (trimmed.includes("/protocol/vertex/")) {
+        return "modelrouter-gemini";
+    }
+    if (trimmed.includes("/protocol/openai/")) {
+        return "modelrouter-openai";
+    }
+    return provider;
+}
+
 const MODEL_PROVIDER_PREFIXES = new Set([
     "openai",
     "google",
@@ -219,17 +242,19 @@ function normalizeLoadedAIDetectProfile(
 
     const candidate = value as Partial<AIDetectProfile>;
     const rawProvider = (value as { provider?: unknown }).provider;
-    const provider =
+    const provider = inferAIProviderFromUrl(
         rawProvider === "openai" ||
-        rawProvider === "gemini" ||
-        rawProvider === "modelrouter-openai" ||
-        rawProvider === "modelrouter-gemini"
+            rawProvider === "gemini" ||
+            rawProvider === "modelrouter-openai" ||
+            rawProvider === "modelrouter-gemini"
             ? rawProvider
             : rawProvider === "vertex"
               ? "gemini"
               : rawProvider === "idealab"
                 ? "openai"
-                : fallback.provider;
+                : fallback.provider,
+        candidate.url,
+    );
     const rawModel =
         typeof candidate.model === "string" && candidate.model.trim().length > 0
             ? stripModelProviderPrefix(candidate.model)
