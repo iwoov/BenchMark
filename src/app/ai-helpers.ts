@@ -188,6 +188,245 @@ export function composeAISaveText(
     return `【思考过程】\n${thinkingText}\n\n【AI结果】\n${answerText}`;
 }
 
+export interface ParsedAIResult extends Record<string, unknown> {
+    is_valid?: boolean | string;
+    reason?: string;
+    invalid_reason?: string;
+    requires_image?: boolean | string;
+    has_absolute_words?: boolean | string;
+    absolute_words_details?: string;
+    is_all_selected_warning?: boolean | string;
+    is_consistent?: boolean | string;
+    missing_info?: string;
+    is_objective?: boolean | string;
+    subjectivity_risk_level?: string;
+    analysis?: string | Record<string, string>;
+    final_answer?: string;
+    ai_reasoning_step_by_step?: string;
+    ai_final_answer?: string;
+    can_be_solved?: boolean | string;
+    unsolvable_reason?: string;
+    status?: "Pass" | "Fail" | string;
+    discrepancy_detail?: string;
+    is_answer_consistent?: boolean | string;
+    has_extra_info?: boolean | string;
+    extra_info_details?: string;
+    is_logic_forced?: boolean | string;
+    logic_flaw_details?: string;
+    final_verdict?: string;
+}
+
+function extractJsonCandidates(content: string): string[] {
+    const source = content.includes("【AI结果】")
+        ? (content.split("【AI结果】").pop() ?? "")
+        : content;
+
+    const jsonCandidates: string[] = [];
+    let depth = 0;
+    let start = -1;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < source.length; i += 1) {
+        const char = source[i];
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (char === "\\") {
+            escaped = inString;
+            continue;
+        }
+
+        if (char === '"') {
+            inString = !inString;
+            continue;
+        }
+
+        if (inString) {
+            continue;
+        }
+
+        if (char === "{") {
+            if (depth === 0) {
+                start = i;
+            }
+            depth += 1;
+            continue;
+        }
+
+        if (char === "}" && depth > 0) {
+            depth -= 1;
+            if (depth === 0 && start >= 0) {
+                jsonCandidates.push(source.slice(start, i + 1));
+                start = -1;
+            }
+        }
+    }
+
+    return jsonCandidates;
+}
+
+export function parseAIResultJSON(content: string): ParsedAIResult | null {
+    if (!content || content.trim().length === 0) {
+        return null;
+    }
+
+    const jsonCandidates = extractJsonCandidates(content);
+    for (let i = jsonCandidates.length - 1; i >= 0; i -= 1) {
+        try {
+            return JSON.parse(jsonCandidates[i]) as ParsedAIResult;
+        } catch {
+            // Ignore invalid JSON candidates and continue trying older ones.
+        }
+    }
+
+    return null;
+}
+
+function readStringValue(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function stringifyAnalysis(analysis: ParsedAIResult["analysis"]): string {
+    if (typeof analysis === "string") {
+        return analysis.trim();
+    }
+    if (!analysis || typeof analysis !== "object") {
+        return "";
+    }
+
+    return Object.entries(analysis)
+        .map(([key, value]) =>
+            typeof value === "string" && value.trim().length > 0
+                ? `${key}: ${value.trim()}`
+                : "",
+        )
+        .filter((item) => item.length > 0)
+        .join("\n");
+}
+
+export function readBooleanLike(value: unknown): boolean | null {
+    if (typeof value === "boolean") {
+        return value;
+    }
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (
+            normalized === "true" ||
+            normalized === "yes" ||
+            normalized === "1" ||
+            normalized === "是"
+        ) {
+            return true;
+        }
+        if (
+            normalized === "false" ||
+            normalized === "no" ||
+            normalized === "0" ||
+            normalized === "否"
+        ) {
+            return false;
+        }
+    }
+    if (typeof value === "number") {
+        if (value === 1) {
+            return true;
+        }
+        if (value === 0) {
+            return false;
+        }
+    }
+    return null;
+}
+
+export function extractAIResultFinalAnswer(content: string): string | null {
+    if (!content) {
+        return null;
+    }
+
+    const parsed = parseAIResultJSON(content);
+    const aiFinalAnswer = readStringValue(parsed?.ai_final_answer);
+    if (aiFinalAnswer.length > 0) {
+        return aiFinalAnswer;
+    }
+    const finalAnswer = readStringValue(parsed?.final_answer);
+    if (finalAnswer.length > 0) {
+        return finalAnswer;
+    }
+
+    const answerSection = content.includes("【AI结果】")
+        ? (content.split("【AI结果】").pop() ?? "")
+        : content;
+    const directMatch =
+        /(?:ai_)?final_answer\s*[:：]\s*["“”']?([^"\n\r,}]+)["“”']?/i.exec(
+            answerSection,
+        );
+    if (directMatch?.[1]) {
+        return directMatch[1].trim();
+    }
+
+    return null;
+}
+
+export function buildFinalVerdictExtraFields(
+    independentSolvingResult: string,
+): AIDetectFieldPayload[] {
+    const trimmed = independentSolvingResult.trim();
+    if (trimmed.length === 0) {
+        return [];
+    }
+
+    const parsed = parseAIResultJSON(trimmed);
+    const finalAnswer = extractAIResultFinalAnswer(trimmed) ?? "";
+    const reasoning =
+        readStringValue(parsed?.ai_reasoning_step_by_step) ||
+        stringifyAnalysis(parsed?.analysis);
+    const canBeSolved = readBooleanLike(parsed?.can_be_solved);
+    const unsolvableReason = readStringValue(parsed?.unsolvable_reason);
+
+    const fields: AIDetectFieldPayload[] = [
+        {
+            title: "AI独立解题结果（第三阶段）",
+            type: "text",
+            value: independentSolvingResult,
+        },
+    ];
+
+    if (finalAnswer.length > 0) {
+        fields.push({
+            title: "AI最终答案（第三阶段）",
+            type: "text",
+            value: finalAnswer,
+        });
+    }
+    if (reasoning.length > 0) {
+        fields.push({
+            title: "AI推理过程（第三阶段）",
+            type: "text",
+            value: reasoning,
+        });
+    }
+    if (canBeSolved !== null) {
+        fields.push({
+            title: "AI是否可解（第三阶段）",
+            type: "text",
+            value: canBeSolved ? "可解" : "不可解",
+        });
+    }
+    if (unsolvableReason.length > 0) {
+        fields.push({
+            title: "AI无法作答原因（第三阶段）",
+            type: "text",
+            value: unsolvableReason,
+        });
+    }
+
+    return fields;
+}
+
 export function cloneAIDetectProfile(
     profile: AIDetectProfile,
 ): AIDetectProfile {

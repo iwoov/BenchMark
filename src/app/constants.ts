@@ -11,6 +11,8 @@ import type { AIBatchTaskState } from "./types";
 export const ALL_FILTER_VALUE = "全部";
 export const EMPTY_FILTER_VALUE = "__EMPTY_FILTER__";
 export const EMPTY_FILTER_LABEL = "空值";
+export const NON_EMPTY_FILTER_VALUE = "__NON_EMPTY_FILTER__";
+export const NON_EMPTY_FILTER_LABEL = "非空值";
 export const QUALIFIED_TITLE_ALIASES = ["是否合格"] as const;
 export const TIME_TITLE_ALIASES = ["创建时间"] as const;
 export const CREATOR_TITLE_ALIASES = ["创建人"] as const;
@@ -46,36 +48,140 @@ export const AI_STAGE_LABELS: Record<
     { title: string; shortTitle: string; description: string }
 > = {
     precheck: {
-        title: "第一阶段：逻辑自洽性检查",
+        title: "第一阶段：基础规范与特征排查",
         shortTitle: "Pre-check",
-        description: "检查题干与选项的逻辑闭环、错别字与图文依赖性。",
+        description: "检查题目硬伤、图片依赖、绝对化词语与全选风险。",
     },
     context_audit: {
-        title: "第二阶段：多模态一致性审计",
-        shortTitle: "Context Audit",
-        description: "核对图文解答是否一致，是否引入题干外信息。",
+        title: "第二阶段：客观性与主观题排查",
+        shortTitle: "Subjectivity",
+        description: "评估答案唯一性、主观性风险与模棱两可表述。",
     },
     independent_solving: {
-        title: "第三阶段：AI 独立解题",
-        shortTitle: "Independent Solving",
-        description: "忽略原解，逐项推演选项并给出独立答案。",
+        title: "第三阶段：AI 独立闭卷解答",
+        shortTitle: "Blind Solve",
+        description: "只基于题目信息独立作答并输出可解性判断。",
     },
     final_verdict: {
-        title: "第四阶段：答案最终裁定",
-        shortTitle: "Final Verdict",
-        description: "对比 AI 结论与原答案/解答，输出最终裁定。",
+        title: "第四阶段：深度对齐与额外信息审查",
+        shortTitle: "Deep Align",
+        description: "核对答案一致性、额外信息依赖与解析逻辑质量。",
     },
 };
 
 export const DEFAULT_AI_STAGE_PROMPTS: Record<AIDetectStageKey, string> = {
-    precheck:
-        '你是题目质检助手，负责第一阶段：元数据与逻辑自洽性检查（Pre-check）。\n输入：题目文本、选项。\n题型说明：题目可能是选择题或填空题；若是选择题，可能为单选题，也可能为多选题。\n任务：\n1. 检查错别字、标点错误、选项重复、题干描述与选项矛盾。\n2. 判断图文依赖性：仅靠文字是否足以解题。\n3. 结合题型判断题干、作答方式与选项设置是否自洽，不要默认题目一定是单选题。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "is_valid": boolean,\n  "reason": string,\n  "requires_image": boolean\n}\n要求：\n- is_valid 为 true 时，reason 填 \"无\" 或 \"\"。\n- is_valid 为 false 时，reason 必须写清楚具体问题。\n- requires_image 为 true 表示必须结合图片才能理解或解题。\n字段内容如下：\n{{fields_json}}',
-    context_audit:
-        '你是多模态一致性审计助手（Context Audit）。\n输入：题目文本、选项、图片、解答过程。\n题型说明：题目可能是选择题或填空题；若是选择题，可能为单选题，也可能为多选题。\n任务：\n1. 检查图片内容是否与文本描述匹配（例如文本说“如图所示三角形 ABC”，图片里是否真为 ABC）。\n2. 检查解答过程是否引入题目未提供的前提条件。\n3. 审计时结合题型判断解答是否与题目要求一致，不要默认只能有一个正确选项。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "is_consistent": boolean,\n  "missing_info": string\n}\n要求：\n- 若一致且无外部依赖，missing_info 填 \"无\" 或 \"\"。\n- 若不一致或依赖外部信息，missing_info 写明缺失信息或矛盾点。\n字段内容如下：\n{{fields_json}}',
-    independent_solving:
-        '请忽略原有解答过程，独立解题并推演每个选项（Independent Solving）。\n输入：题目文本、选项、图片。\n题型说明：题目可能是选择题或填空题；若是选择题，可能为单选题，也可能为多选题。\n任务：\n1. 若题目有选项，针对每个选项逐一推导，说明为什么对/错。\n2. 若题目是填空题，则直接根据题干独立求解，不要强行按选择题处理。\n3. 给出 AI 独立计算的最终答案，并根据题意判断是单个答案、多个答案，还是填空结果。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "analysis": { "A": "...", "B": "...", "C": "...", "D": "..." },\n  "final_answer": string\n}\n要求：\n- analysis 的键使用题目提供的选项标签（如 A/B/C/D 或 ①②③④）；如果是填空题且没有选项，可在 analysis 中按步骤组织关键推导。\n- 若为多选题，final_answer 应明确给出全部正确选项。\n- 若为填空题，final_answer 直接填写最终结果。\n- 若无法解题，请在 analysis 说明原因，并将 final_answer 写为 \"无法确定\"。\n字段内容如下：\n{{fields_json}}',
-    final_verdict:
-        '请进行真题对标与最终裁定（Final Verdict）。\n输入：步骤 3 的结果 + 题目原始答案 + 题目原始解答。\n任务：\n1. 对比 AI 答案与原始答案。\n2. 如果不一致，判断是 AI 错误还是原题答案/解答错误，并说明原因。\n输出必须为 JSON（不要输出多余文本或 Markdown）：\n{\n  "status": "Pass" | "Fail",\n  "discrepancy_detail": string\n}\n要求：\n- 一致则 status = \"Pass\"，discrepancy_detail 填 \"无\" 或 \"\"。\n- 不一致则 status = \"Fail\"，discrepancy_detail 说明冲突点与责任归因。\n字段内容如下：\n{{fields_json}}',
+    precheck: `第一阶段：基础规范与特征排查（Pre-check 增强版）
+你是专业的题目质检专家，负责第一阶段：基础规范与特征排查（Pre-check）。
+
+输入：题目信息 JSON（{{fields_json}}）。
+说明：JSON 中通常包含题目文本、选项、专家给定的答案等字段，请你自行识别并使用。
+
+你的任务分为四个独立的判断维度：
+
+一、有效性检查（is_valid）
+只检查以下问题：错别字/明显病句、选项内容完全重复、题干与选项明显矛盾、题型与作答方式不自洽。
+注意：不要因为“需要图片”或“可能有争议”判定为无效。只有存在绝对的内容/结构硬伤时，才返回 false。
+
+二、图片依赖性判断（requires_image）
+仅靠当前提供的文字和选项，是否足以完整理解题意并作答。如果缺少关键图形信息导致无法作答，返回 true。这是独立判断，与 is_valid 无关。
+
+三、绝对性词语排查（has_absolute_words）
+检查选项文本中是否包含“必然”、“肯定”、“绝对”、“总是”、“一定”等绝对化表述。若有，提取这些词语所在的选项。
+
+四、全选陷阱预警（is_all_selected_warning）
+如果题目是选择题，且专家给定的答案为全选（如 ABCD全选），则返回 true。若非选择题或非全选，返回 false。
+
+请严格以 JSON 格式输出，不要包含任何 Markdown 标记（如 \`\`\`json）或其他说明文本：
+{
+  "is_valid": boolean,
+  "invalid_reason": "如果 is_valid 为 false，说明具体原因；否则为空字符串",
+  "requires_image": boolean,
+  "has_absolute_words": boolean,
+  "absolute_words_details": "如果包含，简述哪个选项包含什么词；否则为空字符串",
+  "is_all_selected_warning": boolean
+}
+
+字段内容如下：
+{{fields_json}}`,
+    context_audit: `第二阶段：客观性与主观题排查（Subjectivity Check）
+你是专业的题目质检专家，负责第二阶段：客观性与歧义排查。
+
+输入：题目信息 JSON（{{fields_json}}）。
+说明：JSON 中通常包含题目文本、选项等字段，请你自行识别并使用。
+
+你的核心任务是评估该题目的“答案唯一性”和“表述客观性”。
+判断标准：
+1. 主观性判断：题干或选项中是否包含无法量化、高度依赖个人主观认知或特定立场的表述（例如“最优美”、“通常让人感到不适”、“最好的方法”等无明确标准的概念）。
+2. 伪命题/模棱两可：选项之间是否存在界限模糊，或者在学术上存在广泛争议，导致“怎么解释都有道理”的情况。
+
+请严格以 JSON 格式输出，不要包含任何 Markdown 标记或其他说明文本：
+{
+  "is_objective": boolean,
+  "subjectivity_risk_level": "高/中/低 (高代表极度主观，低代表完全客观有唯一解)",
+  "analysis": "如果不是完全客观，请指出具体哪个表述过于主观或存在模棱两可的争议；如果客观，请填 '无'"
+}
+
+字段内容如下：
+{{fields_json}}`,
+    independent_solving: `第三阶段：AI 独立“闭卷”解答（Blind Solve）
+
+你是一个参加考试的优秀学生。请根据提供的题目信息进行独立解答。
+输入：题目信息 JSON（{{fields_json}}）。
+说明：JSON 中通常包含题目文本、选项、图片描述或识别内容等字段，请你自行识别并使用。
+
+你的任务：
+1. 忽略任何外部提供的参考答案，仅凭上述输入信息进行解答。
+2. 一步一步写出你的推理过程。
+3. 给出你最终的解答或选择。
+
+请严格以 JSON 格式输出，不要包含任何 Markdown 标记或其他说明文本：
+{
+  "ai_reasoning_step_by_step": "详细的解题推演过程",
+  "ai_final_answer": "你的最终答案，例如 'A', 'A,B', 或填空题的最终文本",
+  "can_be_solved": boolean,
+  "unsolvable_reason": "如果由于信息缺失导致无法解题(can_be_solved为false)，请说明缺失了什么；否则为空"
+}
+
+字段内容如下：
+{{fields_json}}`,
+    final_verdict: `第四阶段：深度对齐与额外信息审查（Deep Alignment & Extra Info Review）
+
+你是高级题目教研专家，负责第四阶段：答案对齐与解析深度审查。
+输入数据：题目信息 JSON（{{fields_json}}）。
+说明：JSON 中通常包含：
+1. 原始题目：题干、选项
+2. 专家数据：专家答案、专家解答过程
+3. AI盲测数据：AI得出的答案、AI推理过程
+请你自行识别并使用这些字段。
+
+你的任务分为三个维度：
+
+一、答案一致性（is_answer_consistent）
+对比专家答案与 AI 得出的答案是否核心一致。
+
+二、额外信息/超纲概念审查（has_extra_info）
+仔细检查专家的【解答过程】。判断其推导是否引入了“额外信息”。
+“额外信息”定义为：
+- 不属于题目本身已知条件的设定。
+- 不属于通用基础学科常识（如高中/大学基础生物、化学课本常识）。
+- 属于特定学术论文中自定义的概念、前沿文献的特定结论，或极其冷门的小众知识点。
+如果专家的解析必须依赖这些额外信息才能走通，则返回 true。
+
+三、逻辑自洽与倒推审查（is_logic_forced）
+分析专家的解答过程，是否存在“先知答案，强行凑过程”的逻辑倒置现象，或者逻辑链条存在明显断裂。
+
+请严格以 JSON 格式输出，不要包含任何 Markdown 标记或其他说明文本：
+{
+  "is_answer_consistent": boolean,
+  "has_extra_info": boolean,
+  "extra_info_details": "如果 has_extra_info 为 true，详细指出专家解析中滥用了哪个不在常规知识体系内的额外概念或文献结论；否则为空",
+  "is_logic_forced": boolean,
+  "logic_flaw_details": "如果 is_logic_forced 为 true，指出专家解析中逻辑断裂或强行倒推的地方；否则为空",
+  "final_verdict": "综合评价：'优秀' / '需修改解析' / '题目超纲需废弃' / '存在逻辑错误'"
+}
+
+字段内容如下：
+{{fields_json}}`,
 };
 
 export const DEFAULT_AI_PROFILE_NAME = "默认接口";

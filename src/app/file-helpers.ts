@@ -9,6 +9,7 @@ import type {
 import {
     ALL_FILTER_VALUE,
     EMPTY_FILTER_VALUE,
+    NON_EMPTY_FILTER_VALUE,
     CREATOR_TITLE_ALIASES,
     FEEDBACK_TITLE_ALIASES,
     INSPECTOR_TITLE_ALIASES,
@@ -441,16 +442,27 @@ export function getDistinctOptions(
         return [];
     }
     const unique = new Set<string>();
+    let hasEmpty = false;
+    let hasNonEmpty = false;
     rows.forEach((row) => {
         const rawValue = row.values[columnKey]?.value ?? "";
         const value = rawValue.trim();
         if (value.length === 0) {
-            unique.add(EMPTY_FILTER_VALUE);
+            hasEmpty = true;
             return;
         }
+        hasNonEmpty = true;
         unique.add(value);
     });
-    return Array.from(unique);
+    const options: string[] = [];
+    if (hasNonEmpty) {
+        options.push(NON_EMPTY_FILTER_VALUE);
+    }
+    if (hasEmpty) {
+        options.push(EMPTY_FILTER_VALUE);
+    }
+    options.push(...Array.from(unique));
+    return options;
 }
 
 export function getLevelColumnKey(

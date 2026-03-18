@@ -54,6 +54,7 @@ export const useFileStore = ({
     const pendingPersistRef = useRef<Record<string, FileViewState>>({});
     const persistAIResultsQueueRef = useRef<Record<string, Promise<void>>>({});
     const latestFileStateRef = useRef<Record<string, FileViewState>>({});
+    const stateVersionRef = useRef<Record<string, number>>({});
     const pendingUploadModeRef = useRef<UploadMode>("create");
 
     const activeFile = useMemo(
@@ -181,13 +182,31 @@ export const useFileStore = ({
         };
     }, []);
 
+    const createVersionedStatePayload = (file: FileViewState) => {
+        const currentVersion = stateVersionRef.current[file.fileId] ?? 0;
+        const nextVersion = Math.max(Date.now(), currentVersion + 1);
+        stateVersionRef.current[file.fileId] = nextVersion;
+        return {
+            ...file,
+            clientStateVersion: nextVersion,
+        };
+    };
+
     const persistFileState = async (file: FileViewState) => {
         try {
-            await fetch(`/api/files/${encodeURIComponent(file.fileId)}/state`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ state: file }),
-            });
+            const statePayload = createVersionedStatePayload(file);
+            const response = await fetch(
+                `/api/files/${encodeURIComponent(file.fileId)}/state`,
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ state: statePayload }),
+                },
+            );
+            if (response.ok || response.status === 409) {
+                return;
+            }
+            throw new Error(`save failed: ${response.status}`);
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error(

@@ -43,6 +43,35 @@ function normalizeUploadMode(value: unknown): "create" | "merge" {
     return value === "merge" ? "merge" : "create";
 }
 
+function readClientStateVersion(value: unknown): number | null {
+    if (!value || typeof value !== "object") {
+        return null;
+    }
+    const rawVersion = (value as { clientStateVersion?: unknown })
+        .clientStateVersion;
+    if (typeof rawVersion === "number" && Number.isFinite(rawVersion)) {
+        return Math.trunc(rawVersion);
+    }
+    if (typeof rawVersion === "string" && rawVersion.trim().length > 0) {
+        const parsed = Number(rawVersion);
+        if (Number.isFinite(parsed)) {
+            return Math.trunc(parsed);
+        }
+    }
+    return null;
+}
+
+function attachClientStateVersion<T extends Record<string, unknown>>(
+    state: T,
+): T {
+    const currentVersion = readClientStateVersion(state) ?? 0;
+    const nextVersion = Math.max(Date.now(), currentVersion + 1);
+    return {
+        ...state,
+        clientStateVersion: nextVersion,
+    };
+}
+
 function summarizeFileStateAIResults(state: unknown): {
     fileId: string;
     fileName: string;
@@ -161,9 +190,10 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                 `[DatabaseBackup] mode=${uploadMode} file=${normalizedFileName} backup=${backupPath}`,
             );
 
-            saveFileState(projectId, projectName, state);
+            const versionedState = attachClientStateVersion(state);
+            saveFileState(projectId, projectName, versionedState);
             return res.json({
-                file: state,
+                file: versionedState,
                 summary,
                 backupPath,
             });
@@ -219,8 +249,25 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                 .json({ message: "state.fileName must be a non-empty string" });
         }
 
+        const currentPersistedState = getFileState(fileId)?.state;
+        const currentVersion = readClientStateVersion(currentPersistedState);
+        const nextVersion = readClientStateVersion(state);
+        if (
+            currentVersion !== null &&
+            (nextVersion === null || nextVersion <= currentVersion)
+        ) {
+            return res.status(409).json({
+                message: "stale state ignored",
+            });
+        }
+
+        const versionedState =
+            nextVersion === null
+                ? attachClientStateVersion(state as Record<string, unknown>)
+                : state;
+
         if (SHOULD_LOG_AI_RESULTS) {
-            const summary = summarizeFileStateAIResults(state);
+            const summary = summarizeFileStateAIResults(versionedState);
             if (summary) {
                 // eslint-disable-next-line no-console
                 console.log(
@@ -231,7 +278,7 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             }
         }
 
-        saveFileState(fileId, nextState.fileName, state);
+        saveFileState(fileId, nextState.fileName, versionedState);
         return res.json({ ok: true });
     });
 

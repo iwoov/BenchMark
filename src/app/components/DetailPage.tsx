@@ -1,5 +1,10 @@
 import type { ReactNode } from "react";
 import type { AIDetectStageKey, ParsedColumn, ParsedRow } from "../../types";
+import {
+    extractAIResultFinalAnswer,
+    parseAIResultJSON,
+    readBooleanLike,
+} from "../ai-helpers";
 import { IconChevron } from "../icons";
 import {
     AI_RUN_ALL_LABEL,
@@ -7,196 +12,220 @@ import {
     AI_STAGE_ORDER,
 } from "../constants";
 
-interface AIResultParsed {
-    // Pre-check
-    is_valid?: boolean;
-    reason?: string;
-    requires_image?: boolean;
-    // Context Audit
-    is_consistent?: boolean;
-    missing_info?: string;
-    // Independent Solving
-    analysis?: Record<string, string>;
-    final_answer?: string;
-    // Final Verdict
-    status?: "Pass" | "Fail";
-    discrepancy_detail?: string;
-    [key: string]: unknown;
+function readTextValue(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
 }
 
-function extractJsonCandidates(content: string): string[] {
-    const source = content.includes("【AI结果】")
-        ? (content.split("【AI结果】").pop() ?? "")
-        : content;
+function hasMeaningfulText(value: string): boolean {
+    return value.length > 0 && value !== "无";
+}
 
-    const jsonCandidates: string[] = [];
-    let depth = 0;
-    let start = -1;
-    let inString = false;
-    let escaped = false;
-
-    for (let i = 0; i < source.length; i += 1) {
-        const char = source[i];
-
-        if (escaped) {
-            escaped = false;
-            continue;
-        }
-
-        if (char === "\\") {
-            escaped = inString;
-            continue;
-        }
-
-        if (char === '"') {
-            inString = !inString;
-            continue;
-        }
-
-        if (inString) {
-            continue;
-        }
-
-        if (char === "{") {
-            if (depth === 0) {
-                start = i;
-            }
-            depth += 1;
-            continue;
-        }
-
-        if (char === "}" && depth > 0) {
-            depth -= 1;
-            if (depth === 0 && start >= 0) {
-                jsonCandidates.push(source.slice(start, i + 1));
-                start = -1;
-            }
-        }
+function stringifyAnalysis(value: unknown): string {
+    if (typeof value === "string") {
+        return value.trim();
     }
-
-    return jsonCandidates;
+    if (!value || typeof value !== "object") {
+        return "";
+    }
+    return Object.entries(value)
+        .map(([key, item]) =>
+            typeof item === "string" && item.trim().length > 0
+                ? `${key}: ${item.trim()}`
+                : "",
+        )
+        .filter((item) => item.length > 0)
+        .join("\n");
 }
 
-function parseAIResultJSON(content: string): AIResultParsed | null {
-    if (!content || content.trim().length === 0) {
+function renderInfoBlock(
+    label: string,
+    value: string,
+    tone: "danger" | "warning" | "neutral" = "neutral",
+) {
+    if (!hasMeaningfulText(value)) {
         return null;
     }
 
-    const jsonCandidates = extractJsonCandidates(content);
-    for (let i = jsonCandidates.length - 1; i >= 0; i -= 1) {
-        try {
-            return JSON.parse(jsonCandidates[i]) as AIResultParsed;
-        } catch {
-            // Ignore invalid JSON candidates and continue trying older ones.
-        }
-    }
-
-    return null;
+    return (
+        <div className={`ai-result-note note-${tone}`}>
+            <strong>{label}：</strong>
+            <span>{value}</span>
+        </div>
+    );
 }
 
-function renderPrecheckResult(parsed: AIResultParsed) {
-    const isValid = parsed.is_valid;
-    const reason = parsed.reason?.trim() || "";
-    const requiresImage = parsed.requires_image;
+function getVerdictBadgeClass(verdict: string): string {
+    if (verdict === "优秀") {
+        return "badge-valid";
+    }
+    if (verdict === "需修改解析") {
+        return "badge-warning";
+    }
+    return "badge-invalid";
+}
+
+function getRiskBadgeClass(level: string): string {
+    if (level === "低") {
+        return "badge-valid";
+    }
+    if (level === "中") {
+        return "badge-warning";
+    }
+    return "badge-invalid";
+}
+
+function renderPrecheckResult(parsed: Record<string, unknown>) {
+    const isValid = readBooleanLike(parsed.is_valid);
+    const invalidReason =
+        readTextValue(parsed.invalid_reason) || readTextValue(parsed.reason);
+    const requiresImage = readBooleanLike(parsed.requires_image);
+    const hasAbsoluteWords = readBooleanLike(parsed.has_absolute_words);
+    const absoluteWordsDetails = readTextValue(parsed.absolute_words_details);
+    const isAllSelectedWarning = readBooleanLike(
+        parsed.is_all_selected_warning,
+    );
 
     return (
         <div className="ai-result-formatted">
             <div className="ai-result-status-row">
-                <span
-                    className={`ai-result-badge ${isValid ? "badge-valid" : "badge-invalid"}`}
-                >
-                    {isValid ? "✓ 合格" : "✗ 不合格"}
-                </span>
-                {typeof requiresImage === "boolean" && (
+                {isValid !== null && (
+                    <span
+                        className={`ai-result-badge ${isValid ? "badge-valid" : "badge-invalid"}`}
+                    >
+                        {isValid ? "✓ 题目有效" : "✗ 题目无效"}
+                    </span>
+                )}
+                {requiresImage !== null && (
                     <span
                         className={`ai-result-badge ${requiresImage ? "badge-image-required" : "badge-image-optional"}`}
                     >
-                        {requiresImage ? "🖼️ 需要图片" : "无需图片"}
+                        {requiresImage ? "需要图片" : "无需图片"}
+                    </span>
+                )}
+                {hasAbsoluteWords !== null && (
+                    <span
+                        className={`ai-result-badge ${hasAbsoluteWords ? "badge-warning" : "badge-neutral"}`}
+                    >
+                        {hasAbsoluteWords ? "存在绝对化表述" : "无绝对化表述"}
+                    </span>
+                )}
+                {isAllSelectedWarning !== null && (
+                    <span
+                        className={`ai-result-badge ${isAllSelectedWarning ? "badge-warning" : "badge-neutral"}`}
+                    >
+                        {isAllSelectedWarning ? "全选陷阱预警" : "非全选预警"}
                     </span>
                 )}
             </div>
-            {!isValid && reason && reason !== "无" && (
-                <div className="ai-result-reason">
-                    <strong>不合格原因：</strong>
-                    <span>{reason}</span>
-                </div>
-            )}
+            {isValid === false
+                ? renderInfoBlock("无效原因", invalidReason, "danger")
+                : null}
+            {hasAbsoluteWords === true
+                ? renderInfoBlock(
+                      "绝对化表述详情",
+                      absoluteWordsDetails,
+                      "warning",
+                  )
+                : null}
         </div>
     );
 }
 
-function renderContextAuditResult(parsed: AIResultParsed) {
-    const isConsistent = parsed.is_consistent;
-    const missingInfo = parsed.missing_info?.trim() || "";
+function renderLegacyContextAuditResult(parsed: Record<string, unknown>) {
+    const isConsistent = readBooleanLike(parsed.is_consistent);
+    const missingInfo = readTextValue(parsed.missing_info);
 
     return (
         <div className="ai-result-formatted">
             <div className="ai-result-status-row">
-                <span
-                    className={`ai-result-badge ${isConsistent ? "badge-valid" : "badge-invalid"}`}
-                >
-                    {isConsistent ? "✓ 一致" : "✗ 不一致"}
-                </span>
+                {isConsistent !== null ? (
+                    <span
+                        className={`ai-result-badge ${isConsistent ? "badge-valid" : "badge-invalid"}`}
+                    >
+                        {isConsistent ? "✓ 一致" : "✗ 不一致"}
+                    </span>
+                ) : null}
             </div>
-            {!isConsistent && missingInfo && missingInfo !== "无" && (
-                <div className="ai-result-reason">
-                    <strong>缺失/矛盾信息：</strong>
-                    <span>{missingInfo}</span>
-                </div>
+            {isConsistent === false
+                ? renderInfoBlock("缺失/矛盾信息", missingInfo, "danger")
+                : null}
+        </div>
+    );
+}
+
+function renderSubjectivityResult(parsed: Record<string, unknown>) {
+    const isObjective = readBooleanLike(parsed.is_objective);
+    const riskLevel = readTextValue(parsed.subjectivity_risk_level);
+    const analysis = readTextValue(parsed.analysis);
+
+    return (
+        <div className="ai-result-formatted">
+            <div className="ai-result-status-row">
+                {isObjective !== null ? (
+                    <span
+                        className={`ai-result-badge ${isObjective ? "badge-valid" : "badge-warning"}`}
+                    >
+                        {isObjective ? "客观题" : "存在主观性风险"}
+                    </span>
+                ) : null}
+                {hasMeaningfulText(riskLevel) ? (
+                    <span
+                        className={`ai-result-badge ${getRiskBadgeClass(riskLevel)}`}
+                    >
+                        {`风险：${riskLevel}`}
+                    </span>
+                ) : null}
+            </div>
+            {renderInfoBlock(
+                "分析",
+                analysis,
+                isObjective === false ? "warning" : "neutral",
             )}
         </div>
     );
 }
 
-function renderIndependentSolvingAnswer(answer: string) {
-    const finalAnswer = answer.trim().length > 0 ? answer.trim() : "无法确定";
+function renderIndependentSolvingResult(
+    parsed: Record<string, unknown>,
+    content: string,
+) {
+    const finalAnswer = extractAIResultFinalAnswer(content) ?? "无法确定";
+    const canBeSolved = readBooleanLike(parsed.can_be_solved);
+    const unsolvableReason = readTextValue(parsed.unsolvable_reason);
+    const reasoning =
+        readTextValue(parsed.ai_reasoning_step_by_step) ||
+        stringifyAnalysis(parsed.analysis);
 
     return (
         <div className="ai-result-formatted">
             <div className="ai-result-status-row">
                 <span className="ai-result-badge badge-answer">
-                    📝 答案：{finalAnswer}
+                    {`答案：${finalAnswer}`}
                 </span>
+                {canBeSolved !== null ? (
+                    <span
+                        className={`ai-result-badge ${canBeSolved ? "badge-valid" : "badge-invalid"}`}
+                    >
+                        {canBeSolved ? "可解" : "不可解"}
+                    </span>
+                ) : null}
             </div>
+            {renderInfoBlock(
+                "推理过程",
+                reasoning,
+                canBeSolved === false ? "warning" : "neutral",
+            )}
+            {canBeSolved === false
+                ? renderInfoBlock("缺失信息", unsolvableReason, "danger")
+                : null}
         </div>
     );
 }
 
-function extractFinalAnswerFromText(content: string): string | null {
-    if (!content) {
-        return null;
-    }
-    const answerSection = content.includes("【AI结果】")
-        ? (content.split("【AI结果】").pop() ?? "")
-        : content;
-    const jsonCandidates = extractJsonCandidates(content);
-
-    for (let i = jsonCandidates.length - 1; i >= 0; i -= 1) {
-        try {
-            const parsed = JSON.parse(jsonCandidates[i]) as AIResultParsed;
-            if (typeof parsed.final_answer === "string") {
-                return parsed.final_answer;
-            }
-        } catch {
-            // Ignore invalid JSON candidates.
-        }
-    }
-
-    const directMatch =
-        /final_answer\s*[:：]\s*["“”']?([^"\n\r,}]+)["“”']?/i.exec(
-            answerSection,
-        );
-    if (directMatch?.[1]) {
-        return directMatch[1].trim();
-    }
-
-    return null;
-}
-
-function renderFinalVerdictResult(parsed: AIResultParsed) {
-    const status = parsed.status;
+function renderLegacyFinalVerdictResult(parsed: Record<string, unknown>) {
+    const status = readTextValue(parsed.status);
     const isPass = status === "Pass";
-    const discrepancy = parsed.discrepancy_detail?.trim() || "";
+    const discrepancy = readTextValue(parsed.discrepancy_detail);
 
     return (
         <div className="ai-result-formatted">
@@ -207,12 +236,57 @@ function renderFinalVerdictResult(parsed: AIResultParsed) {
                     {isPass ? "✓ Pass" : "✗ Fail"}
                 </span>
             </div>
-            {!isPass && discrepancy && discrepancy !== "无" && (
-                <div className="ai-result-reason">
-                    <strong>差异说明：</strong>
-                    <span>{discrepancy}</span>
-                </div>
-            )}
+            {isPass ? null : renderInfoBlock("差异说明", discrepancy, "danger")}
+        </div>
+    );
+}
+
+function renderDeepAlignmentResult(parsed: Record<string, unknown>) {
+    const isAnswerConsistent = readBooleanLike(parsed.is_answer_consistent);
+    const hasExtraInfo = readBooleanLike(parsed.has_extra_info);
+    const extraInfoDetails = readTextValue(parsed.extra_info_details);
+    const isLogicForced = readBooleanLike(parsed.is_logic_forced);
+    const logicFlawDetails = readTextValue(parsed.logic_flaw_details);
+    const finalVerdict = readTextValue(parsed.final_verdict);
+
+    return (
+        <div className="ai-result-formatted">
+            <div className="ai-result-status-row">
+                {isAnswerConsistent !== null ? (
+                    <span
+                        className={`ai-result-badge ${isAnswerConsistent ? "badge-valid" : "badge-invalid"}`}
+                    >
+                        {isAnswerConsistent ? "答案一致" : "答案不一致"}
+                    </span>
+                ) : null}
+                {hasExtraInfo !== null ? (
+                    <span
+                        className={`ai-result-badge ${hasExtraInfo ? "badge-warning" : "badge-valid"}`}
+                    >
+                        {hasExtraInfo ? "存在额外信息" : "无额外信息"}
+                    </span>
+                ) : null}
+                {isLogicForced !== null ? (
+                    <span
+                        className={`ai-result-badge ${isLogicForced ? "badge-invalid" : "badge-valid"}`}
+                    >
+                        {isLogicForced ? "逻辑存疑" : "逻辑自洽"}
+                    </span>
+                ) : null}
+                {hasMeaningfulText(finalVerdict) ? (
+                    <span
+                        className={`ai-result-badge ${getVerdictBadgeClass(finalVerdict)}`}
+                    >
+                        {finalVerdict}
+                    </span>
+                ) : null}
+            </div>
+            {hasExtraInfo === true
+                ? renderInfoBlock("额外信息详情", extraInfoDetails, "warning")
+                : null}
+            {isLogicForced === true
+                ? renderInfoBlock("逻辑问题", logicFlawDetails, "danger")
+                : null}
         </div>
     );
 }
@@ -230,30 +304,42 @@ function renderAIResultContent(stageKey: AIDetectStageKey, content: string) {
 
     switch (stageKey) {
         case "precheck":
-            if (typeof parsed.is_valid === "boolean") {
+            if (readBooleanLike(parsed.is_valid) !== null) {
                 return renderPrecheckResult(parsed);
             }
             break;
         case "context_audit":
-            if (typeof parsed.is_consistent === "boolean") {
-                return renderContextAuditResult(parsed);
+            if (
+                readBooleanLike(parsed.is_objective) !== null ||
+                readTextValue(parsed.subjectivity_risk_level).length > 0
+            ) {
+                return renderSubjectivityResult(parsed);
+            }
+            if (readBooleanLike(parsed.is_consistent) !== null) {
+                return renderLegacyContextAuditResult(parsed);
             }
             break;
         case "independent_solving":
-            if (typeof parsed.final_answer === "string") {
-                return renderIndependentSolvingAnswer(parsed.final_answer);
+            if (
+                extractAIResultFinalAnswer(trimmed) ||
+                readTextValue(parsed.ai_reasoning_step_by_step).length > 0 ||
+                readBooleanLike(parsed.can_be_solved) !== null ||
+                readTextValue(stringifyAnalysis(parsed.analysis)).length > 0
+            ) {
+                return renderIndependentSolvingResult(parsed, trimmed);
             }
-            {
-                const extracted = extractFinalAnswerFromText(trimmed);
-                if (extracted) {
-                    return renderIndependentSolvingAnswer(extracted);
-                }
-            }
-            return <span className="ai-result-empty">无法解析答案</span>;
             break;
         case "final_verdict":
+            if (
+                readBooleanLike(parsed.is_answer_consistent) !== null ||
+                readBooleanLike(parsed.has_extra_info) !== null ||
+                readBooleanLike(parsed.is_logic_forced) !== null ||
+                readTextValue(parsed.final_verdict).length > 0
+            ) {
+                return renderDeepAlignmentResult(parsed);
+            }
             if (parsed.status === "Pass" || parsed.status === "Fail") {
-                return renderFinalVerdictResult(parsed);
+                return renderLegacyFinalVerdictResult(parsed);
             }
             break;
     }

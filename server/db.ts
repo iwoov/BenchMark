@@ -960,7 +960,10 @@ export function updateFileStateAIResults(
     if (!parsedState || typeof parsedState !== "object") {
         return null;
     }
-    const state = parsedState as { rows?: Array<Record<string, unknown>> };
+    const state = parsedState as {
+        rows?: Array<Record<string, unknown>>;
+        clientStateVersion?: unknown;
+    };
     if (!Array.isArray(state.rows)) {
         return null;
     }
@@ -992,6 +995,13 @@ export function updateFileStateAIResults(
     if (updatedCount === 0) {
         return 0;
     }
+
+    const currentVersion =
+        typeof state.clientStateVersion === "number" &&
+        Number.isFinite(state.clientStateVersion)
+            ? Math.trunc(state.clientStateVersion)
+            : 0;
+    state.clientStateVersion = Math.max(Date.now(), currentVersion + 1);
 
     db.prepare(
         "UPDATE file_states SET state_json = ?, updated_at = CURRENT_TIMESTAMP WHERE file_id = ?",
