@@ -209,6 +209,8 @@ export interface ParsedAIResult extends Record<string, unknown> {
     status?: "Pass" | "Fail" | string;
     discrepancy_detail?: string;
     is_answer_consistent?: boolean | string;
+    superior_answer?: "expert" | "ai" | "tie" | string | null;
+    inconsistency_analysis?: string;
     has_extra_info?: boolean | string;
     extra_info_details?: string;
     is_logic_forced?: boolean | string;

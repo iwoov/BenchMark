@@ -64,6 +64,26 @@ function getVerdictBadgeClass(verdict: string): string {
     return "badge-invalid";
 }
 
+function formatSuperiorAnswer(value: string): string {
+    if (value === "expert") {
+        return "专家更准确";
+    }
+    if (value === "ai") {
+        return "AI更准确";
+    }
+    if (value === "tie") {
+        return "双方各有问题";
+    }
+    return value;
+}
+
+function getSuperiorAnswerBadgeClass(value: string): string {
+    if (value === "tie") {
+        return "badge-warning";
+    }
+    return "badge-neutral";
+}
+
 function getRiskBadgeClass(level: string): string {
     if (level === "低") {
         return "badge-valid";
@@ -243,6 +263,8 @@ function renderLegacyFinalVerdictResult(parsed: Record<string, unknown>) {
 
 function renderDeepAlignmentResult(parsed: Record<string, unknown>) {
     const isAnswerConsistent = readBooleanLike(parsed.is_answer_consistent);
+    const superiorAnswer = readTextValue(parsed.superior_answer);
+    const inconsistencyAnalysis = readTextValue(parsed.inconsistency_analysis);
     const hasExtraInfo = readBooleanLike(parsed.has_extra_info);
     const extraInfoDetails = readTextValue(parsed.extra_info_details);
     const isLogicForced = readBooleanLike(parsed.is_logic_forced);
@@ -257,6 +279,14 @@ function renderDeepAlignmentResult(parsed: Record<string, unknown>) {
                         className={`ai-result-badge ${isAnswerConsistent ? "badge-valid" : "badge-invalid"}`}
                     >
                         {isAnswerConsistent ? "答案一致" : "答案不一致"}
+                    </span>
+                ) : null}
+                {isAnswerConsistent === false &&
+                hasMeaningfulText(superiorAnswer) ? (
+                    <span
+                        className={`ai-result-badge ${getSuperiorAnswerBadgeClass(superiorAnswer)}`}
+                    >
+                        {formatSuperiorAnswer(superiorAnswer)}
                     </span>
                 ) : null}
                 {hasExtraInfo !== null ? (
@@ -281,6 +311,13 @@ function renderDeepAlignmentResult(parsed: Record<string, unknown>) {
                     </span>
                 ) : null}
             </div>
+            {isAnswerConsistent === false
+                ? renderInfoBlock(
+                      "不一致分析",
+                      inconsistencyAnalysis,
+                      "warning",
+                  )
+                : null}
             {hasExtraInfo === true
                 ? renderInfoBlock("额外信息详情", extraInfoDetails, "warning")
                 : null}
