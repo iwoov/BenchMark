@@ -114,7 +114,7 @@ function App() {
         activeFile,
         selectedRowId,
         setSelectedRowId,
-        defaultPageSize: LIST_PAGE_SIZE_OPTIONS[1],
+        defaultPageSize: LIST_PAGE_SIZE_OPTIONS[2],
     });
 
     const {
