@@ -9,6 +9,11 @@ type ImportableFileState = ParsedWorkbook & {
     sourceFileName?: string;
     selectedDisplayColumnKeys?: string[];
     selectedEditableColumnKeys?: string[];
+    filterConditions?: Array<{
+        id?: string;
+        columnKey?: string;
+        value?: string;
+    }>;
     selectedFilterColumnKeys?: string[];
     columnFilterValues?: Record<string, string>;
 };
@@ -54,6 +59,38 @@ function toSafeStringRecord(value: unknown): Record<string, string> {
         }
     });
     return result;
+}
+
+function toSafeFilterConditions(
+    value: unknown,
+): Array<{ id: string; columnKey: string; value: string }> {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .map((item, index) => {
+            if (!isRecord(item)) {
+                return null;
+            }
+            if (
+                typeof item.columnKey !== "string" ||
+                typeof item.value !== "string"
+            ) {
+                return null;
+            }
+            return {
+                id:
+                    typeof item.id === "string" && item.id.trim().length > 0
+                        ? item.id
+                        : `${item.columnKey}-${index + 1}`,
+                columnKey: item.columnKey,
+                value: item.value,
+            };
+        })
+        .filter(
+            (item): item is { id: string; columnKey: string; value: string } =>
+                item !== null,
+        );
 }
 
 function normalizeRowAIResults(value: unknown): Record<string, string> {
@@ -259,6 +296,7 @@ function normalizeFileState(value: unknown): ImportableFileState | null {
             value.selectedFilterColumnKeys,
         ),
         columnFilterValues: toSafeStringRecord(value.columnFilterValues),
+        filterConditions: toSafeFilterConditions(value.filterConditions),
     };
 }
 
@@ -572,6 +610,9 @@ export function mergeImportedFileState(
             toSafeStringRecord(existingStateRecord.columnFilterValues),
         ).filter(([key]) => validColumnKeys.has(key)),
     );
+    const rawFilterConditions = toSafeFilterConditions(
+        existingStateRecord.filterConditions,
+    ).filter((condition) => validColumnKeys.has(condition.columnKey));
 
     const level1Key = findColumnKeyByNormalizedTitle(mergedColumns, "level1");
     const level2Key = findColumnKeyByNormalizedTitle(mergedColumns, "level2");
@@ -600,16 +641,27 @@ export function mergeImportedFileState(
         nextState.selectedEditableColumnKeys = selectedEditableColumnKeys;
     }
     if (
-        Array.isArray(existingStateRecord.selectedFilterColumnKeys) ||
-        selectedFilterColumnKeys.length > 0
+        Array.isArray(existingStateRecord.filterConditions) ||
+        rawFilterConditions.length > 0
     ) {
-        nextState.selectedFilterColumnKeys = selectedFilterColumnKeys;
-    }
-    if (
-        isRecord(existingStateRecord.columnFilterValues) ||
-        Object.keys(columnFilterValues).length > 0
-    ) {
-        nextState.columnFilterValues = columnFilterValues;
+        nextState.filterConditions = rawFilterConditions;
+    } else {
+        const legacyFilterConditions = selectedFilterColumnKeys
+            .map((key, index) => {
+                const value = columnFilterValues[key];
+                if (typeof value !== "string" || value.trim().length === 0) {
+                    return null;
+                }
+                return {
+                    id: `legacy-${key}-${index + 1}`,
+                    columnKey: key,
+                    value,
+                };
+            })
+            .filter((item) => item !== null);
+        if (legacyFilterConditions.length > 0) {
+            nextState.filterConditions = legacyFilterConditions;
+        }
     }
 
     return {

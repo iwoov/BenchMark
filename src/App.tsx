@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-    ALL_FILTER_VALUE,
     AI_RUN_ALL_KEY,
     AI_RUN_ALL_LABEL,
     AI_RUN_STAGE_ORDER,
     AI_STAGE_LABELS,
-    EMPTY_FILTER_LABEL,
-    EMPTY_FILTER_VALUE,
-    NON_EMPTY_FILTER_LABEL,
-    NON_EMPTY_FILTER_VALUE,
     LIST_PAGE_SIZE_OPTIONS,
     MAX_AI_BATCH_CONCURRENCY,
     MIN_AI_BATCH_CONCURRENCY,
@@ -24,6 +19,7 @@ import { AIProfileModal } from "./app/components/AIProfileModal";
 import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
 import { AIRunModal } from "./app/components/AIRunModal";
 import { ImageLightbox } from "./app/components/ImageLightbox";
+import { FilterConfigModal } from "./app/components/FilterConfigModal";
 import { IconFile } from "./app/icons";
 import { useTheme } from "./app/hooks/useTheme";
 import { getInitialRoute, useRouteState } from "./app/hooks/useRouteState";
@@ -40,6 +36,7 @@ function App() {
     const [errorMessage, setErrorMessage] = useState<string>("");
     const [showHiddenFields, setShowHiddenFields] = useState(false);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
     const [latexRenderOverrides, setLatexRenderOverrides] = useState<
         Record<string, boolean>
     >({});
@@ -62,7 +59,6 @@ function App() {
         uploadInputRef,
         pendingFile,
         pendingSelectedDisplayKeys,
-        pendingSelectedFilterKeys,
         pendingEditableColumnKeys,
         pendingConfigNotice,
         pendingConfigMode,
@@ -73,15 +69,14 @@ function App() {
         updateRowAIResult,
         onEditCell,
         onToggleDisplayColumn,
-        onColumnFilterChange,
+        onUpdateFilterConditions,
+        onClearFilterConditions,
         onOpenActiveFileConfig,
         onTogglePendingDisplayColumn,
-        onTogglePendingFilterColumn,
         onTogglePendingEditableColumn,
         onPendingSelectAllDisplayColumns,
         onPendingClearDisplayColumns,
         onPendingClearEditableColumns,
-        onPendingClearFilterColumns,
         onCancelPendingFile,
         onConfirmPendingFile,
         onUploadClick,
@@ -98,8 +93,6 @@ function App() {
         totalListPages,
         paginatedRows,
         visibleRows,
-        filterColumns,
-        filterOptionsMap,
         displayColumns,
         hiddenColumns,
         selectedRow,
@@ -277,75 +270,32 @@ function App() {
                                     {activeSection === "list" ? (
                                         <div className="list-toolbar">
                                             <div className="filter-bar">
-                                                {filterColumns.map((column) => {
-                                                    const options =
-                                                        filterOptionsMap.get(
-                                                            column.key,
-                                                        ) ?? [];
-                                                    return (
-                                                        <div
-                                                            className="filter-group"
-                                                            key={column.key}
-                                                        >
-                                                            <label
-                                                                htmlFor={`filter-${column.key}`}
-                                                            >
-                                                                {column.title}
-                                                            </label>
-                                                            <select
-                                                                id={`filter-${column.key}`}
-                                                                value={
-                                                                    activeFile
-                                                                        .columnFilterValues[
-                                                                        column
-                                                                            .key
-                                                                    ] ??
-                                                                    ALL_FILTER_VALUE
-                                                                }
-                                                                onChange={(
-                                                                    event,
-                                                                ) =>
-                                                                    onColumnFilterChange(
-                                                                        column.key,
-                                                                        event
-                                                                            .target
-                                                                            .value,
-                                                                    )
-                                                                }
-                                                            >
-                                                                <option
-                                                                    value={
-                                                                        ALL_FILTER_VALUE
-                                                                    }
-                                                                >
-                                                                    {
-                                                                        ALL_FILTER_VALUE
-                                                                    }
-                                                                </option>
-                                                                {options.map(
-                                                                    (item) => (
-                                                                        <option
-                                                                            key={
-                                                                                item
-                                                                            }
-                                                                            value={
-                                                                                item
-                                                                            }
-                                                                        >
-                                                                            {item ===
-                                                                            EMPTY_FILTER_VALUE
-                                                                                ? EMPTY_FILTER_LABEL
-                                                                                : item ===
-                                                                                    NON_EMPTY_FILTER_VALUE
-                                                                                  ? NON_EMPTY_FILTER_LABEL
-                                                                                  : item}
-                                                                        </option>
-                                                                    ),
-                                                                )}
-                                                            </select>
-                                                        </div>
-                                                    );
-                                                })}
+                                                <button
+                                                    type="button"
+                                                    className={`btn ${activeFile.filterConditions.length > 0 ? "btn-primary" : ""}`}
+                                                    onClick={() =>
+                                                        setIsFilterModalOpen(
+                                                            true,
+                                                        )
+                                                    }
+                                                >
+                                                    {activeFile.filterConditions
+                                                        .length > 0
+                                                        ? `筛选条件 ${activeFile.filterConditions.length}`
+                                                        : "添加筛选"}
+                                                </button>
+                                                {activeFile.filterConditions
+                                                    .length > 0 ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn"
+                                                        onClick={
+                                                            onClearFilterConditions
+                                                        }
+                                                    >
+                                                        清空筛选
+                                                    </button>
+                                                ) : null}
                                             </div>
                                             <div className="batch-bar">
                                                 <div className="batch-bar-controls">
@@ -643,19 +593,22 @@ function App() {
                 pendingConfigMode={pendingConfigMode}
                 pendingConfigNotice={pendingConfigNotice}
                 pendingSelectedDisplayKeys={pendingSelectedDisplayKeys}
-                pendingSelectedFilterKeys={pendingSelectedFilterKeys}
                 pendingEditableColumnKeys={pendingEditableColumnKeys}
                 onPendingSelectAllDisplayColumns={
                     onPendingSelectAllDisplayColumns
                 }
                 onPendingClearDisplayColumns={onPendingClearDisplayColumns}
-                onPendingClearFilterColumns={onPendingClearFilterColumns}
                 onPendingClearEditableColumns={onPendingClearEditableColumns}
                 onTogglePendingDisplayColumn={onTogglePendingDisplayColumn}
-                onTogglePendingFilterColumn={onTogglePendingFilterColumn}
                 onTogglePendingEditableColumn={onTogglePendingEditableColumn}
                 onCancelPendingFile={onCancelPendingFile}
                 onConfirmPendingFile={onConfirmPendingFile}
+            />
+            <FilterConfigModal
+                isOpen={isFilterModalOpen}
+                activeFile={activeFile}
+                onClose={() => setIsFilterModalOpen(false)}
+                onSave={onUpdateFilterConditions}
             />
 
             {/* ─── AI Stage Config Modal ─── */}

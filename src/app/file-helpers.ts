@@ -1,5 +1,6 @@
 import type {
     FileViewState,
+    FilterCondition,
     ParsedCell,
     ParsedColumn,
     ParsedFile,
@@ -7,7 +8,6 @@ import type {
     AIDetectStageKey,
 } from "../types";
 import {
-    ALL_FILTER_VALUE,
     EMPTY_FILTER_VALUE,
     NON_EMPTY_FILTER_VALUE,
     CREATOR_TITLE_ALIASES,
@@ -219,14 +219,43 @@ export function normalizeColumnSelection(
     };
 }
 
-export function normalizeFilterSelection(
+function normalizeFilterConditions(
     columns: ParsedColumn[],
-    selectedFilterColumnKeys?: string[],
-): string[] {
-    const allColumnKeys = getAllColumnKeys(columns);
-    const allowedKeys = new Set(allColumnKeys);
-    const sourceKeys = selectedFilterColumnKeys ?? [];
-    return deduplicateKeys(sourceKeys).filter((key) => allowedKeys.has(key));
+    filterConditions?: FilterCondition[],
+): FilterCondition[] {
+    const allowedKeys = new Set(getAllColumnKeys(columns));
+    if (!Array.isArray(filterConditions)) {
+        return [];
+    }
+
+    return filterConditions
+        .map((condition, index): FilterCondition | null => {
+            if (!condition || typeof condition !== "object") {
+                return null;
+            }
+            const columnKey =
+                typeof condition.columnKey === "string"
+                    ? condition.columnKey
+                    : "";
+            const value =
+                typeof condition.value === "string" ? condition.value : "";
+            if (!allowedKeys.has(columnKey) || value.trim().length === 0) {
+                return null;
+            }
+            const id =
+                typeof condition.id === "string" &&
+                condition.id.trim().length > 0
+                    ? condition.id
+                    : `${columnKey}-${index + 1}`;
+            return {
+                id,
+                columnKey,
+                value,
+            };
+        })
+        .filter(
+            (condition): condition is FilterCondition => condition !== null,
+        );
 }
 
 function applyEditableConfig(
@@ -246,8 +275,7 @@ export function toViewState(
     parsed: ParsedFile,
     selectedDisplayColumnKeys?: string[],
     selectedEditableColumnKeys?: string[],
-    selectedFilterColumnKeys?: string[],
-    filterValues?: Record<string, string>,
+    filterConditions?: FilterCondition[],
 ): FileViewState {
     const cleanedParsed = stripLegacyAIResultColumn(parsed);
     const normalized = normalizeColumnSelection(
@@ -255,16 +283,6 @@ export function toViewState(
         selectedDisplayColumnKeys,
         selectedEditableColumnKeys,
     );
-    const normalizedFilterKeys = normalizeFilterSelection(
-        cleanedParsed.columns,
-        selectedFilterColumnKeys,
-    );
-    const columnFilterValues: Record<string, string> = {};
-    normalizedFilterKeys.forEach((key) => {
-        const value = filterValues?.[key];
-        columnFilterValues[key] =
-            typeof value === "string" ? value : ALL_FILTER_VALUE;
-    });
     return {
         ...cleanedParsed,
         columns: applyEditableConfig(
@@ -273,8 +291,10 @@ export function toViewState(
         ),
         selectedDisplayColumnKeys: normalized.displayKeys,
         selectedEditableColumnKeys: normalized.editableKeys,
-        selectedFilterColumnKeys: normalizedFilterKeys,
-        columnFilterValues,
+        filterConditions: normalizeFilterConditions(
+            cleanedParsed.columns,
+            filterConditions,
+        ),
     };
 }
 
@@ -282,31 +302,22 @@ export function applyColumnConfigToFile(
     file: FileViewState,
     selectedDisplayColumnKeys: string[],
     selectedEditableColumnKeys: string[],
-    selectedFilterColumnKeys: string[],
 ): FileViewState {
     const normalized = normalizeColumnSelection(
         file.columns,
         selectedDisplayColumnKeys,
         selectedEditableColumnKeys,
     );
-    const normalizedFilterKeys = normalizeFilterSelection(
-        file.columns,
-        selectedFilterColumnKeys,
-    );
-    const nextFilterValues: Record<string, string> = {};
-    normalizedFilterKeys.forEach((key) => {
-        const value = file.columnFilterValues?.[key];
-        nextFilterValues[key] =
-            typeof value === "string" ? value : ALL_FILTER_VALUE;
-    });
 
     return {
         ...file,
         columns: applyEditableConfig(file.columns, normalized.editableKeys),
         selectedDisplayColumnKeys: normalized.displayKeys,
         selectedEditableColumnKeys: normalized.editableKeys,
-        selectedFilterColumnKeys: normalizedFilterKeys,
-        columnFilterValues: nextFilterValues,
+        filterConditions: normalizeFilterConditions(
+            file.columns,
+            file.filterConditions,
+        ),
     };
 }
 
@@ -329,6 +340,35 @@ function toSafeStringRecord(value: unknown): Record<string, string> {
         }
     });
     return result;
+}
+
+function toSafeFilterConditions(value: unknown): FilterCondition[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .map((item, index): FilterCondition | null => {
+            if (!item || typeof item !== "object") {
+                return null;
+            }
+            const candidate = item as Partial<FilterCondition>;
+            if (
+                typeof candidate.columnKey !== "string" ||
+                typeof candidate.value !== "string"
+            ) {
+                return null;
+            }
+            return {
+                id:
+                    typeof candidate.id === "string" &&
+                    candidate.id.trim().length > 0
+                        ? candidate.id
+                        : `${candidate.columnKey}-${index + 1}`,
+                columnKey: candidate.columnKey,
+                value: candidate.value,
+            };
+        })
+        .filter((item): item is FilterCondition => item !== null);
 }
 
 function normalizeRowAIResults(
@@ -485,6 +525,8 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
 
     const candidate = value as Partial<FileViewState> & {
         selectedOptionalColumnKeys?: unknown;
+        selectedFilterColumnKeys?: unknown;
+        columnFilterValues?: unknown;
         level1Filter?: unknown;
         level2Filter?: unknown;
         timeFilter?: unknown;
@@ -602,19 +644,15 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         : cleanedParsed.columns
               .filter((column) => column.editable)
               .map((column) => column.key);
-    const filterKeysFromState = Array.isArray(
-        candidate.selectedFilterColumnKeys,
-    )
-        ? toSafeStringArray(candidate.selectedFilterColumnKeys)
-        : undefined;
-    const rawFilterValues = toSafeStringRecord(candidate.columnFilterValues);
+    const filterConditionsFromState = toSafeFilterConditions(
+        (candidate as { filterConditions?: unknown }).filterConditions,
+    );
 
     const normalized = toViewState(
         cleanedParsed,
         displayKeysFromState,
         editableKeysFromState,
-        filterKeysFromState,
-        rawFilterValues,
+        filterConditionsFromState,
     );
     const legacyFilterValues: Record<string, string> = {};
     const legacyLevel1Key = getLevelColumnKey(cleanedParsed.columns, "level1");
@@ -631,27 +669,43 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
     if (typeof candidate.timeFilter === "string" && legacyTimeKey) {
         legacyFilterValues[legacyTimeKey] = candidate.timeFilter;
     }
-    const mergedFilterValues = {
-        ...normalized.columnFilterValues,
-        ...legacyFilterValues,
-    };
-    const mergedFilterKeys =
-        normalized.selectedFilterColumnKeys.length > 0
-            ? normalized.selectedFilterColumnKeys
-            : normalizeFilterSelection(
-                  columns,
-                  Object.keys(legacyFilterValues),
-              );
+    const legacyFilterConditions = Object.entries(legacyFilterValues).map(
+        ([columnKey, value], index): FilterCondition => ({
+            id: `legacy-${columnKey}-${index + 1}`,
+            columnKey,
+            value,
+        }),
+    );
+    const selectedFilterColumnKeys = Array.isArray(
+        candidate.selectedFilterColumnKeys,
+    )
+        ? toSafeStringArray(candidate.selectedFilterColumnKeys)
+        : [];
+    const rawFilterValues = toSafeStringRecord(candidate.columnFilterValues);
+    const legacySelectedFilterConditions = selectedFilterColumnKeys
+        .map((key, index): FilterCondition | null => {
+            const value = rawFilterValues[key];
+            if (typeof value !== "string" || value.trim().length === 0) {
+                return null;
+            }
+            return {
+                id: `legacy-selected-${key}-${index + 1}`,
+                columnKey: key,
+                value,
+            };
+        })
+        .filter((item): item is FilterCondition => item !== null);
+    const mergedFilterConditions =
+        normalized.filterConditions.length > 0
+            ? normalized.filterConditions
+            : legacyFilterConditions.length > 0
+              ? legacyFilterConditions
+              : legacySelectedFilterConditions;
     return {
         ...normalized,
-        selectedFilterColumnKeys: mergedFilterKeys,
-        columnFilterValues: mergedFilterKeys.reduce<Record<string, string>>(
-            (acc, key) => {
-                const value = mergedFilterValues[key];
-                acc[key] = typeof value === "string" ? value : ALL_FILTER_VALUE;
-                return acc;
-            },
-            {},
+        filterConditions: normalizeFilterConditions(
+            cleanedParsed.columns,
+            mergedFilterConditions,
         ),
     };
 }

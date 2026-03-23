@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AIDetectStageKey, FileViewState, ParsedFile } from "../../types";
+import type {
+    AIDetectStageKey,
+    FileViewState,
+    FilterCondition,
+    ParsedFile,
+} from "../../types";
 import type { ColumnPrefsConfig, MainSection, SettingsSection } from "../types";
 import { AI_STAGE_ORDER } from "../constants";
 import {
@@ -9,7 +14,6 @@ import {
     getFieldSignature,
     getFileNameFromDisposition,
     normalizeColumnSelection,
-    normalizeFilterSelection,
     normalizeLoadedFileState,
     toViewState,
 } from "../file-helpers";
@@ -38,9 +42,6 @@ export const useFileStore = ({
     const [pendingFile, setPendingFile] = useState<ParsedFile | null>(null);
     const [pendingSelectedDisplayKeys, setPendingSelectedDisplayKeys] =
         useState<string[]>([]);
-    const [pendingSelectedFilterKeys, setPendingSelectedFilterKeys] = useState<
-        string[]
-    >([]);
     const [pendingEditableColumnKeys, setPendingEditableColumnKeys] = useState<
         string[]
     >([]);
@@ -406,7 +407,6 @@ export const useFileStore = ({
                 fieldSignature: getFieldSignature(file.columns),
                 displayKeys: file.selectedDisplayColumnKeys,
                 editableKeys: file.selectedEditableColumnKeys,
-                filterKeys: file.selectedFilterColumnKeys,
             }),
         }).catch(() => {});
     };
@@ -414,7 +414,6 @@ export const useFileStore = ({
     const resetPendingConfigState = () => {
         setPendingFile(null);
         setPendingSelectedDisplayKeys([]);
-        setPendingSelectedFilterKeys([]);
         setPendingEditableColumnKeys([]);
         setPendingConfigNotice("");
         setPendingConfigMode("import");
@@ -426,7 +425,6 @@ export const useFileStore = ({
         }
         setPendingFile(activeFile);
         setPendingSelectedDisplayKeys(activeFile.selectedDisplayColumnKeys);
-        setPendingSelectedFilterKeys(activeFile.selectedFilterColumnKeys);
         setPendingEditableColumnKeys(activeFile.selectedEditableColumnKeys);
         setPendingConfigNotice("");
         setPendingConfigMode("edit");
@@ -474,18 +472,6 @@ export const useFileStore = ({
         });
     };
 
-    const onTogglePendingFilterColumn = (columnKey: string) => {
-        if (!pendingFile) {
-            return;
-        }
-        setPendingSelectedFilterKeys((previous) => {
-            const exists = previous.includes(columnKey);
-            return exists
-                ? previous.filter((key) => key !== columnKey)
-                : [...previous, columnKey];
-        });
-    };
-
     const onPendingSelectAllDisplayColumns = () => {
         if (!pendingFile) {
             return;
@@ -500,10 +486,6 @@ export const useFileStore = ({
 
     const onPendingClearEditableColumns = () => {
         setPendingEditableColumnKeys([]);
-    };
-
-    const onPendingClearFilterColumns = () => {
-        setPendingSelectedFilterKeys([]);
     };
 
     const onCancelPendingFile = () => {
@@ -521,7 +503,6 @@ export const useFileStore = ({
                     file,
                     pendingSelectedDisplayKeys,
                     pendingEditableColumnKeys,
-                    pendingSelectedFilterKeys,
                 );
                 persistColumnPrefs(nextFile);
                 return nextFile;
@@ -534,7 +515,6 @@ export const useFileStore = ({
             pendingFile,
             pendingSelectedDisplayKeys,
             pendingEditableColumnKeys,
-            pendingSelectedFilterKeys,
         );
         setFiles((previous) => [...previous, nextFile]);
         setActiveFileId(nextFile.fileId);
@@ -565,22 +545,29 @@ export const useFileStore = ({
                 ...file,
                 selectedDisplayColumnKeys: normalized.displayKeys,
                 selectedEditableColumnKeys: normalized.editableKeys,
-                selectedFilterColumnKeys: file.selectedFilterColumnKeys,
-                columnFilterValues: file.columnFilterValues,
+                filterConditions: file.filterConditions,
             };
             persistColumnPrefs(nextFile);
             return nextFile;
         });
     };
 
-    const onColumnFilterChange = (columnKey: string, value: string) => {
+    const onUpdateFilterConditions = (filterConditions: FilterCondition[]) => {
         patchActiveFile((file) => ({
             ...file,
-            columnFilterValues: {
-                ...file.columnFilterValues,
-                [columnKey]: value,
-            },
+            filterConditions,
         }));
+    };
+
+    const onClearFilterConditions = () => {
+        patchActiveFile((file) =>
+            file.filterConditions.length === 0
+                ? file
+                : {
+                      ...file,
+                      filterConditions: [],
+                  },
+        );
     };
 
     const onExportFile = async () => {
@@ -750,7 +737,6 @@ export const useFileStore = ({
             const defaultDisplayKeys = getAllColumnKeys(parsed.columns);
             let initialDisplayKeys = defaultDisplayKeys;
             let initialEditableKeys: string[] = [];
-            let initialFilterKeys = normalizeFilterSelection(parsed.columns);
             let shouldShowColumnModal = true;
             let nextPendingNotice = "";
             const prefsFileName = parsed.sourceFileName ?? parsed.fileName;
@@ -769,10 +755,6 @@ export const useFileStore = ({
                             prefsData.config.displayKeys,
                             prefsData.config.editableKeys,
                         );
-                        const normalizedFilterKeys = normalizeFilterSelection(
-                            parsed.columns,
-                            prefsData.config.filterKeys,
-                        );
                         const currentSignature = getFieldSignature(
                             parsed.columns,
                         );
@@ -783,7 +765,6 @@ export const useFileStore = ({
                                 parsed,
                                 normalizedSaved.displayKeys,
                                 normalizedSaved.editableKeys,
-                                normalizedFilterKeys,
                             );
                             setFiles((previous) => [...previous, nextFile]);
                             setActiveFileId(nextFile.fileId);
@@ -794,7 +775,6 @@ export const useFileStore = ({
                                 "检测到该 Excel 字段与已保存配置不一致，请重新选择并保存新配置。";
                             initialDisplayKeys = normalizedSaved.displayKeys;
                             initialEditableKeys = normalizedSaved.editableKeys;
-                            initialFilterKeys = normalizedFilterKeys;
                         }
                     }
                 }
@@ -805,7 +785,6 @@ export const useFileStore = ({
             if (shouldShowColumnModal) {
                 setPendingFile(parsed);
                 setPendingSelectedDisplayKeys(initialDisplayKeys);
-                setPendingSelectedFilterKeys(initialFilterKeys);
                 setPendingEditableColumnKeys(initialEditableKeys);
                 setPendingConfigNotice(nextPendingNotice);
                 setPendingConfigMode("import");
@@ -844,7 +823,6 @@ export const useFileStore = ({
         uploadInputRef,
         pendingFile,
         pendingSelectedDisplayKeys,
-        pendingSelectedFilterKeys,
         pendingEditableColumnKeys,
         pendingConfigNotice,
         pendingConfigMode,
@@ -858,15 +836,14 @@ export const useFileStore = ({
         updateRowAIResult,
         onEditCell,
         onToggleDisplayColumn,
-        onColumnFilterChange,
+        onUpdateFilterConditions,
+        onClearFilterConditions,
         onOpenActiveFileConfig,
         onTogglePendingDisplayColumn,
-        onTogglePendingFilterColumn,
         onTogglePendingEditableColumn,
         onPendingSelectAllDisplayColumns,
         onPendingClearDisplayColumns,
         onPendingClearEditableColumns,
-        onPendingClearFilterColumns,
         onCancelPendingFile,
         onConfirmPendingFile,
         onUploadClick,

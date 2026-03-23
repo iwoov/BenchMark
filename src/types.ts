@@ -30,11 +30,16 @@ export interface ParsedFile {
     level2Options: string[];
 }
 
+export interface FilterCondition {
+    id: string;
+    columnKey: string;
+    value: string;
+}
+
 export interface FileViewState extends ParsedFile {
     selectedDisplayColumnKeys: string[];
     selectedEditableColumnKeys: string[];
-    selectedFilterColumnKeys: string[];
-    columnFilterValues: Record<string, string>;
+    filterConditions: FilterCondition[];
 }
 
 export type AIDetectStageKey =

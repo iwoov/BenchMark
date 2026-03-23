@@ -1,11 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { FileViewState, ParsedColumn } from "../../types";
-import {
-    ALL_FILTER_VALUE,
-    EMPTY_FILTER_VALUE,
-    NON_EMPTY_FILTER_VALUE,
-} from "../constants";
-import { getDistinctOptions, getCellText } from "../file-helpers";
+import type { FileViewState } from "../../types";
+import { EMPTY_FILTER_VALUE, NON_EMPTY_FILTER_VALUE } from "../constants";
+import { getCellText } from "../file-helpers";
 
 export const useListView = ({
     activeFile,
@@ -23,31 +19,6 @@ export const useListView = ({
     const [batchSelectedRowIds, setBatchSelectedRowIds] = useState<string[]>(
         [],
     );
-
-    const filterColumns = useMemo(() => {
-        if (!activeFile) {
-            return [];
-        }
-        return activeFile.selectedFilterColumnKeys
-            .map((key) =>
-                activeFile.columns.find((column) => column.key === key),
-            )
-            .filter((column): column is ParsedColumn => Boolean(column));
-    }, [activeFile]);
-
-    const filterOptionsMap = useMemo(() => {
-        if (!activeFile) {
-            return new Map<string, string[]>();
-        }
-        const map = new Map<string, string[]>();
-        filterColumns.forEach((column) => {
-            map.set(
-                column.key,
-                getDistinctOptions(activeFile.rows, column.key),
-            );
-        });
-        return map;
-    }, [activeFile, filterColumns]);
 
     const displayColumns = useMemo(() => {
         if (!activeFile) {
@@ -73,14 +44,13 @@ export const useListView = ({
         }
 
         return activeFile.rows.filter((row) => {
-            for (const column of filterColumns) {
-                const filterValue =
-                    activeFile.columnFilterValues[column.key] ??
-                    ALL_FILTER_VALUE;
-                if (filterValue === ALL_FILTER_VALUE) {
+            for (const condition of activeFile.filterConditions) {
+                const columnKey = condition.columnKey;
+                const filterValue = condition.value.trim();
+                if (columnKey.length === 0 || filterValue.length === 0) {
                     continue;
                 }
-                const value = getCellText(row, column.key).trim();
+                const value = getCellText(row, columnKey).trim();
                 if (filterValue === EMPTY_FILTER_VALUE) {
                     if (value.length !== 0) {
                         return false;
@@ -99,7 +69,7 @@ export const useListView = ({
             }
             return true;
         });
-    }, [activeFile, filterColumns]);
+    }, [activeFile]);
 
     const totalListPages = Math.max(
         1,
@@ -112,12 +82,7 @@ export const useListView = ({
 
     useEffect(() => {
         setListPage(1);
-    }, [
-        activeFile?.fileId,
-        activeFile?.selectedFilterColumnKeys,
-        activeFile?.columnFilterValues,
-        listPageSize,
-    ]);
+    }, [activeFile?.fileId, activeFile?.filterConditions, listPageSize]);
 
     useEffect(() => {
         if (listPage > totalListPages) {
@@ -199,8 +164,6 @@ export const useListView = ({
         totalListPages,
         paginatedRows,
         visibleRows,
-        filterColumns,
-        filterOptionsMap,
         displayColumns,
         hiddenColumns,
         selectedRow,
