@@ -1,11 +1,20 @@
-import type { ReactNode } from "react";
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+    type ReactNode,
+} from "react";
 import type { AIDetectStageKey, ParsedColumn, ParsedRow } from "../../types";
 import {
     extractAIResultFinalAnswer,
     parseAIResultJSON,
     readBooleanLike,
 } from "../ai-helpers";
-import { IconChevron } from "../icons";
+import { getCellImageSources, normalizeHeaderTitle } from "../file-helpers";
+import { IconChevron, IconCopy } from "../icons";
 import {
     AI_RUN_ALL_LABEL,
     AI_STAGE_LABELS,
@@ -92,6 +101,42 @@ function getRiskBadgeClass(level: string): string {
         return "badge-warning";
     }
     return "badge-invalid";
+}
+
+async function normalizeImageBlobForClipboard(blob: Blob): Promise<Blob> {
+    if (blob.type === "image/png") {
+        return blob;
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const nextImage = new Image();
+            nextImage.onload = () => resolve(nextImage);
+            nextImage.onerror = () => reject(new Error("image decode failed"));
+            nextImage.src = objectUrl;
+        });
+
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth || image.width;
+        canvas.height = image.naturalHeight || image.height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+            throw new Error("canvas context unavailable");
+        }
+
+        context.drawImage(image, 0, 0);
+        const pngBlob = await new Promise<Blob | null>((resolve) => {
+            canvas.toBlob(resolve, "image/png");
+        });
+        if (!pngBlob) {
+            throw new Error("png encode failed");
+        }
+
+        return pngBlob;
+    } finally {
+        URL.revokeObjectURL(objectUrl);
+    }
 }
 
 function renderPrecheckResult(parsed: Record<string, unknown>) {
@@ -385,6 +430,302 @@ function renderAIResultContent(stageKey: AIDetectStageKey, content: string) {
     return <pre className="ai-result-raw">{trimmed}</pre>;
 }
 
+const QUESTION_FIELD_TITLE_ALIASES = [
+    "题目",
+    "题干",
+    "题目文本",
+    "问题",
+    "question",
+] as const;
+const OPTION_FIELD_TITLE_ALIASES = [
+    "选项",
+    "备选项",
+    "options",
+    "choices",
+] as const;
+const REASONING_FIELD_TITLE_ALIASES = [
+    "解题过程",
+    "解析",
+    "解答过程",
+    "答案解析",
+    "reasoning",
+    "analysis",
+    "solution",
+] as const;
+const ANSWER_FIELD_TITLE_ALIASES = ["答案", "正确答案", "answer"] as const;
+
+function matchesDetailFieldAlias(
+    title: string,
+    aliases: readonly string[],
+): boolean {
+    const normalizedTitle = normalizeHeaderTitle(title);
+    return aliases.some((alias) =>
+        normalizedTitle.includes(normalizeHeaderTitle(alias)),
+    );
+}
+
+function matchesExactDetailFieldAlias(
+    title: string,
+    aliases: readonly string[],
+): boolean {
+    const normalizedTitle = normalizeHeaderTitle(title);
+    return aliases.some(
+        (alias) => normalizedTitle === normalizeHeaderTitle(alias),
+    );
+}
+
+function isAnswerColumn(column: ParsedColumn): boolean {
+    return matchesExactDetailFieldAlias(
+        column.title,
+        ANSWER_FIELD_TITLE_ALIASES,
+    );
+}
+
+function isReasoningColumn(column: ParsedColumn): boolean {
+    return matchesDetailFieldAlias(column.title, REASONING_FIELD_TITLE_ALIASES);
+}
+
+function isSourceColumn(column: ParsedColumn): boolean {
+    const normalizedTitle = normalizeHeaderTitle(column.title);
+    return (
+        normalizedTitle.includes(normalizeHeaderTitle("题目来源")) ||
+        normalizedTitle === normalizeHeaderTitle("source")
+    );
+}
+
+function getProblemTextColumnPriority(column: ParsedColumn): number {
+    if (isSourceColumn(column)) {
+        return Number.POSITIVE_INFINITY;
+    }
+    if (matchesDetailFieldAlias(column.title, QUESTION_FIELD_TITLE_ALIASES)) {
+        return 0;
+    }
+    if (matchesDetailFieldAlias(column.title, OPTION_FIELD_TITLE_ALIASES)) {
+        return 1;
+    }
+    if (isReasoningColumn(column)) {
+        return 2;
+    }
+    return Number.POSITIVE_INFINITY;
+}
+
+function isProblemTextColumn(column: ParsedColumn): boolean {
+    if (isSourceColumn(column)) {
+        return false;
+    }
+    return (
+        matchesDetailFieldAlias(column.title, QUESTION_FIELD_TITLE_ALIASES) ||
+        matchesDetailFieldAlias(column.title, OPTION_FIELD_TITLE_ALIASES) ||
+        isReasoningColumn(column)
+    );
+}
+
+function isImageColumn(row: ParsedRow, column: ParsedColumn): boolean {
+    const cell = row.values[column.key];
+    return (
+        cell?.type === "image" &&
+        typeof cell.src === "string" &&
+        cell.src.length > 0
+    );
+}
+
+function DraggableImagePanel({
+    children,
+    canDrag,
+    zoomLevel,
+    panelId,
+}: {
+    children: ReactNode;
+    canDrag: boolean;
+    zoomLevel: number;
+    panelId: string;
+}) {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const dragStateRef = useRef<{
+        active: boolean;
+        startX: number;
+        startY: number;
+        scrollLeft: number;
+        scrollTop: number;
+        target: HTMLElement | null;
+        moved: boolean;
+    }>({
+        active: false,
+        startX: 0,
+        startY: 0,
+        scrollLeft: 0,
+        scrollTop: 0,
+        target: null,
+        moved: false,
+    });
+    const suppressClickRef = useRef(false);
+    const [isDragging, setIsDragging] = useState(false);
+
+    useEffect(() => {
+        if (!canDrag) {
+            dragStateRef.current.active = false;
+            dragStateRef.current.target = null;
+            setIsDragging(false);
+        }
+    }, [canDrag]);
+
+    useEffect(() => {
+        const detailValue = containerRef.current?.querySelector(
+            ".detail-value",
+        ) as HTMLElement | null;
+        const imageCell = containerRef.current?.querySelector(
+            ".image-cell",
+        ) as HTMLElement | null;
+        const image = containerRef.current?.querySelector(
+            ".image-cell img",
+        ) as HTMLImageElement | null;
+        const caption = containerRef.current?.querySelector(
+            ".image-cell span",
+        ) as HTMLElement | null;
+        if (!detailValue || !imageCell || !image) {
+            return;
+        }
+
+        const applyImageSize = () => {
+            if (!image.naturalWidth || !image.naturalHeight) {
+                return;
+            }
+
+            const horizontalPadding = 24;
+            const verticalPadding = 20;
+            const captionHeight = caption ? caption.offsetHeight + 6 : 0;
+            const availableWidth = Math.max(
+                120,
+                detailValue.clientWidth - horizontalPadding,
+            );
+            const availableHeight = Math.max(
+                120,
+                detailValue.clientHeight - verticalPadding - captionHeight,
+            );
+            const fitScale = Math.min(
+                1,
+                availableWidth / image.naturalWidth,
+                availableHeight / image.naturalHeight,
+            );
+            const baseWidth = image.naturalWidth * fitScale;
+            const baseHeight = image.naturalHeight * fitScale;
+            const scaledWidth = baseWidth * (zoomLevel / 100);
+            const scaledHeight = baseHeight * (zoomLevel / 100);
+
+            image.style.width = `${scaledWidth}px`;
+            image.style.height = `${scaledHeight}px`;
+            imageCell.style.minWidth = `${scaledWidth}px`;
+            imageCell.style.minHeight = `${scaledHeight + captionHeight}px`;
+
+            if (!canDrag) {
+                detailValue.scrollLeft = 0;
+                detailValue.scrollTop = 0;
+                return;
+            }
+
+            detailValue.scrollLeft = Math.max(
+                0,
+                (detailValue.scrollWidth - detailValue.clientWidth) / 2,
+            );
+            detailValue.scrollTop = Math.max(
+                0,
+                (detailValue.scrollHeight - detailValue.clientHeight) / 2,
+            );
+        };
+
+        applyImageSize();
+        image.addEventListener("load", applyImageSize);
+        const resizeObserver = new ResizeObserver(() => {
+            applyImageSize();
+        });
+        resizeObserver.observe(detailValue);
+
+        return () => {
+            image.removeEventListener("load", applyImageSize);
+            resizeObserver.disconnect();
+        };
+    }, [canDrag, panelId, zoomLevel]);
+
+    useEffect(() => {
+        const handleMouseMove = (event: MouseEvent) => {
+            if (!dragStateRef.current.active || !dragStateRef.current.target) {
+                return;
+            }
+            const deltaX = event.clientX - dragStateRef.current.startX;
+            const deltaY = event.clientY - dragStateRef.current.startY;
+            if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
+                dragStateRef.current.moved = true;
+            }
+            dragStateRef.current.target.scrollLeft =
+                dragStateRef.current.scrollLeft - deltaX;
+            dragStateRef.current.target.scrollTop =
+                dragStateRef.current.scrollTop - deltaY;
+        };
+
+        const handleMouseUp = () => {
+            if (!dragStateRef.current.active) {
+                return;
+            }
+            suppressClickRef.current = dragStateRef.current.moved;
+            dragStateRef.current.active = false;
+            dragStateRef.current.target = null;
+            dragStateRef.current.moved = false;
+            setIsDragging(false);
+        };
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, []);
+
+    const handleMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+        if (!canDrag || event.button !== 0) {
+            return;
+        }
+        const detailValue = containerRef.current?.querySelector(
+            ".detail-value",
+        ) as HTMLElement | null;
+        if (!detailValue) {
+            return;
+        }
+        dragStateRef.current = {
+            active: true,
+            startX: event.clientX,
+            startY: event.clientY,
+            scrollLeft: detailValue.scrollLeft,
+            scrollTop: detailValue.scrollTop,
+            target: detailValue,
+            moved: false,
+        };
+        setIsDragging(true);
+        event.preventDefault();
+    };
+
+    const handleClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
+        if (!suppressClickRef.current) {
+            return;
+        }
+
+        suppressClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
+    return (
+        <div
+            ref={containerRef}
+            className={`detail-hero-image-panel ${canDrag ? "can-drag" : ""} ${isDragging ? "is-dragging" : ""}`}
+            onMouseDown={handleMouseDown}
+            onClickCapture={handleClickCapture}
+        >
+            {children}
+        </div>
+    );
+}
+
 interface DetailPageProps {
     selectedRow: ParsedRow | null;
     displayColumns: ParsedColumn[];
@@ -414,6 +755,13 @@ export function DetailPage({
     renderDetailField,
     aiResults,
 }: DetailPageProps) {
+    const [detailImageZoom, setDetailImageZoom] = useState(100);
+    const [isCopyingImage, setIsCopyingImage] = useState(false);
+    const [copyImageFeedback, setCopyImageFeedback] = useState<{
+        tone: "success" | "error";
+        text: string;
+    } | null>(null);
+
     if (!selectedRow) {
         return (
             <div className="record-list-empty">
@@ -421,6 +769,170 @@ export function DetailPage({
             </div>
         );
     }
+
+    const problemTextColumns = useMemo(
+        () =>
+            [...displayColumns]
+                .filter(
+                    (column) =>
+                        !isImageColumn(selectedRow, column) &&
+                        isProblemTextColumn(column),
+                )
+                .sort(
+                    (left, right) =>
+                        getProblemTextColumnPriority(left) -
+                        getProblemTextColumnPriority(right),
+                ),
+        [displayColumns, selectedRow],
+    );
+    const imageColumns = useMemo(
+        () =>
+            displayColumns.filter((column) =>
+                isImageColumn(selectedRow, column),
+            ),
+        [displayColumns, selectedRow],
+    );
+    const sourceColumns = useMemo(
+        () => displayColumns.filter((column) => isSourceColumn(column)),
+        [displayColumns],
+    );
+    const heroColumnKeys = useMemo(
+        () =>
+            new Set(
+                [...problemTextColumns, ...imageColumns].map(
+                    (column) => column.key,
+                ),
+            ),
+        [imageColumns, problemTextColumns],
+    );
+    const baseRegularDisplayColumns = useMemo(
+        () =>
+            displayColumns.filter(
+                (column) =>
+                    !heroColumnKeys.has(column.key) &&
+                    !sourceColumns.some(
+                        (sourceColumn) => sourceColumn.key === column.key,
+                    ),
+            ),
+        [displayColumns, heroColumnKeys, sourceColumns],
+    );
+    const sourceColumnsBelowHero = useMemo(
+        () =>
+            problemTextColumns.some((column) => isAnswerColumn(column))
+                ? sourceColumns
+                : [],
+        [problemTextColumns, sourceColumns],
+    );
+    const regularDisplayColumns = useMemo(() => {
+        if (sourceColumnsBelowHero.length > 0) {
+            return baseRegularDisplayColumns;
+        }
+
+        const answerIndex = baseRegularDisplayColumns.findIndex((column) =>
+            isAnswerColumn(column),
+        );
+        if (answerIndex < 0 || sourceColumns.length === 0) {
+            return [...baseRegularDisplayColumns, ...sourceColumns];
+        }
+
+        const nextColumns = [...baseRegularDisplayColumns];
+        nextColumns.splice(answerIndex + 1, 0, ...sourceColumns);
+        return nextColumns;
+    }, [
+        baseRegularDisplayColumns,
+        sourceColumns,
+        sourceColumnsBelowHero.length,
+    ]);
+    const hasHeroLayout =
+        problemTextColumns.length > 0 || imageColumns.length > 0;
+    const firstImageSrc = useMemo(() => {
+        for (const column of imageColumns) {
+            const imageSources = getCellImageSources(
+                selectedRow.values[column.key],
+            );
+            if (imageSources.length > 0) {
+                return imageSources[0];
+            }
+        }
+        return null;
+    }, [imageColumns, selectedRow]);
+
+    useEffect(() => {
+        setDetailImageZoom(100);
+        setIsCopyingImage(false);
+        setCopyImageFeedback(null);
+    }, [selectedRow.rowId]);
+
+    useEffect(() => {
+        if (!copyImageFeedback) {
+            return;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            setCopyImageFeedback(null);
+        }, 2400);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [copyImageFeedback]);
+
+    const decreaseImageZoom = () => {
+        setDetailImageZoom((previous) => Math.max(50, previous - 25));
+    };
+
+    const increaseImageZoom = () => {
+        setDetailImageZoom((previous) => Math.min(250, previous + 25));
+    };
+
+    const copyFirstImage = async () => {
+        if (!firstImageSrc || isCopyingImage) {
+            return;
+        }
+
+        try {
+            setIsCopyingImage(true);
+            setCopyImageFeedback(null);
+
+            const response = await fetch(firstImageSrc);
+            if (!response.ok) {
+                throw new Error(`copy image failed: ${response.status}`);
+            }
+
+            const imageBlob = await response.blob();
+            if (
+                !navigator.clipboard?.write ||
+                typeof ClipboardItem === "undefined"
+            ) {
+                setCopyImageFeedback({
+                    tone: "error",
+                    text: window.isSecureContext
+                        ? "当前浏览器不支持脚本复制图片，请右键图片复制"
+                        : "当前页面不是安全上下文，请用 localhost/https 打开",
+                });
+                return;
+            }
+
+            const clipboardBlob =
+                await normalizeImageBlobForClipboard(imageBlob);
+            await navigator.clipboard.write([
+                new ClipboardItem({
+                    "image/png": clipboardBlob,
+                }),
+            ]);
+
+            setCopyImageFeedback({
+                tone: "success",
+                text: "已复制第一张图片",
+            });
+        } catch (error) {
+            console.error("[DetailImageCopy] failed", error);
+            setCopyImageFeedback({
+                tone: "error",
+                text: "复制图片失败",
+            });
+        } finally {
+            setIsCopyingImage(false);
+        }
+    };
 
     return (
         <section className="record-detail standalone-record-detail">
@@ -499,7 +1011,119 @@ export function DetailPage({
                 <span>点击字段左侧勾选框可控制显示/隐藏</span>
             </div>
             <div className="detail-fields">
-                {displayColumns.map((column) =>
+                {hasHeroLayout ? (
+                    <section className="detail-problem-layout">
+                        <div className="detail-problem-main">
+                            <div
+                                className="detail-problem-main-grid"
+                                style={
+                                    {
+                                        "--detail-problem-row-count":
+                                            problemTextColumns.length,
+                                    } as CSSProperties
+                                }
+                            >
+                                {problemTextColumns.map((column) =>
+                                    renderDetailField(column, false),
+                                )}
+                            </div>
+                        </div>
+                        <div className="detail-problem-side">
+                            {imageColumns.length > 0 ? (
+                                <>
+                                    <div className="detail-problem-side-head">
+                                        <div className="detail-problem-side-title">
+                                            <strong>题目图片</strong>
+                                            {copyImageFeedback ? (
+                                                <span
+                                                    className={`detail-copy-feedback tone-${copyImageFeedback.tone}`}
+                                                    role="status"
+                                                >
+                                                    {copyImageFeedback.text}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <div className="detail-image-toolbar">
+                                            <button
+                                                type="button"
+                                                className="btn btn-ghost detail-image-copy-btn"
+                                                onClick={() =>
+                                                    void copyFirstImage()
+                                                }
+                                                disabled={
+                                                    !firstImageSrc ||
+                                                    isCopyingImage
+                                                }
+                                                aria-label="复制第一张题目图片"
+                                                title="复制第一张题目图片"
+                                            >
+                                                <IconCopy />
+                                            </button>
+                                            <div className="detail-image-zoom-controls">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost"
+                                                    onClick={decreaseImageZoom}
+                                                    disabled={
+                                                        detailImageZoom <= 50
+                                                    }
+                                                >
+                                                    -
+                                                </button>
+                                                <span>{`${detailImageZoom}%`}</span>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost"
+                                                    onClick={() =>
+                                                        setDetailImageZoom(100)
+                                                    }
+                                                >
+                                                    100%
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost"
+                                                    onClick={increaseImageZoom}
+                                                    disabled={
+                                                        detailImageZoom >= 250
+                                                    }
+                                                >
+                                                    +
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div
+                                        className="detail-problem-image-panels"
+                                        style={
+                                            {
+                                                "--detail-image-scale": `${detailImageZoom / 100}`,
+                                            } as CSSProperties
+                                        }
+                                    >
+                                        {imageColumns.map((column) => (
+                                            <DraggableImagePanel
+                                                key={`${selectedRow.rowId}_${column.key}_hero`}
+                                                canDrag={detailImageZoom > 100}
+                                                zoomLevel={detailImageZoom}
+                                                panelId={`${selectedRow.rowId}_${column.key}`}
+                                            >
+                                                {renderDetailField(
+                                                    column,
+                                                    false,
+                                                )}
+                                            </DraggableImagePanel>
+                                        ))}
+                                    </div>
+                                </>
+                            ) : null}
+                        </div>
+                    </section>
+                ) : null}
+                {sourceColumnsBelowHero.map((column) =>
+                    renderDetailField(column, false),
+                )}
+                {regularDisplayColumns.map((column) =>
                     renderDetailField(column, false),
                 )}
                 {hiddenColumns.length > 0 ? (

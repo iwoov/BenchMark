@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { ParsedCell, ParsedColumn, ParsedRow } from "../../types";
 import {
     getCellText,
@@ -6,12 +7,55 @@ import {
     isOpensourceColumnTitle,
     isQualifiedColumnTitle,
     logUIImageRenderError,
+    normalizeHeaderTitle,
 } from "../file-helpers";
+import { IconCopy } from "../icons";
 import {
     LatexRenderer,
     hasLatexSyntax,
     shouldAutoDisplayLatex,
 } from "../latex";
+
+const QUESTION_COPY_FIELD_ALIASES = [
+    "题目",
+    "题干",
+    "题目文本",
+    "问题",
+    "question",
+] as const;
+const OPTION_COPY_FIELD_ALIASES = [
+    "选项",
+    "备选项",
+    "options",
+    "choices",
+] as const;
+const REASONING_COPY_FIELD_ALIASES = [
+    "解题过程",
+    "解析",
+    "解答过程",
+    "答案解析",
+    "reasoning",
+    "analysis",
+    "solution",
+] as const;
+
+function matchesCopyFieldAlias(
+    title: string,
+    aliases: readonly string[],
+): boolean {
+    const normalizedTitle = normalizeHeaderTitle(title);
+    return aliases.some((alias) =>
+        normalizedTitle.includes(normalizeHeaderTitle(alias)),
+    );
+}
+
+function isCopyableProblemTextColumn(column: ParsedColumn): boolean {
+    return (
+        matchesCopyFieldAlias(column.title, QUESTION_COPY_FIELD_ALIASES) ||
+        matchesCopyFieldAlias(column.title, OPTION_COPY_FIELD_ALIASES) ||
+        matchesCopyFieldAlias(column.title, REASONING_COPY_FIELD_ALIASES)
+    );
+}
 
 function getExternalUrl(value: string): string | null {
     const trimmed = value.trim();
@@ -43,6 +87,20 @@ export const useCellRenderers = ({
     getLatexToggleKey: (columnKey: string) => string;
     setPreviewImageSrc: (value: string | null) => void;
 }) => {
+    const [copiedFieldKey, setCopiedFieldKey] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!copiedFieldKey) {
+            return;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            setCopiedFieldKey(null);
+        }, 1800);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [copiedFieldKey]);
+
     const renderTextValue = (
         textValue: string,
         shouldRenderLatex: boolean,
@@ -268,6 +326,25 @@ export const useCellRenderers = ({
         const latexToggleKey = getLatexToggleKey(column.key);
         const isLatexRenderingEnabled =
             latexRenderOverrides[latexToggleKey] ?? false;
+        const copyText = typeof cell?.value === "string" ? cell.value : "";
+        const canCopyFieldText =
+            !isHidden &&
+            isCopyableProblemTextColumn(column) &&
+            copyText.trim().length > 0;
+        const isFieldCopied = copiedFieldKey === column.key;
+
+        const handleCopyFieldText = async () => {
+            if (!canCopyFieldText || !navigator.clipboard?.writeText) {
+                return;
+            }
+
+            try {
+                await navigator.clipboard.writeText(copyText);
+                setCopiedFieldKey(column.key);
+            } catch (error) {
+                console.error("[DetailFieldCopy] failed", error);
+            }
+        };
 
         return (
             <div
@@ -310,6 +387,27 @@ export const useCellRenderers = ({
                             </label>
                         ) : null}
                     </div>
+                    {canCopyFieldText ? (
+                        <div className="detail-label-actions">
+                            {isFieldCopied ? (
+                                <span
+                                    className="field-copy-feedback"
+                                    role="status"
+                                >
+                                    已复制
+                                </span>
+                            ) : null}
+                            <button
+                                type="button"
+                                className="btn btn-ghost field-copy-btn"
+                                onClick={() => void handleCopyFieldText()}
+                                aria-label={`复制${column.title}`}
+                                title={`复制${column.title}`}
+                            >
+                                <IconCopy />
+                            </button>
+                        </div>
+                    ) : null}
                     {column.editable ? (
                         <span className="field-badge badge-editable">
                             可编辑

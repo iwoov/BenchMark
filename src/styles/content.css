@@ -1008,6 +1008,182 @@
     scrollbar-color: var(--bg-elevated) transparent;
 }
 
+.detail-problem-layout {
+    --detail-problem-panel-height: clamp(320px, 62vh, 920px);
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.95fr);
+    gap: 16px;
+    align-items: stretch;
+}
+
+.detail-problem-main,
+.detail-problem-side,
+.detail-problem-image-panels {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.detail-problem-main {
+    min-height: 100%;
+}
+
+.detail-problem-main-grid {
+    display: grid;
+    grid-template-rows: repeat(
+        var(--detail-problem-row-count, 1),
+        minmax(0, 1fr)
+    );
+    gap: 8px;
+    height: var(--detail-problem-panel-height);
+    min-height: var(--detail-problem-panel-height);
+    max-height: var(--detail-problem-panel-height);
+}
+
+.detail-problem-main-grid .detail-field {
+    min-height: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.detail-problem-main-grid .detail-value {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+}
+
+.detail-problem-side-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+}
+
+.detail-problem-side-head strong {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.detail-problem-side-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.detail-copy-feedback {
+    font-size: 12px;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.detail-copy-feedback.tone-success {
+    color: var(--success);
+}
+
+.detail-copy-feedback.tone-error {
+    color: var(--warning);
+}
+
+.detail-problem-side {
+    min-height: 100%;
+}
+
+.detail-problem-image-panels {
+    flex: 1;
+    height: var(--detail-problem-panel-height);
+    min-height: var(--detail-problem-panel-height);
+    max-height: var(--detail-problem-panel-height);
+}
+
+.detail-image-toolbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.detail-image-zoom-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.detail-image-copy-btn {
+    width: 36px;
+    height: 36px;
+    justify-content: center;
+    padding: 0;
+}
+
+.detail-image-zoom-controls span {
+    min-width: 48px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.detail-hero-image-panel .detail-value {
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--detail-problem-panel-height);
+    min-height: var(--detail-problem-panel-height);
+    max-height: var(--detail-problem-panel-height);
+}
+
+.detail-hero-image-panel,
+.detail-hero-image-panel .detail-field {
+    height: 100%;
+}
+
+.detail-hero-image-panel.can-drag .detail-value {
+    cursor: grab;
+    user-select: none;
+    align-items: flex-start;
+    justify-content: flex-start;
+}
+
+.detail-hero-image-panel.is-dragging .detail-value {
+    cursor: grabbing;
+}
+
+.detail-hero-image-panel.can-drag .detail-value * {
+    user-select: none;
+}
+
+.detail-hero-image-panel.can-drag .image-cell {
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.detail-hero-image-panel .image-cell {
+    align-items: center;
+    justify-content: center;
+    min-width: max-content;
+    min-height: max-content;
+}
+
+.detail-hero-image-panel .image-cell img {
+    width: auto;
+    height: auto;
+    max-width: calc(100% * var(--detail-image-scale, 1));
+    max-height: calc(100% * var(--detail-image-scale, 1));
+    min-height: 0;
+    object-fit: contain;
+    pointer-events: auto;
+}
+
 .detail-fields::-webkit-scrollbar {
     width: 4px;
 }
@@ -1110,6 +1286,26 @@
     font-weight: 600;
     color: var(--text-primary);
     min-width: 0;
+}
+
+.detail-label-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.field-copy-feedback {
+    font-size: 12px;
+    color: var(--success);
+    white-space: nowrap;
+}
+
+.field-copy-btn {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    justify-content: center;
 }
 
 .detail-label .latex-toggle {
@@ -1424,6 +1620,7 @@
     padding: 24px;
     cursor: pointer;
     animation: lightbox-fade-in 0.2s ease;
+    overflow: auto;
 }
 
 @keyframes lightbox-fade-in {
@@ -1436,6 +1633,28 @@
     }
 }
 
+.lightbox-toolbar {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    color: #e2e8f0;
+    z-index: 101;
+}
+
+.lightbox-toolbar span {
+    min-width: 48px;
+    text-align: center;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
 .lightbox-image {
     max-width: 90vw;
     max-height: 90vh;
@@ -1444,6 +1663,8 @@
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
     cursor: default;
     animation: lightbox-scale-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    transform-origin: center center;
+    transition: transform var(--transition-fast);
 }
 
 @keyframes lightbox-scale-in {
@@ -1684,6 +1905,62 @@
 .filter-condition-field select:focus {
     border-color: var(--accent);
     outline: none;
+}
+
+@media (max-width: 1100px) {
+    .detail-problem-layout {
+        --detail-problem-panel-height: clamp(260px, 46vh, 760px);
+        grid-template-columns: 1fr;
+    }
+
+    .detail-hero-image-panel .image-cell img {
+        max-width: calc(100% * var(--detail-image-scale, 1));
+        max-height: calc(100% * var(--detail-image-scale, 1));
+    }
+}
+
+@media (max-width: 720px) {
+    .detail-problem-main-grid {
+        grid-template-rows: none;
+        min-height: auto;
+        max-height: none;
+        height: auto;
+    }
+
+    .detail-problem-main-grid .detail-field {
+        height: auto;
+    }
+
+    .detail-problem-main-grid .detail-value {
+        flex: initial;
+    }
+
+    .detail-problem-side-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .detail-problem-side-title {
+        width: 100%;
+        justify-content: space-between;
+        flex-wrap: wrap;
+    }
+
+    .detail-image-toolbar {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .detail-image-zoom-controls {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .lightbox-toolbar {
+        left: 12px;
+        right: 60px;
+        justify-content: center;
+    }
 }
 
 .ai-config-modal {
