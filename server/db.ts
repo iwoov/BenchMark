@@ -49,6 +49,7 @@ type AIProvider =
     | "modelrouter-openai"
     | "modelrouter-gemini";
 type AIReasoningEffort = "low" | "medium" | "high";
+export type AIProviderApiType = "openai" | "gemini" | "anthropic";
 export type AIDetectStageKey =
     | "precheck"
     | "context_audit"
@@ -64,6 +65,8 @@ const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
+const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
+const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
 
 function sanitizeBackupLabel(value: string): string {
     const normalized = value.trim().replace(/\s+/g, "_");
@@ -326,6 +329,56 @@ function ensureAIDetectConfigTable(): void {
     normalizeAIDetectActiveFlag();
 }
 
+function createAIProviderEndpointTable(): void {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_provider_endpoints (
+      name TEXT PRIMARY KEY,
+      api_type TEXT NOT NULL,
+      api_url TEXT NOT NULL,
+      api_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
+function createAIModelRouteTable(): void {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_model_routes (
+      name TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      reasoning_effort TEXT NOT NULL DEFAULT 'high',
+      retry_count INTEGER NOT NULL DEFAULT ${DEFAULT_AI_RETRY_COUNT},
+      steps_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
+function createFileAIStageConfigTable(): void {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS file_ai_stage_configs (
+      file_name TEXT PRIMARY KEY,
+      stages_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
+function ensureAIRoutingTables(): void {
+    createAIProviderEndpointTable();
+    createAIModelRouteTable();
+    createFileAIStageConfigTable();
+}
+
+function createSyncDatabaseBackup(label: string): string {
+    const fileName = `${formatBackupTimestamp(new Date())}-${sanitizeBackupLabel(label)}.db`;
+    const destination = path.join(backupDir, fileName);
+    fs.copyFileSync(dbPath, destination);
+    return destination;
+}
+
 const tableColumns = db
     .prepare("PRAGMA table_info(column_prefs)")
     .all() as Array<{ name: string }>;
@@ -349,6 +402,8 @@ if (!hasFilterKeysColumn) {
     db.exec("ALTER TABLE column_prefs ADD COLUMN filter_keys TEXT");
 }
 ensureAIDetectConfigTable();
+ensureAIRoutingTables();
+migrateLegacyAIConfigToRoutingTables();
 
 export interface ColumnPrefsConfig {
     fieldSignature: string;
@@ -410,6 +465,33 @@ interface LegacyAIDetectStageConfig {
     retryCount: number;
 }
 
+export interface AIProviderEndpointConfig {
+    name: string;
+    apiType: AIProviderApiType;
+    apiUrl: string;
+    apiKey: string;
+    updatedAt?: string;
+}
+
+export interface AIModelRouteStepConfig {
+    providerName: string;
+}
+
+export interface AIModelRouteConfig {
+    name: string;
+    model: string;
+    reasoningEffort: AIReasoningEffort;
+    retryCount: number;
+    steps: AIModelRouteStepConfig[];
+    updatedAt?: string;
+}
+
+export interface FileAIStageConfig {
+    routeName: string;
+    submitFieldKeys: string[];
+    prompt: string;
+}
+
 function parseJsonStringArray(value: string | null | undefined): string[] {
     if (!value) {
         return [];
@@ -434,6 +516,26 @@ function normalizeReasoningEffort(
         return value;
     }
     return "high";
+}
+
+function normalizeProviderApiType(
+    value: unknown,
+    fallback: AIProviderApiType = "openai",
+): AIProviderApiType {
+    if (value === "openai" || value === "gemini" || value === "anthropic") {
+        return value;
+    }
+    if (
+        value === "modelrouter-openai" ||
+        value === "idealab" ||
+        value === "openai-compatible"
+    ) {
+        return "openai";
+    }
+    if (value === "modelrouter-gemini" || value === "vertex") {
+        return "gemini";
+    }
+    return fallback;
 }
 
 function normalizeAIProvider(value: string | null | undefined): AIProvider {
@@ -488,6 +590,36 @@ function normalizeRetryCount(value: number | null | undefined): number {
         return MAX_AI_RETRY_COUNT;
     }
     return value;
+}
+
+function normalizeRouteStepList(
+    value: unknown,
+    fallbackProviderName: string,
+): AIModelRouteStepConfig[] {
+    if (!Array.isArray(value)) {
+        return [{ providerName: fallbackProviderName }];
+    }
+
+    const steps = value
+        .map((item) => {
+            if (!item || typeof item !== "object") {
+                return null;
+            }
+            const providerName = (item as { providerName?: unknown })
+                .providerName;
+            if (
+                typeof providerName !== "string" ||
+                providerName.trim().length === 0
+            ) {
+                return null;
+            }
+            return {
+                providerName: providerName.trim(),
+            };
+        })
+        .filter((item): item is AIModelRouteStepConfig => item !== null);
+
+    return steps.length > 0 ? steps : [{ providerName: fallbackProviderName }];
 }
 
 function normalizeStageProvider(
@@ -1322,6 +1454,450 @@ export function setAIDetectActiveConfig(
     ).run(normalizedName, normalizedName, fileName);
 
     return true;
+}
+
+function normalizeProviderEndpointConfig(
+    value: unknown,
+    fallback?: AIProviderEndpointConfig,
+): AIProviderEndpointConfig {
+    const defaultValue =
+        fallback ??
+        ({
+            name: DEFAULT_AI_PROVIDER_NAME,
+            apiType: "openai",
+            apiUrl: "",
+            apiKey: "",
+        } as AIProviderEndpointConfig);
+    if (!value || typeof value !== "object") {
+        return { ...defaultValue };
+    }
+    const candidate = value as Partial<AIProviderEndpointConfig>;
+    return {
+        name:
+            typeof candidate.name === "string" && candidate.name.trim().length > 0
+                ? candidate.name.trim()
+                : defaultValue.name,
+        apiType: normalizeProviderApiType(candidate.apiType, defaultValue.apiType),
+        apiUrl:
+            typeof candidate.apiUrl === "string" ? candidate.apiUrl : defaultValue.apiUrl,
+        apiKey:
+            typeof candidate.apiKey === "string" ? candidate.apiKey : defaultValue.apiKey,
+        updatedAt:
+            typeof candidate.updatedAt === "string"
+                ? candidate.updatedAt
+                : defaultValue.updatedAt,
+    };
+}
+
+function normalizeModelRouteConfig(
+    value: unknown,
+    fallbackProviderName: string,
+    fallback?: AIModelRouteConfig,
+): AIModelRouteConfig {
+    const defaultValue =
+        fallback ??
+        ({
+            name: DEFAULT_AI_ROUTE_NAME,
+            model: "",
+            reasoningEffort: "high",
+            retryCount: DEFAULT_AI_RETRY_COUNT,
+            steps: [{ providerName: fallbackProviderName }],
+        } as AIModelRouteConfig);
+    if (!value || typeof value !== "object") {
+        return {
+            ...defaultValue,
+            steps: defaultValue.steps.map((step) => ({ ...step })),
+        };
+    }
+    const candidate = value as Partial<AIModelRouteConfig>;
+    return {
+        name:
+            typeof candidate.name === "string" && candidate.name.trim().length > 0
+                ? candidate.name.trim()
+                : defaultValue.name,
+        model:
+            typeof candidate.model === "string" && candidate.model.trim().length > 0
+                ? candidate.model
+                : defaultValue.model,
+        reasoningEffort:
+            candidate.reasoningEffort === "low" ||
+            candidate.reasoningEffort === "medium" ||
+            candidate.reasoningEffort === "high"
+                ? candidate.reasoningEffort
+                : defaultValue.reasoningEffort,
+        retryCount: normalizeRetryCount(
+            typeof candidate.retryCount === "number" ? candidate.retryCount : null,
+        ),
+        steps: normalizeRouteStepList(candidate.steps, fallbackProviderName),
+        updatedAt:
+            typeof candidate.updatedAt === "string"
+                ? candidate.updatedAt
+                : defaultValue.updatedAt,
+    };
+}
+
+function normalizeFileStageConfig(
+    value: unknown,
+    fallbackRouteName: string,
+    fallback: AIDetectStageConfig,
+): FileAIStageConfig {
+    if (!value || typeof value !== "object") {
+        return {
+            routeName: fallbackRouteName,
+            submitFieldKeys: [...fallback.submitFieldKeys],
+            prompt: fallback.prompt,
+        };
+    }
+    const candidate = value as Partial<FileAIStageConfig> & {
+        profileName?: unknown;
+        routeName?: unknown;
+    };
+    const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
+        ? candidate.submitFieldKeys.filter(
+              (item): item is string => typeof item === "string",
+          )
+        : [...fallback.submitFieldKeys];
+    const routeName =
+        typeof candidate.routeName === "string" && candidate.routeName.trim().length > 0
+            ? candidate.routeName.trim()
+            : typeof candidate.profileName === "string" &&
+                candidate.profileName.trim().length > 0
+              ? candidate.profileName.trim()
+              : fallbackRouteName;
+    return {
+        routeName,
+        submitFieldKeys,
+        prompt:
+            typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
+                ? candidate.prompt
+                : fallback.prompt,
+    };
+}
+
+function parseFileStageConfigMap(
+    value: string | null | undefined,
+    fallbackRouteName: string,
+): Record<AIDetectStageKey, FileAIStageConfig> {
+    let parsed: Record<string, unknown> = {};
+    if (value) {
+        try {
+            const candidate = JSON.parse(value) as unknown;
+            if (candidate && typeof candidate === "object") {
+                parsed = candidate as Record<string, unknown>;
+            }
+        } catch {
+            parsed = {};
+        }
+    }
+    const stages = {} as Record<AIDetectStageKey, FileAIStageConfig>;
+    AI_STAGE_ORDER.forEach((stageKey) => {
+        stages[stageKey] = normalizeFileStageConfig(
+            parsed[stageKey],
+            fallbackRouteName,
+            {
+                profileName: fallbackRouteName,
+                submitFieldKeys: [],
+                prompt: "",
+                resultFieldKey: "",
+            },
+        );
+    });
+    return stages;
+}
+
+export function listAIProviderEndpoints(): AIProviderEndpointConfig[] {
+    const rows = db
+        .prepare(
+            `SELECT name, api_type, api_url, api_key, updated_at
+             FROM ai_provider_endpoints
+             ORDER BY datetime(updated_at) DESC, name ASC`,
+        )
+        .all() as Array<{
+        name: string;
+        api_type: string;
+        api_url: string;
+        api_key: string;
+        updated_at: string;
+    }>;
+    return rows.map((row) =>
+        normalizeProviderEndpointConfig({
+            name: row.name,
+            apiType: row.api_type,
+            apiUrl: row.api_url,
+            apiKey: row.api_key,
+            updatedAt: row.updated_at,
+        }),
+    );
+}
+
+export function saveAIProviderEndpoints(
+    providers: AIProviderEndpointConfig[],
+): void {
+    const tx = db.transaction(() => {
+        db.prepare("DELETE FROM ai_provider_endpoints").run();
+        const stmt = db.prepare(
+            `INSERT INTO ai_provider_endpoints (
+                name, api_type, api_url, api_key, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        );
+        providers.forEach((provider) => {
+            const normalized = normalizeProviderEndpointConfig(provider);
+            stmt.run(
+                normalized.name,
+                normalized.apiType,
+                normalized.apiUrl,
+                normalized.apiKey,
+            );
+        });
+    });
+    tx();
+}
+
+export function listAIModelRoutes(): AIModelRouteConfig[] {
+    const rows = db
+        .prepare(
+            `SELECT name, model, reasoning_effort, retry_count, steps_json, updated_at
+             FROM ai_model_routes
+             ORDER BY datetime(updated_at) DESC, name ASC`,
+        )
+        .all() as Array<{
+        name: string;
+        model: string;
+        reasoning_effort: string;
+        retry_count: number;
+        steps_json: string;
+        updated_at: string;
+    }>;
+
+    return rows.map((row) =>
+        normalizeModelRouteConfig(
+            {
+                name: row.name,
+                model: row.model,
+                reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+                retryCount: row.retry_count,
+                steps: JSON.parse(row.steps_json) as unknown,
+                updatedAt: row.updated_at,
+            },
+            DEFAULT_AI_PROVIDER_NAME,
+        ),
+    );
+}
+
+export function saveAIModelRoutes(routes: AIModelRouteConfig[]): void {
+    const tx = db.transaction(() => {
+        db.prepare("DELETE FROM ai_model_routes").run();
+        const stmt = db.prepare(
+            `INSERT INTO ai_model_routes (
+                name, model, reasoning_effort, retry_count, steps_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        );
+        routes.forEach((route) => {
+            const fallbackProviderName =
+                route.steps[0]?.providerName ?? DEFAULT_AI_PROVIDER_NAME;
+            const normalized = normalizeModelRouteConfig(
+                route,
+                fallbackProviderName,
+            );
+            stmt.run(
+                normalized.name,
+                normalized.model,
+                normalized.reasoningEffort,
+                normalized.retryCount,
+                JSON.stringify(normalized.steps),
+            );
+        });
+    });
+    tx();
+}
+
+export function getFileAIStageConfigs(
+    fileName: string,
+): Record<AIDetectStageKey, FileAIStageConfig> {
+    const row = db
+        .prepare(
+            `SELECT stages_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as { stages_json: string } | undefined;
+
+    return parseFileStageConfigMap(row?.stages_json, DEFAULT_AI_ROUTE_NAME);
+}
+
+export function saveFileAIStageConfigs(
+    fileName: string,
+    stages: Record<AIDetectStageKey, FileAIStageConfig>,
+): void {
+    db.prepare(
+        `INSERT INTO file_ai_stage_configs (file_name, stages_json, updated_at)
+         VALUES (?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_name) DO UPDATE SET
+           stages_json = excluded.stages_json,
+           updated_at = CURRENT_TIMESTAMP`,
+    ).run(fileName, JSON.stringify(stages));
+}
+
+export function findAIProviderEndpointByName(
+    name: string,
+): AIProviderEndpointConfig | null {
+    const row = db
+        .prepare(
+            `SELECT name, api_type, api_url, api_key, updated_at
+             FROM ai_provider_endpoints
+             WHERE name = ?`,
+        )
+        .get(name) as
+        | {
+              name: string;
+              api_type: string;
+              api_url: string;
+              api_key: string;
+              updated_at: string;
+          }
+        | undefined;
+    if (!row) {
+        return null;
+    }
+    return normalizeProviderEndpointConfig({
+        name: row.name,
+        apiType: row.api_type,
+        apiUrl: row.api_url,
+        apiKey: row.api_key,
+        updatedAt: row.updated_at,
+    });
+}
+
+export function findAIModelRouteByName(name: string): AIModelRouteConfig | null {
+    const row = db
+        .prepare(
+            `SELECT name, model, reasoning_effort, retry_count, steps_json, updated_at
+             FROM ai_model_routes
+             WHERE name = ?`,
+        )
+        .get(name) as
+        | {
+              name: string;
+              model: string;
+              reasoning_effort: string;
+              retry_count: number;
+              steps_json: string;
+              updated_at: string;
+          }
+        | undefined;
+    if (!row) {
+        return null;
+    }
+    return normalizeModelRouteConfig(
+        {
+            name: row.name,
+            model: row.model,
+            reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+            retryCount: row.retry_count,
+            steps: JSON.parse(row.steps_json) as unknown,
+            updatedAt: row.updated_at,
+        },
+        DEFAULT_AI_PROVIDER_NAME,
+    );
+}
+
+function legacyProviderToApiType(provider: AIProvider): AIProviderApiType {
+    if (provider === "gemini" || provider === "modelrouter-gemini") {
+        return "gemini";
+    }
+    return "openai";
+}
+
+function buildLegacyMigrationName(fileName: string, itemName: string): string {
+    const trimmedItem = itemName.trim() || "default";
+    return `${fileName} / ${trimmedItem}`;
+}
+
+function migrateLegacyAIConfigToRoutingTables(): void {
+    const providerCountRow = db
+        .prepare("SELECT COUNT(1) AS count FROM ai_provider_endpoints")
+        .get() as { count: number };
+    const routeCountRow = db
+        .prepare("SELECT COUNT(1) AS count FROM ai_model_routes")
+        .get() as { count: number };
+    const stageCountRow = db
+        .prepare("SELECT COUNT(1) AS count FROM file_ai_stage_configs")
+        .get() as { count: number };
+    if (
+        Number(providerCountRow.count) > 0 ||
+        Number(routeCountRow.count) > 0 ||
+        Number(stageCountRow.count) > 0
+    ) {
+        return;
+    }
+
+    const fileRows = db
+        .prepare("SELECT DISTINCT file_name FROM ai_configs ORDER BY file_name ASC")
+        .all() as Array<{ file_name: string }>;
+    if (fileRows.length === 0) {
+        return;
+    }
+
+    createSyncDatabaseBackup("ai-routing-migration");
+
+    const providers = new Map<string, AIProviderEndpointConfig>();
+    const routes = new Map<string, AIModelRouteConfig>();
+    const stagesByFile = new Map<
+        string,
+        Record<AIDetectStageKey, FileAIStageConfig>
+    >();
+
+    fileRows.forEach(({ file_name: fileName }) => {
+        const { configs, activeConfigName } = listAIDetectConfigs(fileName);
+        const activeConfig =
+            configs.find((item) => item.name === activeConfigName) ?? configs[0];
+        if (!activeConfig) {
+            return;
+        }
+
+        const routeNameByProfileName = new Map<string, string>();
+        activeConfig.profiles.forEach((profileItem) => {
+            const providerName = buildLegacyMigrationName(
+                fileName,
+                profileItem.name,
+            );
+            providers.set(providerName, {
+                name: providerName,
+                apiType: legacyProviderToApiType(profileItem.profile.provider),
+                apiUrl: profileItem.profile.url,
+                apiKey: profileItem.profile.apiKey,
+            });
+            routes.set(providerName, {
+                name: providerName,
+                model: profileItem.profile.model,
+                reasoningEffort: profileItem.profile.reasoningEffort,
+                retryCount: profileItem.profile.retryCount,
+                steps: [{ providerName }],
+            });
+            routeNameByProfileName.set(profileItem.name, providerName);
+        });
+
+        const stageMap = {} as Record<AIDetectStageKey, FileAIStageConfig>;
+        AI_STAGE_ORDER.forEach((stageKey) => {
+            const stage = activeConfig.stages[stageKey];
+            const routeName =
+                routeNameByProfileName.get(stage.profileName) ??
+                Array.from(routeNameByProfileName.values())[0] ??
+                DEFAULT_AI_ROUTE_NAME;
+            stageMap[stageKey] = {
+                routeName,
+                submitFieldKeys: [...stage.submitFieldKeys],
+                prompt: stage.prompt,
+            };
+        });
+        stagesByFile.set(fileName, stageMap);
+    });
+
+    saveAIProviderEndpoints(Array.from(providers.values()));
+    saveAIModelRoutes(Array.from(routes.values()));
+    stagesByFile.forEach((stages, fileName) => {
+        saveFileAIStageConfigs(fileName, stages);
+    });
 }
 
 export default db;

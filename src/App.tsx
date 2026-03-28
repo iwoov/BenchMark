@@ -16,6 +16,7 @@ import { DetailPage } from "./app/components/DetailPage";
 import { SettingsPage } from "./app/components/SettingsPage";
 import { ColumnConfigModal } from "./app/components/ColumnConfigModal";
 import { AIProfileModal } from "./app/components/AIProfileModal";
+import { AIRouteModal } from "./app/components/AIRouteModal";
 import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
 import { AIRunModal } from "./app/components/AIRunModal";
 import { ImageLightbox } from "./app/components/ImageLightbox";
@@ -120,6 +121,7 @@ function App() {
         aiConfigSaving,
         isAIStageConfigModalOpen,
         isAIProfileModalOpen,
+        isAIRouteModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -142,11 +144,14 @@ function App() {
         isAIDetecting,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
+        onOpenAIRouteModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
+        onCancelAIRouteModal,
         onToggleDraftAISubmitField,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
+        onSaveAIRouteConfig,
         onRunAIDetect,
         onRunAllAIDetect,
         onRunBatchAIAnswer,
@@ -579,6 +584,9 @@ function App() {
                                             onOpenAIProfileModal={
                                                 onOpenAIProfileModal
                                             }
+                                            onOpenAIRouteModal={
+                                                onOpenAIRouteModal
+                                            }
                                         />
                                     </section>
                                 ) : null}
@@ -634,6 +642,16 @@ function App() {
                 aiConfigSaving={aiConfigSaving}
                 onCancel={onCancelAIProfileModal}
                 onSave={onSaveAIProfileConfig}
+            />
+            <AIRouteModal
+                isOpen={isAIRouteModalOpen}
+                activeFile={activeFile}
+                aiConfigFormMessage={aiConfigFormMessage}
+                draftAIConfig={draftAIConfig}
+                setDraftAIConfig={setDraftAIConfig}
+                aiConfigSaving={aiConfigSaving}
+                onCancel={onCancelAIRouteModal}
+                onSave={onSaveAIRouteConfig}
             />
             <AIRunModal
                 isOpen={isAIRunModalOpen}

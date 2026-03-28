@@ -4,10 +4,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
-    DEFAULT_AI_CONFIG_NAME,
-    listAIDetectConfigs,
-    saveAIDetectConfig,
-    setAIDetectActiveConfig,
+    findAIModelRouteByName,
+    findAIProviderEndpointByName,
+    getFileAIStageConfigs,
+    listAIModelRoutes,
+    listAIProviderEndpoints,
+    saveAIModelRoutes,
+    saveAIProviderEndpoints,
+    saveFileAIStageConfigs,
+    type AIModelRouteConfig,
+    type AIProviderApiType,
+    type AIProviderEndpointConfig,
+    type FileAIStageConfig,
 } from "../db.js";
 
 function isNonEmptyString(value: unknown): value is string {
@@ -15,35 +23,25 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 type AIReasoningEffort = "low" | "medium" | "high";
-type AIProvider =
-    | "openai"
-    | "gemini"
-    | "modelrouter-openai"
-    | "modelrouter-gemini";
+type AIProvider = "openai" | "gemini" | "anthropic";
 type AIDetectStageKey =
     | "precheck"
     | "context_audit"
     | "independent_solving"
     | "final_verdict";
-type AIDetectStageConfig = {
-    profileName: string;
-    submitFieldKeys: string[];
-    prompt: string;
-    resultFieldKey: string;
+type AIRouteStep = {
+    providerName: string;
 };
-type AIDetectProfile = {
-    provider: AIProvider;
-    url: string;
+type AIRoute = {
+    name: string;
     model: string;
-    modelProvider?: string;
-    modelName?: string;
-    apiKey: string;
     reasoningEffort: AIReasoningEffort;
     retryCount: number;
+    steps: AIRouteStep[];
 };
-type NamedAIDetectProfile = {
-    name: string;
-    profile: AIDetectProfile;
+type AIResolvedRouteStep = {
+    provider: AIProviderEndpointConfig;
+    route: AIRoute;
 };
 const AI_STAGE_ORDER: AIDetectStageKey[] = [
     "precheck",
@@ -57,7 +55,6 @@ const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
     independent_solving: "Independent Solving",
     final_verdict: "Final Verdict",
 };
-const DEFAULT_AI_PROFILE_NAME = "默认接口";
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
@@ -66,44 +63,20 @@ function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
     return value === "low" || value === "medium" || value === "high";
 }
 
-function isAIProvider(value: unknown): value is AIProvider {
-    return (
-        value === "openai" ||
-        value === "gemini" ||
-        value === "modelrouter-openai" ||
-        value === "modelrouter-gemini"
-    );
-}
-
-function inferAIProviderFromUrl(
-    provider: AIProvider,
-    url: unknown,
-): AIProvider {
-    if (typeof url !== "string") {
-        return provider;
-    }
-    const trimmed = url.trim().toLowerCase();
-    if (!trimmed) {
-        return provider;
-    }
-    if (!trimmed.includes("routify.alibaba-inc.com")) {
-        return provider;
-    }
-    if (trimmed.includes("/protocol/vertex/")) {
-        return "modelrouter-gemini";
-    }
-    if (trimmed.includes("/protocol/openai/")) {
-        return "modelrouter-openai";
-    }
-    return provider;
+function isAIProviderApiType(value: unknown): value is AIProvider {
+    return value === "openai" || value === "gemini" || value === "anthropic";
 }
 
 function isOpenAICompatibleProvider(provider: AIProvider): boolean {
-    return provider === "openai" || provider === "modelrouter-openai";
+    return provider === "openai";
 }
 
 function isGeminiCompatibleProvider(provider: AIProvider): boolean {
-    return provider === "gemini" || provider === "modelrouter-gemini";
+    return provider === "gemini";
+}
+
+function isAnthropicCompatibleProvider(provider: AIProvider): boolean {
+    return provider === "anthropic";
 }
 
 function isValidAIRetryCount(value: unknown): value is number {
@@ -285,18 +258,6 @@ const SHOULD_LOG_AI_THINKING =
 
 function formatLogTimestamp(timestamp: number): string {
     return new Date(timestamp).toISOString();
-}
-
-function summarizeAIFieldForLog(field: AIDetectField, index: number): string {
-    if (field.type === "image") {
-        const imageStatus = field.imageUrl
-            ? field.imageUrl.startsWith("data:image/")
-                ? "data-url"
-                : "remote-url"
-            : "missing";
-        return `${index + 1}.${field.title}:image(${imageStatus})`;
-    }
-    return `${index + 1}.${field.title}:text`;
 }
 
 function summarizeAIResponseForLog(text: string): string {
@@ -1267,1486 +1228,1062 @@ function buildPromptContent(
     };
 }
 
+type AttemptError = Error & {
+    status: number;
+    emitted: boolean;
+};
+
+function createAttemptError(
+    message: string,
+    status: number,
+    emitted = false,
+): AttemptError {
+    const error = new Error(message) as AttemptError;
+    error.status = status;
+    error.emitted = emitted;
+    return error;
+}
+
+function validateProviderPayload(
+    item: unknown,
+    index: number,
+): { provider?: AIProviderEndpointConfig; message?: string } {
+    if (!item || typeof item !== "object") {
+        return { message: `provider at index ${index} must be an object` };
+    }
+    const candidate = item as {
+        name?: unknown;
+        apiType?: unknown;
+        apiUrl?: unknown;
+        apiKey?: unknown;
+    };
+    if (!isNonEmptyString(candidate.name)) {
+        return { message: "provider name must be a non-empty string" };
+    }
+    if (!isAIProviderApiType(candidate.apiType)) {
+        return { message: `【${candidate.name}】apiType must be openai, gemini or anthropic` };
+    }
+    if (!isNonEmptyString(candidate.apiUrl)) {
+        return { message: `【${candidate.name}】apiUrl must be a non-empty string` };
+    }
+    if (!isNonEmptyString(candidate.apiKey)) {
+        return { message: `【${candidate.name}】apiKey must be a non-empty string` };
+    }
+    return {
+        provider: {
+            name: candidate.name.trim(),
+            apiType: candidate.apiType,
+            apiUrl: candidate.apiUrl,
+            apiKey: candidate.apiKey,
+        },
+    };
+}
+
+function validateRoutePayload(
+    item: unknown,
+    index: number,
+    providersByName: Map<string, AIProviderEndpointConfig>,
+): { route?: AIModelRouteConfig; message?: string } {
+    if (!item || typeof item !== "object") {
+        return { message: `route at index ${index} must be an object` };
+    }
+    const candidate = item as {
+        name?: unknown;
+        model?: unknown;
+        reasoningEffort?: unknown;
+        retryCount?: unknown;
+        steps?: unknown;
+    };
+    if (!isNonEmptyString(candidate.name)) {
+        return { message: "route name must be a non-empty string" };
+    }
+    if (!isNonEmptyString(candidate.model)) {
+        return { message: `【${candidate.name}】model must be a non-empty string` };
+    }
+    if (
+        candidate.reasoningEffort !== undefined &&
+        !isAIReasoningEffort(candidate.reasoningEffort)
+    ) {
+        return {
+            message: `【${candidate.name}】reasoningEffort must be low, medium or high`,
+        };
+    }
+    if (
+        candidate.retryCount !== undefined &&
+        !isValidAIRetryCount(candidate.retryCount)
+    ) {
+        return {
+            message: `【${candidate.name}】retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
+        };
+    }
+    if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
+        return { message: `【${candidate.name}】steps must be a non-empty array` };
+    }
+    const steps: AIRouteStep[] = [];
+    let routeApiType: AIProviderApiType | null = null;
+    for (const [stepIndex, step] of candidate.steps.entries()) {
+        if (!step || typeof step !== "object") {
+            return {
+                message: `【${candidate.name}】step ${stepIndex + 1} must be an object`,
+            };
+        }
+        const providerName = (step as { providerName?: unknown }).providerName;
+        if (!isNonEmptyString(providerName)) {
+            return {
+                message: `【${candidate.name}】step ${stepIndex + 1} providerName must be a non-empty string`,
+            };
+        }
+        const provider = providersByName.get(providerName.trim());
+        if (!provider) {
+            return {
+                message: `【${candidate.name}】step ${stepIndex + 1} providerName must reference an existing provider`,
+            };
+        }
+        if (!routeApiType) {
+            routeApiType = provider.apiType;
+        } else if (routeApiType !== provider.apiType) {
+            return {
+                message: `【${candidate.name}】all steps must use providers with the same apiType`,
+            };
+        }
+        steps.push({ providerName: provider.name });
+    }
+    return {
+        route: {
+            name: candidate.name.trim(),
+            model: candidate.model.trim(),
+            reasoningEffort: isAIReasoningEffort(candidate.reasoningEffort)
+                ? candidate.reasoningEffort
+                : "high",
+            retryCount: normalizeAIRetryCount(candidate.retryCount),
+            steps,
+        },
+    };
+}
+
+function getRouteApiType(
+    route: AIModelRouteConfig,
+    providersByName: Map<string, AIProviderEndpointConfig>,
+): AIProvider | null {
+    let apiType: AIProvider | null = null;
+    for (const step of route.steps) {
+        const provider = providersByName.get(step.providerName);
+        if (!provider) {
+            return null;
+        }
+        if (!apiType) {
+            apiType = provider.apiType as AIProvider;
+            continue;
+        }
+        if (apiType !== provider.apiType) {
+            return null;
+        }
+    }
+    return apiType;
+}
+
+function resolveRouteSteps(route: AIModelRouteConfig): {
+    route: AIRoute;
+    steps: AIResolvedRouteStep[];
+    apiType: AIProvider;
+} | null {
+    const steps: AIResolvedRouteStep[] = [];
+    let apiType: AIProvider | null = null;
+    for (const step of route.steps) {
+        const provider = findAIProviderEndpointByName(step.providerName);
+        if (!provider) {
+            return null;
+        }
+        const providerApiType = provider.apiType as AIProvider;
+        if (!apiType) {
+            apiType = providerApiType;
+        } else if (apiType !== providerApiType) {
+            return null;
+        }
+        steps.push({
+            provider,
+            route: {
+                name: route.name,
+                model: route.model,
+                reasoningEffort: route.reasoningEffort,
+                retryCount: route.retryCount,
+                steps: route.steps.map((item) => ({ providerName: item.providerName })),
+            },
+        });
+    }
+    if (!apiType || steps.length === 0) {
+        return null;
+    }
+    return {
+        route: steps[0].route,
+        steps,
+        apiType,
+    };
+}
+
+function normalizeFieldsForAI(fieldPayload: AIDetectField[]): AIDetectField[] {
+    return fieldPayload.map((field): AIDetectField => {
+        if (field.type !== "image" || !field.imageUrl) {
+            return field;
+        }
+
+        const normalizedImageUrl = normalizeImageUrlForAI(field.imageUrl);
+        if (normalizedImageUrl) {
+            return {
+                ...field,
+                imageUrl: normalizedImageUrl,
+            };
+        }
+
+        const fallbackValue =
+            field.value.trim().length > 0
+                ? `${field.value}\n[图片读取失败: ${field.imageUrl}]`
+                : `[图片读取失败: ${field.imageUrl}]`;
+        return {
+            title: field.title,
+            type: "text",
+            value: fallbackValue,
+        };
+    });
+}
+
+async function runOpenAIProviderAttempt({
+    provider,
+    route,
+    prompt,
+    fields,
+    signal,
+    requestId,
+    onAnswerChunk,
+    onThinkingChunk,
+}: {
+    provider: AIProviderEndpointConfig;
+    route: AIRoute;
+    prompt: string;
+    fields: AIDetectField[];
+    signal?: AbortSignal;
+    requestId: string;
+    onAnswerChunk?: (chunk: string) => void;
+    onThinkingChunk?: (chunk: string) => void;
+}): Promise<{ answerText: string; thinkingText: string; emittedAny: boolean }> {
+    const normalizedModel = normalizeModelName(route.model);
+    const normalizedOpenAIUrl = normalizeOpenAIUrl(provider.apiUrl);
+    try {
+        new URL(normalizedOpenAIUrl);
+    } catch {
+        throw createAttemptError("url is invalid", 400);
+    }
+
+    const promptContent = buildPromptContent(prompt, fields);
+    const userContent: string | OpenAIMessageContentPart[] =
+        promptContent.imageFields.length > 0
+            ? [
+                  {
+                      type: "text",
+                      text: promptContent.promptText,
+                  },
+                  ...promptContent.imageFields.flatMap((field) => {
+                      const imageLabel =
+                          field.value.trim().length > 0
+                              ? `字段图片：${field.title}（说明：${field.value}）`
+                              : `字段图片：${field.title}`;
+                      return [
+                          {
+                              type: "text" as const,
+                              text: imageLabel,
+                          },
+                          {
+                              type: "image_url" as const,
+                              image_url: {
+                                  url: field.imageUrl,
+                              },
+                          },
+                      ];
+                  }),
+              ]
+            : promptContent.promptText;
+
+    let lastFailedStatus = 500;
+    let lastFailedMessage = "AI 检测请求失败";
+    const totalAttempts = route.retryCount + 1;
+
+    for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+        let upstream: Response | null = null;
+        try {
+            upstream = await fetch(normalizedOpenAIUrl, {
+                method: "POST",
+                signal,
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${provider.apiKey}`,
+                },
+                body: JSON.stringify({
+                    model: normalizedModel,
+                    stream: true,
+                    messages: [{ role: "user", content: userContent }],
+                    reasoning: {
+                        effort: route.reasoningEffort,
+                    },
+                }),
+            });
+        } catch (error) {
+            if (signal?.aborted) {
+                throw error;
+            }
+            const parsedError = parseUnknownUpstreamError(error);
+            lastFailedStatus = parsedError.status;
+            lastFailedMessage = parsedError.message;
+            continue;
+        }
+
+        if (!upstream.ok || !upstream.body) {
+            if (!upstream.ok) {
+                const rawText = await upstream.text().catch(() => "");
+                lastFailedStatus = upstream.status || 500;
+                lastFailedMessage = parseUpstreamErrorMessage(rawText);
+            } else {
+                lastFailedStatus = 502;
+                lastFailedMessage = "AI 响应流为空";
+            }
+            continue;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let rawStreamPreview = "";
+        let answerText = "";
+        let thinkingText = "";
+        let emittedAny = false;
+        const reader = upstream.body.getReader();
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            if (!value) {
+                continue;
+            }
+
+            const current = decoder.decode(value, { stream: true });
+            if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+                rawStreamPreview += current;
+            }
+            buffer += current;
+
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) {
+                    continue;
+                }
+                const data = trimmed.slice(5).trim();
+                if (data === "[DONE]") {
+                    logAIResponseById(requestId, answerText);
+                    if (thinkingText.trim().length > 0) {
+                        logAIThinkingById(requestId, thinkingText);
+                    }
+                    return { answerText, thinkingText, emittedAny };
+                }
+                if (data.length === 0) {
+                    continue;
+                }
+                try {
+                    const payload = JSON.parse(data) as unknown;
+                    const extracted = extractStreamTextPayload(payload);
+                    if (extracted.thinkingText.length > 0) {
+                        thinkingText += extracted.thinkingText;
+                        emittedAny = true;
+                        onThinkingChunk?.(extracted.thinkingText);
+                    }
+                    if (extracted.answerText.length > 0) {
+                        answerText += extracted.answerText;
+                        emittedAny = true;
+                        onAnswerChunk?.(extracted.answerText);
+                    }
+                } catch {
+                    // Ignore non-JSON chunks.
+                }
+            }
+        }
+
+        buffer += decoder.decode();
+        if (buffer.length > 0 && buffer.includes("data:")) {
+            const maybeData = buffer
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .find((line) => line.startsWith("data:"));
+            const value = maybeData ? maybeData.slice(5).trim() : "";
+            if (value && value !== "[DONE]") {
+                try {
+                    const payload = JSON.parse(value) as unknown;
+                    const extracted = extractStreamTextPayload(payload);
+                    if (extracted.thinkingText.length > 0) {
+                        thinkingText += extracted.thinkingText;
+                        emittedAny = true;
+                        onThinkingChunk?.(extracted.thinkingText);
+                    }
+                    if (extracted.answerText.length > 0) {
+                        answerText += extracted.answerText;
+                        emittedAny = true;
+                        onAnswerChunk?.(extracted.answerText);
+                    }
+                } catch {
+                    // Ignore trailing invalid chunk.
+                }
+            }
+        }
+
+        logAIResponseById(requestId, answerText);
+        if (thinkingText.trim().length > 0) {
+            logAIThinkingById(requestId, thinkingText);
+        }
+        if (answerText.trim().length === 0 && rawStreamPreview.trim().length > 0) {
+            logAIRawResponseById(requestId, rawStreamPreview);
+        }
+        return { answerText, thinkingText, emittedAny };
+    }
+
+    throw createAttemptError(lastFailedMessage, lastFailedStatus);
+}
+
+async function runGeminiProviderAttempt({
+    provider,
+    route,
+    prompt,
+    fields,
+    signal,
+    requestId,
+    onAnswerChunk,
+    onThinkingChunk,
+}: {
+    provider: AIProviderEndpointConfig;
+    route: AIRoute;
+    prompt: string;
+    fields: AIDetectField[];
+    signal?: AbortSignal;
+    requestId: string;
+    onAnswerChunk?: (chunk: string) => void;
+    onThinkingChunk?: (chunk: string) => void;
+}): Promise<{ answerText: string; thinkingText: string; emittedAny: boolean }> {
+    const normalizedModel = normalizeModelName(route.model);
+    const normalizedGeminiUrl = normalizeGeminiEndpoint(
+        provider.apiUrl,
+        normalizedModel,
+    );
+    try {
+        new URL(normalizedGeminiUrl);
+    } catch {
+        throw createAttemptError("url is invalid", 400);
+    }
+
+    const promptContent = buildPromptContent(prompt, fields);
+    const geminiParts = buildGeminiUserParts(promptContent);
+    const geminiThinkingConfig = buildGeminiThinkingConfig(
+        normalizedModel,
+        route.reasoningEffort,
+    );
+    const geminiAuth = buildGeminiAuthHeaders(
+        normalizedGeminiUrl,
+        provider.apiKey,
+    );
+    const requestBody: GeminiGenerateContentRequest = {
+        contents: [
+            {
+                role: "user",
+                parts: geminiParts,
+            },
+        ],
+        generationConfig: {
+            thinkingConfig: geminiThinkingConfig,
+        },
+    };
+
+    let lastFailedStatus = 500;
+    let lastFailedMessage = "AI 检测请求失败";
+    const totalAttempts = route.retryCount + 1;
+
+    for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+        let upstream: Response | null = null;
+        try {
+            upstream = await fetch(normalizedGeminiUrl, {
+                method: "POST",
+                signal,
+                headers: geminiAuth.headers,
+                body: JSON.stringify(requestBody),
+            });
+        } catch (error) {
+            if (signal?.aborted) {
+                throw error;
+            }
+            const parsedError = parseUnknownUpstreamError(error);
+            lastFailedStatus = parsedError.status;
+            lastFailedMessage = parsedError.message;
+            continue;
+        }
+
+        if (!upstream.ok || !upstream.body) {
+            if (!upstream.ok) {
+                const rawText = await upstream.text().catch(() => "");
+                lastFailedStatus = upstream.status || 500;
+                lastFailedMessage = parseUpstreamErrorMessage(rawText);
+            } else {
+                lastFailedStatus = 502;
+                lastFailedMessage = "AI 响应流为空";
+            }
+            continue;
+        }
+
+        const reader = upstream.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let rawStreamPreview = "";
+        let currentEventType = "";
+        let answerText = "";
+        let thinkingText = "";
+        let emittedAny = false;
+        let shouldRetry = false;
+        let shouldFail = false;
+
+        const handleGeminiData = (
+            data: string,
+            eventType: string,
+        ): "continue" | "retry" | "fail" | "done" => {
+            if (data === "[DONE]") {
+                return "done";
+            }
+            if (eventType === "error") {
+                const parsedError = parseGeminiStreamErrorPayload(data);
+                if (parsedError) {
+                    lastFailedStatus = parsedError.status;
+                    lastFailedMessage = parsedError.message;
+                    if (!emittedAny && parsedError.retryable) {
+                        return "retry";
+                    }
+                    if (!emittedAny) {
+                        return "fail";
+                    }
+                    return "done";
+                }
+            }
+            if (data.length === 0) {
+                return "continue";
+            }
+            try {
+                const payload = JSON.parse(data) as unknown;
+                const extracted = extractGeminiStreamTextPayload(payload);
+                if (extracted.thinkingText.length > 0) {
+                    thinkingText += extracted.thinkingText;
+                    emittedAny = true;
+                    onThinkingChunk?.(extracted.thinkingText);
+                }
+                if (extracted.answerText.length > 0) {
+                    answerText += extracted.answerText;
+                    emittedAny = true;
+                    onAnswerChunk?.(extracted.answerText);
+                }
+            } catch {
+                // Ignore invalid chunks.
+            }
+            return "continue";
+        };
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            if (!value) {
+                continue;
+            }
+            const current = decoder.decode(value, { stream: true });
+            if (rawStreamPreview.length < AI_RESPONSE_RAW_LOG_MAX_CHARS * 2) {
+                rawStreamPreview += current;
+            }
+            buffer += current;
+
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.length === 0) {
+                    currentEventType = "";
+                    continue;
+                }
+                if (trimmed.startsWith("event:")) {
+                    currentEventType = trimmed.slice(6).trim().toLowerCase();
+                    continue;
+                }
+                if (!trimmed.startsWith("data:")) {
+                    continue;
+                }
+                const data = trimmed.slice(5).trim();
+                const action = handleGeminiData(data, currentEventType);
+                currentEventType = "";
+                if (action === "retry") {
+                    shouldRetry = true;
+                    break;
+                }
+                if (action === "fail") {
+                    shouldFail = true;
+                    break;
+                }
+                if (action === "done") {
+                    logAIResponseById(requestId, answerText);
+                    if (thinkingText.trim().length > 0) {
+                        logAIThinkingById(requestId, thinkingText);
+                    }
+                    return { answerText, thinkingText, emittedAny };
+                }
+            }
+
+            if (shouldRetry || shouldFail) {
+                break;
+            }
+        }
+
+        if (shouldRetry || shouldFail) {
+            await reader.cancel().catch(() => {});
+            if (shouldRetry) {
+                continue;
+            }
+            break;
+        }
+
+        buffer += decoder.decode();
+        if (buffer.length > 0 && buffer.includes("data:")) {
+            const maybeData = buffer
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .find((line) => line.startsWith("data:"));
+            const value = maybeData ? maybeData.slice(5).trim() : "";
+            if (value && value !== "[DONE]") {
+                const action = handleGeminiData(value, currentEventType);
+                if (action === "retry") {
+                    await reader.cancel().catch(() => {});
+                    continue;
+                }
+                if (action === "fail") {
+                    await reader.cancel().catch(() => {});
+                    break;
+                }
+            }
+        }
+
+        logAIResponseById(requestId, answerText);
+        if (thinkingText.trim().length > 0) {
+            logAIThinkingById(requestId, thinkingText);
+        }
+        if (answerText.trim().length === 0 && rawStreamPreview.trim().length > 0) {
+            logAIRawResponseById(requestId, rawStreamPreview);
+        }
+        return { answerText, thinkingText, emittedAny };
+    }
+
+    throw createAttemptError(lastFailedMessage, lastFailedStatus);
+}
+
+async function runRouteStepAttempt({
+    step,
+    prompt,
+    fields,
+    signal,
+    requestId,
+    onAnswerChunk,
+    onThinkingChunk,
+}: {
+    step: AIResolvedRouteStep;
+    prompt: string;
+    fields: AIDetectField[];
+    signal?: AbortSignal;
+    requestId: string;
+    onAnswerChunk?: (chunk: string) => void;
+    onThinkingChunk?: (chunk: string) => void;
+}) {
+    if (isAnthropicCompatibleProvider(step.provider.apiType as AIProvider)) {
+        throw createAttemptError("Anthropic 暂不支持测试和正式调用", 400);
+    }
+    if (isOpenAICompatibleProvider(step.provider.apiType as AIProvider)) {
+        return runOpenAIProviderAttempt({
+            provider: step.provider,
+            route: step.route,
+            prompt,
+            fields,
+            signal,
+            requestId,
+            onAnswerChunk,
+            onThinkingChunk,
+        });
+    }
+    if (isGeminiCompatibleProvider(step.provider.apiType as AIProvider)) {
+        return runGeminiProviderAttempt({
+            provider: step.provider,
+            route: step.route,
+            prompt,
+            fields,
+            signal,
+            requestId,
+            onAnswerChunk,
+            onThinkingChunk,
+        });
+    }
+    throw createAttemptError("provider is invalid", 400);
+}
+
 export const registerAIRoutes = (app: express.Express) => {
     app.get("/api/ai-config/:fileName", (req, res) => {
-        const { fileName } = req.params;
-        const { configs, activeConfigName } = listAIDetectConfigs(
-            decodeURIComponent(fileName),
-        );
-        const activeConfig = configs.find(
-            (item) => item.name === activeConfigName,
-        );
-        const legacyStage =
-            activeConfig?.stages.independent_solving ??
-            activeConfig?.stages.precheck ??
-            null;
-        const legacyProfile =
-            legacyStage && activeConfig?.profiles
-                ? (activeConfig.profiles.find(
-                      (item) => item.name === legacyStage.profileName,
-                  ) ?? activeConfig.profiles[0])
-                : null;
+        const fileName = decodeURIComponent(req.params.fileName);
         return res.json({
-            configs: configs.map((item) => ({
-                name: item.name,
-                profiles: item.profiles,
-                stages: item.stages,
-                isActive: item.isActive,
-                updatedAt: item.updatedAt,
-            })),
-            activeConfigName,
-            // Keep compatibility with legacy frontend that only reads one config.
-            config: legacyStage
-                ? {
-                      provider: legacyProfile?.profile.provider,
-                      url: legacyProfile?.profile.url,
-                      model: legacyProfile?.profile.model,
-                      apiKey: legacyProfile?.profile.apiKey,
-                      submitFieldKeys: legacyStage.submitFieldKeys,
-                      prompt: legacyStage.prompt,
-                      resultFieldKey: legacyStage.resultFieldKey,
-                      reasoningEffort: legacyProfile?.profile.reasoningEffort,
-                      retryCount: legacyProfile?.profile.retryCount,
-                  }
-                : null,
+            providers: listAIProviderEndpoints(),
+            routes: listAIModelRoutes(),
+            stages: getFileAIStageConfigs(fileName),
         });
     });
 
-    app.put("/api/ai-config/:fileName", (req, res) => {
-        const { fileName } = req.params;
-        const {
-            name,
-            stages,
-            profiles,
-            provider,
-            url,
-            model,
-            apiKey,
-            submitFieldKeys,
-            prompt,
-            resultFieldKey,
-            reasoningEffort,
-            retryCount,
-            setActive,
-        } = req.body as {
-            name?: unknown;
-            provider?: unknown;
-            url?: unknown;
-            model?: unknown;
-            apiKey?: unknown;
-            submitFieldKeys?: unknown;
-            prompt?: unknown;
-            resultFieldKey?: unknown;
-            reasoningEffort?: unknown;
-            retryCount?: unknown;
-            setActive?: unknown;
-            stages?: unknown;
-            profiles?: unknown;
-        };
-
-        if (name !== undefined && typeof name !== "string") {
-            return res.status(400).json({ message: "name must be a string" });
-        }
-        if (typeof name === "string" && name.trim().length === 0) {
-            return res
-                .status(400)
-                .json({ message: "name must be a non-empty string" });
-        }
-        if (setActive !== undefined && typeof setActive !== "boolean") {
-            return res
-                .status(400)
-                .json({ message: "setActive must be a boolean" });
+    app.put("/api/ai-config/providers", (req, res) => {
+        const { providers } = req.body as { providers?: unknown };
+        if (!Array.isArray(providers)) {
+            return res.status(400).json({ message: "providers must be an array" });
         }
 
-        const configName =
-            typeof name === "string" && name.trim().length > 0
-                ? name.trim()
-                : DEFAULT_AI_CONFIG_NAME;
-
-        let normalizedProfiles: NamedAIDetectProfile[] = [];
-        let normalizedStages: Record<
-            AIDetectStageKey,
-            AIDetectStageConfig
-        > | null = null;
-
-        if (profiles !== undefined) {
-            if (!Array.isArray(profiles)) {
-                return res
-                    .status(400)
-                    .json({ message: "profiles must be an array" });
+        const nextProviders: AIProviderEndpointConfig[] = [];
+        const nameSet = new Set<string>();
+        for (const [index, item] of providers.entries()) {
+            const validation = validateProviderPayload(item, index);
+            if (!validation.provider) {
+                return res.status(400).json({ message: validation.message });
             }
-            const nameSet = new Set<string>();
-            const nextProfiles: NamedAIDetectProfile[] = [];
-            for (const [index, item] of profiles.entries()) {
-                if (!item || typeof item !== "object") {
-                    return res.status(400).json({
-                        message: `profile at index ${index} must be an object`,
-                    });
-                }
-                const candidate = item as {
-                    name?: unknown;
-                    profile?: unknown;
-                } & Partial<AIDetectProfile>;
-                const rawName =
-                    typeof candidate.name === "string" &&
-                    candidate.name.trim().length > 0
-                        ? candidate.name.trim()
-                        : "";
-                if (!rawName) {
-                    return res.status(400).json({
-                        message: "profile name must be a non-empty string",
-                    });
-                }
-                if (nameSet.has(rawName)) {
-                    return res.status(400).json({
-                        message: `profile name duplicated: ${rawName}`,
-                    });
-                }
-                nameSet.add(rawName);
-                const profileSource =
-                    candidate.profile && typeof candidate.profile === "object"
-                        ? candidate.profile
-                        : candidate;
-                const rawProvider = (profileSource as { provider?: unknown })
-                    .provider;
-                const normalizedProvider: AIProvider = inferAIProviderFromUrl(
-                    isAIProvider(rawProvider)
-                        ? rawProvider
-                        : rawProvider === "vertex"
-                          ? "gemini"
-                          : rawProvider === "idealab"
-                            ? "openai"
-                            : "openai",
-                    (profileSource as { url?: unknown }).url,
-                );
-                if (
-                    (profileSource as { url?: unknown }).url !== undefined &&
-                    typeof (profileSource as { url?: unknown }).url !== "string"
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】url must be a string`,
-                    });
-                }
-                if (
-                    (profileSource as { apiKey?: unknown }).apiKey !==
-                        undefined &&
-                    typeof (profileSource as { apiKey?: unknown }).apiKey !==
-                        "string"
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】apiKey must be a string`,
-                    });
-                }
-                if (
-                    !isNonEmptyString(
-                        (profileSource as { model?: unknown }).model,
-                    )
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】model must be a non-empty string`,
-                    });
-                }
-                if (
-                    !isNonEmptyString((profileSource as { url?: unknown }).url)
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】url must be a non-empty string`,
-                    });
-                }
-                if (
-                    !isNonEmptyString(
-                        (profileSource as { apiKey?: unknown }).apiKey,
-                    )
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】apiKey must be a non-empty string`,
-                    });
-                }
-                if (
-                    (profileSource as { modelProvider?: unknown })
-                        .modelProvider !== undefined &&
-                    typeof (profileSource as { modelProvider?: unknown })
-                        .modelProvider !== "string"
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】modelProvider must be a string`,
-                    });
-                }
-                if (
-                    (profileSource as { modelName?: unknown }).modelName !==
-                        undefined &&
-                    typeof (profileSource as { modelName?: unknown })
-                        .modelName !== "string"
-                ) {
-                    return res.status(400).json({
-                        message: `【${rawName}】modelName must be a string`,
-                    });
-                }
-                const rawReasoningEffort = (
-                    profileSource as { reasoningEffort?: unknown }
-                ).reasoningEffort;
-                const reasoningEffort: AIReasoningEffort = isAIReasoningEffort(
-                    rawReasoningEffort,
-                )
-                    ? rawReasoningEffort
-                    : "high";
-                const retryCount = normalizeAIRetryCount(
-                    (profileSource as { retryCount?: unknown }).retryCount,
-                );
-                nextProfiles.push({
-                    name: rawName,
-                    profile: {
-                        provider: normalizedProvider,
-                        url: (profileSource as { url?: string }).url as string,
-                        model: (profileSource as { model?: string })
-                            .model as string,
-                        modelProvider: (
-                            profileSource as { modelProvider?: string }
-                        ).modelProvider,
-                        modelName: (profileSource as { modelName?: string })
-                            .modelName,
-                        apiKey: (profileSource as { apiKey?: string })
-                            .apiKey as string,
-                        reasoningEffort,
-                        retryCount,
-                    },
-                });
-            }
-            normalizedProfiles = nextProfiles;
-        }
-
-        if (stages && typeof stages === "object") {
-            const rawStages = stages as Record<string, unknown>;
-            const hasProfileName = AI_STAGE_ORDER.some((stageKey) => {
-                const stageValue = rawStages[stageKey] as {
-                    profileName?: unknown;
-                } | null;
-                return (
-                    stageValue &&
-                    typeof stageValue === "object" &&
-                    typeof stageValue.profileName === "string"
-                );
-            });
-
-            if (hasProfileName) {
-                if (normalizedProfiles.length === 0) {
-                    return res
-                        .status(400)
-                        .json({ message: "profiles is required for stages" });
-                }
-                const profileNameSet = new Set(
-                    normalizedProfiles.map((item) => item.name),
-                );
-                const stageMap = {} as Record<
-                    AIDetectStageKey,
-                    AIDetectStageConfig
-                >;
-
-                for (const stageKey of AI_STAGE_ORDER) {
-                    const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
-                    const stageValue = rawStages[stageKey];
-                    if (!stageValue || typeof stageValue !== "object") {
-                        return res.status(400).json({
-                            message: `${stageLabel} config must be an object`,
-                        });
-                    }
-                    const stage = stageValue as {
-                        profileName?: unknown;
-                        submitFieldKeys?: unknown;
-                        prompt?: unknown;
-                        resultFieldKey?: unknown;
-                    };
-
-                    if (!isNonEmptyString(stage.profileName)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} profileName must be a non-empty string`,
-                        });
-                    }
-                    const profileName = stage.profileName.trim();
-                    if (!profileNameSet.has(profileName)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} profileName must reference an existing profile`,
-                        });
-                    }
-                    if (
-                        !Array.isArray(stage.submitFieldKeys) ||
-                        !stage.submitFieldKeys.every(
-                            (item) => typeof item === "string",
-                        )
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} submitFieldKeys must be a string array`,
-                        });
-                    }
-                    if (!isNonEmptyString(stage.prompt)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} prompt must be a non-empty string`,
-                        });
-                    }
-                    if (
-                        stage.resultFieldKey !== undefined &&
-                        typeof stage.resultFieldKey !== "string"
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} resultFieldKey must be a string`,
-                        });
-                    }
-
-                    stageMap[stageKey] = {
-                        profileName,
-                        submitFieldKeys: stage.submitFieldKeys as string[],
-                        prompt: stage.prompt as string,
-                        resultFieldKey:
-                            typeof stage.resultFieldKey === "string"
-                                ? stage.resultFieldKey
-                                : "",
-                    };
-                }
-
-                normalizedStages = stageMap;
-            } else {
-                const legacyProfiles: NamedAIDetectProfile[] = [];
-                const stageMap = {} as Record<
-                    AIDetectStageKey,
-                    AIDetectStageConfig
-                >;
-
-                for (const [index, stageKey] of AI_STAGE_ORDER.entries()) {
-                    const stageLabel = AI_STAGE_LABELS[stageKey] ?? stageKey;
-                    const stageValue = rawStages[stageKey];
-                    if (!stageValue || typeof stageValue !== "object") {
-                        return res.status(400).json({
-                            message: `${stageLabel} config must be an object`,
-                        });
-                    }
-                    const stage = stageValue as {
-                        provider?: unknown;
-                        url?: unknown;
-                        model?: unknown;
-                        apiKey?: unknown;
-                        submitFieldKeys?: unknown;
-                        prompt?: unknown;
-                        resultFieldKey?: unknown;
-                        reasoningEffort?: unknown;
-                        retryCount?: unknown;
-                    };
-
-                    const normalizedProvider: AIProvider =
-                        inferAIProviderFromUrl(
-                            isAIProvider(stage.provider)
-                                ? stage.provider
-                                : stage.provider === "vertex"
-                                  ? "gemini"
-                                  : stage.provider === "idealab"
-                                    ? "openai"
-                                    : "openai",
-                            stage.url,
-                        );
-
-                    if (
-                        stage.url !== undefined &&
-                        typeof stage.url !== "string"
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} url must be a string`,
-                        });
-                    }
-                    if (
-                        stage.apiKey !== undefined &&
-                        typeof stage.apiKey !== "string"
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} apiKey must be a string`,
-                        });
-                    }
-                    if (!isNonEmptyString(stage.model)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} model must be a non-empty string`,
-                        });
-                    }
-                    if (!isNonEmptyString(stage.url)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} url must be a non-empty string`,
-                        });
-                    }
-                    if (!isNonEmptyString(stage.apiKey)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} apiKey must be a non-empty string`,
-                        });
-                    }
-                    if (
-                        !Array.isArray(stage.submitFieldKeys) ||
-                        !stage.submitFieldKeys.every(
-                            (item) => typeof item === "string",
-                        )
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} submitFieldKeys must be a string array`,
-                        });
-                    }
-                    if (!isNonEmptyString(stage.prompt)) {
-                        return res.status(400).json({
-                            message: `${stageLabel} prompt must be a non-empty string`,
-                        });
-                    }
-                    if (
-                        stage.resultFieldKey !== undefined &&
-                        typeof stage.resultFieldKey !== "string"
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} resultFieldKey must be a string`,
-                        });
-                    }
-                    if (
-                        stage.reasoningEffort !== undefined &&
-                        !isAIReasoningEffort(stage.reasoningEffort)
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} reasoningEffort must be low, medium or high`,
-                        });
-                    }
-                    if (
-                        stage.retryCount !== undefined &&
-                        !isValidAIRetryCount(stage.retryCount)
-                    ) {
-                        return res.status(400).json({
-                            message: `${stageLabel} retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
-                        });
-                    }
-
-                    const profileName =
-                        AI_STAGE_ORDER.length > 1
-                            ? `${DEFAULT_AI_PROFILE_NAME}-${index + 1}`
-                            : DEFAULT_AI_PROFILE_NAME;
-                    legacyProfiles.push({
-                        name: profileName,
-                        profile: {
-                            provider: normalizedProvider,
-                            url: stage.url as string,
-                            model: stage.model as string,
-                            apiKey: stage.apiKey as string,
-                            reasoningEffort: isAIReasoningEffort(
-                                stage.reasoningEffort,
-                            )
-                                ? stage.reasoningEffort
-                                : "high",
-                            retryCount: normalizeAIRetryCount(stage.retryCount),
-                        },
-                    });
-                    stageMap[stageKey] = {
-                        profileName,
-                        submitFieldKeys: stage.submitFieldKeys as string[],
-                        prompt: stage.prompt as string,
-                        resultFieldKey:
-                            typeof stage.resultFieldKey === "string"
-                                ? stage.resultFieldKey
-                                : "",
-                    };
-                }
-
-                normalizedProfiles = legacyProfiles;
-                normalizedStages = stageMap;
-            }
-        } else {
-            const normalizedProvider: AIProvider = inferAIProviderFromUrl(
-                isAIProvider(provider)
-                    ? provider
-                    : provider === "vertex"
-                      ? "gemini"
-                      : provider === "idealab"
-                        ? "openai"
-                        : "openai",
-                url,
-            );
-
-            if (url !== undefined && typeof url !== "string") {
-                return res
-                    .status(400)
-                    .json({ message: "url must be a string" });
-            }
-            if (apiKey !== undefined && typeof apiKey !== "string") {
-                return res
-                    .status(400)
-                    .json({ message: "apiKey must be a string" });
-            }
-            if (!isNonEmptyString(model)) {
-                return res
-                    .status(400)
-                    .json({ message: "model must be a non-empty string" });
-            }
-            if (!isNonEmptyString(url)) {
-                return res
-                    .status(400)
-                    .json({ message: "url must be a non-empty string" });
-            }
-            if (!isNonEmptyString(apiKey)) {
-                return res
-                    .status(400)
-                    .json({ message: "apiKey must be a non-empty string" });
-            }
-            if (
-                !Array.isArray(submitFieldKeys) ||
-                !submitFieldKeys.every((item) => typeof item === "string")
-            ) {
+            if (nameSet.has(validation.provider.name)) {
                 return res.status(400).json({
-                    message: "submitFieldKeys must be a string array",
+                    message: `provider name duplicated: ${validation.provider.name}`,
                 });
             }
-            if (!isNonEmptyString(prompt)) {
-                return res
-                    .status(400)
-                    .json({ message: "prompt must be a non-empty string" });
-            }
-            if (
-                resultFieldKey !== undefined &&
-                typeof resultFieldKey !== "string"
-            ) {
-                return res
-                    .status(400)
-                    .json({ message: "resultFieldKey must be a string" });
-            }
-            if (
-                reasoningEffort !== undefined &&
-                !isAIReasoningEffort(reasoningEffort)
-            ) {
-                return res.status(400).json({
-                    message: "reasoningEffort must be low, medium or high",
-                });
-            }
-            if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
-                return res.status(400).json({
-                    message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
-                });
-            }
+            nameSet.add(validation.provider.name);
+            nextProviders.push(validation.provider);
+        }
+        if (nextProviders.length === 0) {
+            return res.status(400).json({ message: "providers must not be empty" });
+        }
 
-            const normalizedReasoningEffort = isAIReasoningEffort(
-                reasoningEffort,
-            )
-                ? reasoningEffort
-                : "high";
-            const normalizedRetryCount = normalizeAIRetryCount(retryCount);
-            const baseProfile: AIDetectProfile = {
-                provider: normalizedProvider,
-                url: typeof url === "string" ? url : "",
-                model: model as string,
-                apiKey: typeof apiKey === "string" ? apiKey : "",
-                reasoningEffort: normalizedReasoningEffort,
-                retryCount: normalizedRetryCount,
+        saveAIProviderEndpoints(nextProviders);
+        return res.json({ ok: true });
+    });
+
+    app.put("/api/ai-config/routes", (req, res) => {
+        const { routes } = req.body as { routes?: unknown };
+        if (!Array.isArray(routes)) {
+            return res.status(400).json({ message: "routes must be an array" });
+        }
+
+        const providersByName = new Map(
+            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+        );
+        if (providersByName.size === 0) {
+            return res.status(400).json({ message: "providers is required before routes" });
+        }
+
+        const nextRoutes: AIModelRouteConfig[] = [];
+        const nameSet = new Set<string>();
+        for (const [index, item] of routes.entries()) {
+            const validation = validateRoutePayload(item, index, providersByName);
+            if (!validation.route) {
+                return res.status(400).json({ message: validation.message });
+            }
+            if (nameSet.has(validation.route.name)) {
+                return res.status(400).json({
+                    message: `route name duplicated: ${validation.route.name}`,
+                });
+            }
+            nameSet.add(validation.route.name);
+            nextRoutes.push(validation.route);
+        }
+        if (nextRoutes.length === 0) {
+            return res.status(400).json({ message: "routes must not be empty" });
+        }
+
+        saveAIModelRoutes(nextRoutes);
+        return res.json({ ok: true });
+    });
+
+    app.put("/api/ai-config/:fileName/stages", (req, res) => {
+        const fileName = decodeURIComponent(req.params.fileName);
+        const { stages } = req.body as { stages?: unknown };
+        if (!stages || typeof stages !== "object") {
+            return res.status(400).json({ message: "stages must be an object" });
+        }
+
+        const routes = listAIModelRoutes();
+        const providersByName = new Map(
+            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+        );
+        const routesByName = new Map(routes.map((route) => [route.name, route]));
+
+        const stageMap = {} as Record<AIDetectStageKey, FileAIStageConfig>;
+        for (const stageKey of AI_STAGE_ORDER) {
+            const stageValue = (stages as Record<string, unknown>)[stageKey];
+            if (!stageValue || typeof stageValue !== "object") {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} config must be an object`,
+                });
+            }
+            const stage = stageValue as {
+                routeName?: unknown;
+                submitFieldKeys?: unknown;
+                prompt?: unknown;
             };
-            normalizedProfiles = [
-                {
-                    name: DEFAULT_AI_PROFILE_NAME,
-                    profile: baseProfile,
-                },
-            ];
-            const stageMap = {} as Record<
-                AIDetectStageKey,
-                AIDetectStageConfig
-            >;
-            AI_STAGE_ORDER.forEach((stageKey) => {
-                stageMap[stageKey] = {
-                    profileName: DEFAULT_AI_PROFILE_NAME,
-                    submitFieldKeys: (submitFieldKeys as string[]) ?? [],
-                    prompt: prompt as string,
-                    resultFieldKey:
-                        typeof resultFieldKey === "string"
-                            ? resultFieldKey
-                            : "",
-                };
-            });
-            normalizedStages = stageMap;
+            if (!isNonEmptyString(stage.routeName)) {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} routeName must be a non-empty string`,
+                });
+            }
+            const route = routesByName.get(stage.routeName.trim());
+            if (!route) {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} routeName must reference an existing route`,
+                });
+            }
+            const routeApiType = getRouteApiType(route, providersByName);
+            if (!routeApiType) {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} route providers are invalid`,
+                });
+            }
+            if (routeApiType === "anthropic") {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} cannot use an anthropic route yet`,
+                });
+            }
+            if (
+                !Array.isArray(stage.submitFieldKeys) ||
+                !stage.submitFieldKeys.every((item) => typeof item === "string")
+            ) {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} submitFieldKeys must be a string array`,
+                });
+            }
+            if (!isNonEmptyString(stage.prompt)) {
+                return res.status(400).json({
+                    message: `${AI_STAGE_LABELS[stageKey]} prompt must be a non-empty string`,
+                });
+            }
+            stageMap[stageKey] = {
+                routeName: stage.routeName.trim(),
+                submitFieldKeys: stage.submitFieldKeys,
+                prompt: stage.prompt,
+            };
         }
 
-        if (!normalizedStages) {
-            return res.status(400).json({ message: "stages is required" });
-        }
-        if (normalizedProfiles.length === 0) {
-            return res.status(400).json({ message: "profiles is required" });
-        }
-
-        saveAIDetectConfig(
-            decodeURIComponent(fileName),
-            configName,
-            {
-                profiles: normalizedProfiles,
-                stages: normalizedStages,
-            },
-            {
-                setActive: setActive !== false,
-            },
-        );
-
+        saveFileAIStageConfigs(fileName, stageMap);
         return res.json({ ok: true });
     });
 
-    app.post("/api/ai-config/:fileName/active", (req, res) => {
-        const { fileName } = req.params;
-        const { name } = req.body as {
-            name?: unknown;
-        };
-        if (!isNonEmptyString(name)) {
-            return res
-                .status(400)
-                .json({ message: "name must be a non-empty string" });
-        }
-
-        const ok = setAIDetectActiveConfig(decodeURIComponent(fileName), name);
-        if (!ok) {
-            return res.status(404).json({ message: "AI 配置不存在" });
-        }
-        return res.json({ ok: true });
-    });
-
-    // ─── AI Detection Stream ───
-
-    app.post("/api/ai-detect/stream", async (req, res) => {
-        const {
-            provider,
-            url,
-            model,
-            apiKey,
-            prompt,
-            fields,
-            reasoningEffort,
-            retryCount,
-        } = req.body as {
+    app.post("/api/ai-config/routes/test", async (req, res) => {
+        const { provider, route, stepIndex } = req.body as {
             provider?: unknown;
-            url?: unknown;
-            model?: unknown;
-            apiKey?: unknown;
-            prompt?: unknown;
-            fields: unknown;
-            reasoningEffort?: unknown;
-            retryCount?: unknown;
+            route?: unknown;
+            stepIndex?: unknown;
         };
-        const normalizedProvider: AIProvider = inferAIProviderFromUrl(
-            isAIProvider(provider)
-                ? provider
-                : provider === "vertex"
-                  ? "gemini"
-                  : provider === "idealab"
-                    ? "openai"
-                    : "openai",
-            url,
-        );
-
-        if (url !== undefined && typeof url !== "string") {
-            return res.status(400).json({ message: "url must be a string" });
+        const providerValidation = validateProviderPayload(provider, 0);
+        if (!providerValidation.provider) {
+            return res.status(400).json({ message: providerValidation.message });
         }
-        if (apiKey !== undefined && typeof apiKey !== "string") {
-            return res.status(400).json({ message: "apiKey must be a string" });
-        }
-        if (!isNonEmptyString(model)) {
-            return res
-                .status(400)
-                .json({ message: "model must be a non-empty string" });
-        }
-        if (!isNonEmptyString(prompt)) {
-            return res
-                .status(400)
-                .json({ message: "prompt must be a non-empty string" });
-        }
-        if (!isNonEmptyString(url)) {
-            return res
-                .status(400)
-                .json({ message: "url must be a non-empty string" });
-        }
-        if (!isNonEmptyString(apiKey)) {
-            return res
-                .status(400)
-                .json({ message: "apiKey must be a non-empty string" });
-        }
-
-        const fieldPayload = toAIDetectFields(fields);
-        if (!fieldPayload || fieldPayload.length === 0) {
-            return res
-                .status(400)
-                .json({ message: "fields must be a non-empty array" });
+        const providerMap = new Map([[providerValidation.provider.name, providerValidation.provider]]);
+        const routeValidation = validateRoutePayload(route, 0, providerMap);
+        if (!routeValidation.route) {
+            return res.status(400).json({ message: routeValidation.message });
         }
         if (
-            reasoningEffort !== undefined &&
-            !isAIReasoningEffort(reasoningEffort)
+            typeof stepIndex !== "number" ||
+            !Number.isInteger(stepIndex) ||
+            stepIndex < 0 ||
+            stepIndex >= routeValidation.route.steps.length
         ) {
-            return res.status(400).json({
-                message: "reasoningEffort must be low, medium or high",
-            });
+            return res.status(400).json({ message: "stepIndex is invalid" });
         }
-        if (retryCount !== undefined && !isValidAIRetryCount(retryCount)) {
-            return res.status(400).json({
-                message: `retryCount must be an integer between ${MIN_AI_RETRY_COUNT} and ${MAX_AI_RETRY_COUNT}`,
-            });
+        if (providerValidation.provider.apiType === "anthropic") {
+            return res.status(400).json({ message: "Anthropic 暂不支持测试" });
         }
-        const normalizedReasoningEffort = isAIReasoningEffort(reasoningEffort)
-            ? reasoningEffort
-            : "high";
-        const normalizedRetryCount = normalizeAIRetryCount(retryCount);
-        const normalizedModel = normalizeModelName(model as string);
-        const normalizedOpenAIUrl =
-            typeof url === "string" ? normalizeOpenAIUrl(url) : "";
-        const normalizedGeminiUrl =
-            typeof url === "string"
-                ? normalizeGeminiEndpoint(url, normalizedModel)
-                : "";
-        const normalizedOpenAIApiKey = typeof apiKey === "string" ? apiKey : "";
 
+        const startedAt = Date.now();
+        try {
+            const result = await runRouteStepAttempt({
+                step: {
+                    provider: providerValidation.provider,
+                    route: {
+                        name: routeValidation.route.name,
+                        model: routeValidation.route.model,
+                        reasoningEffort: routeValidation.route.reasoningEffort,
+                        retryCount: routeValidation.route.retryCount,
+                        steps: routeValidation.route.steps,
+                    },
+                },
+                prompt: "请直接回复：你好",
+                fields: [{ title: "测试消息", type: "text", value: "你好" }],
+                requestId: `route-test-${randomUUID().slice(0, 8)}`,
+            });
+            const preview = [result.thinkingText.trim(), result.answerText.trim()]
+                .filter((item) => item.length > 0)
+                .join("\n\n")
+                .slice(0, 300);
+            return res.json({
+                ok: true,
+                durationMs: Date.now() - startedAt,
+                providerName: providerValidation.provider.name,
+                apiType: providerValidation.provider.apiType,
+                routeName: routeValidation.route.name,
+                model: routeValidation.route.model,
+                preview,
+            });
+        } catch (error) {
+            const parsed = parseUnknownUpstreamError(error);
+            return res.status(parsed.status).json({ message: parsed.message });
+        }
+    });
+
+    app.post("/api/ai-detect/stream", async (req, res) => {
+        const { routeName, prompt, fields } = req.body as {
+            routeName?: unknown;
+            prompt?: unknown;
+            fields?: unknown;
+        };
+        if (!isNonEmptyString(routeName)) {
+            return res.status(400).json({ message: "routeName must be a non-empty string" });
+        }
+        if (!isNonEmptyString(prompt)) {
+            return res.status(400).json({ message: "prompt must be a non-empty string" });
+        }
+        const fieldPayload = toAIDetectFields(fields);
+        if (!fieldPayload || fieldPayload.length === 0) {
+            return res.status(400).json({ message: "fields must be a non-empty array" });
+        }
+
+        const route = findAIModelRouteByName(routeName.trim());
+        if (!route) {
+            return res.status(404).json({ message: "模型路由不存在" });
+        }
+        const resolvedRoute = resolveRouteSteps(route);
+        if (!resolvedRoute) {
+            return res.status(400).json({ message: "模型路由引用的提供商无效" });
+        }
+        if (resolvedRoute.apiType === "anthropic") {
+            return res.status(400).json({ message: "Anthropic 暂不支持正式调用" });
+        }
+
+        const aiFields = normalizeFieldsForAI(fieldPayload);
         const aiRequestId = randomUUID().slice(0, 8);
         const startedAt = Date.now();
         const startedAtIso = formatLogTimestamp(startedAt);
-        const elapsedMs = (): number => Date.now() - startedAt;
-
-        const aiFields = fieldPayload.map((field): AIDetectField => {
-            if (field.type !== "image" || !field.imageUrl) {
-                return field;
-            }
-
-            const normalizedImageUrl = normalizeImageUrlForAI(field.imageUrl);
-            if (normalizedImageUrl) {
-                return {
-                    ...field,
-                    imageUrl: normalizedImageUrl,
-                };
-            }
-
-            const fallbackValue =
-                field.value.trim().length > 0
-                    ? `${field.value}\n[图片读取失败: ${field.imageUrl}]`
-                    : `[图片读取失败: ${field.imageUrl}]`;
-            return {
-                title: field.title,
-                type: "text",
-                value: fallbackValue,
-            };
-        });
-
-        const aiFieldLogs = aiFields.map((field) => ({
-            title: field.title,
-            type: field.type,
-            valuePreview: field.value.slice(0, 80),
-            imageStatus:
-                field.type === "image" && field.imageUrl
-                    ? field.imageUrl.startsWith("data:image/")
-                        ? "data-url"
-                        : "remote-url"
-                    : undefined,
-        }));
-        const aiFieldSummary = aiFields.map(summarizeAIFieldForLog);
-        // eslint-disable-next-line no-console
-        console.log(
-            `[AIRequest][${aiRequestId}] startedAt=${startedAtIso} provider=${normalizedProvider} model=${normalizedModel} retries=${normalizedRetryCount} fields=${aiFields.length} images=${aiFields.filter((item) => item.type === "image").length} texts=${aiFields.filter((item) => item.type === "text").length}`,
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-            `[AIRequestFields][${aiRequestId}] ${aiFieldSummary.join(" | ")}`,
-        );
-        if (SHOULD_LOG_AI_VERBOSE) {
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIRequestFieldsRaw][${aiRequestId}] ${JSON.stringify(aiFieldLogs)}`,
-            );
-        }
-        if (isOpenAICompatibleProvider(normalizedProvider)) {
-            try {
-                // Validate URL before dispatching request.
-                new URL(normalizedOpenAIUrl);
-            } catch {
-                return res.status(400).json({ message: "url is invalid" });
-            }
-        } else {
-            try {
-                new URL(normalizedGeminiUrl);
-            } catch {
-                return res.status(400).json({ message: "url is invalid" });
-            }
-        }
-
+        const failures: string[] = [];
+        let headersCommitted = false;
         const controller = new AbortController();
-        let abortReason = "";
-        let upstreamStatusCode: number | null = null;
-        let streamChunkCount = 0;
-        let streamTextLength = 0;
-        let streamThinkingChunkCount = 0;
-        let streamThinkingTextLength = 0;
-        let doneByDoneToken = false;
-        let doneByNaturalEnd = false;
 
-        const abortUpstream = (reason: string): void => {
-            if (controller.signal.aborted) {
+        const ensureHeaders = () => {
+            if (headersCommitted) {
                 return;
             }
-            abortReason = reason;
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIAbort][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reason=${reason} reqAborted=${req.aborted} reqComplete=${req.complete} resEnded=${res.writableEnded} headersSent=${res.headersSent}`,
-            );
-            controller.abort();
+            res.status(200);
+            res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+            res.setHeader("Cache-Control", "no-cache, no-transform");
+            res.setHeader("Connection", "keep-alive");
+            res.setHeader("X-Accel-Buffering", "no");
+            res.flushHeaders();
+            headersCommitted = true;
         };
 
-        req.on("aborted", () => {
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIConn][${aiRequestId}] event=req.aborted startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reqComplete=${req.complete}`,
-            );
-            abortUpstream("req.aborted");
-        });
+        const abortUpstream = () => {
+            if (!controller.signal.aborted) {
+                controller.abort();
+            }
+        };
+
+        req.on("aborted", abortUpstream);
         req.on("close", () => {
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIConn][${aiRequestId}] event=req.close startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reqAborted=${req.aborted} reqComplete=${req.complete}`,
-            );
             if (req.aborted) {
-                abortUpstream("req.close(aborted)");
+                abortUpstream();
             }
         });
-        res.on("finish", () => {
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIConn][${aiRequestId}] event=res.finish startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${res.statusCode} upstreamStatus=${upstreamStatusCode ?? "-"} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength} doneToken=${doneByDoneToken} naturalEnd=${doneByNaturalEnd}`,
-            );
-        });
         res.on("close", () => {
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIConn][${aiRequestId}] event=res.close startedAt=${startedAtIso} elapsedMs=${elapsedMs()} resEnded=${res.writableEnded} writableFinished=${res.writableFinished} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength}`,
-            );
             if (!res.writableEnded) {
-                abortUpstream("res.close(before-end)");
+                abortUpstream();
             }
         });
 
         try {
-            const promptContent = buildPromptContent(prompt, aiFields);
-            let aiResponseText = "";
-            let aiThinkingText = "";
-            const totalAttempts = normalizedRetryCount + 1;
-            let lastFailedStatus = 500;
-            let lastFailedMessage = "AI 检测请求失败";
-            if (isOpenAICompatibleProvider(normalizedProvider)) {
-                const userContent: string | OpenAIMessageContentPart[] =
-                    promptContent.imageFields.length > 0
-                        ? [
-                              {
-                                  type: "text",
-                                  text: promptContent.promptText,
-                              },
-                              ...promptContent.imageFields.flatMap((field) => {
-                                  const imageLabel =
-                                      field.value.trim().length > 0
-                                          ? `字段图片：${field.title}（说明：${field.value}）`
-                                          : `字段图片：${field.title}`;
-                                  return [
-                                      {
-                                          type: "text" as const,
-                                          text: imageLabel,
-                                      },
-                                      {
-                                          type: "image_url" as const,
-                                          image_url: {
-                                              url: field.imageUrl,
-                                          },
-                                      },
-                                  ];
-                              }),
-                          ]
-                        : promptContent.promptText;
-
-                let upstream: Response | null = null;
-                for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
-                    const attemptStartedAt = Date.now();
-                    // eslint-disable-next-line no-console
-                    console.log(
-                        `[AIUpstream][${aiRequestId}] phase=dispatch startedAt=${formatLogTimestamp(attemptStartedAt)} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} model=${normalizedModel} url=${normalizedOpenAIUrl}`,
-                    );
-                    try {
-                        const candidate = await fetch(normalizedOpenAIUrl, {
-                            method: "POST",
-                            signal: controller.signal,
-                            headers: {
-                                "Content-Type": "application/json",
-                                Authorization: `Bearer ${normalizedOpenAIApiKey}`,
-                            },
-                            body: JSON.stringify({
-                                model: normalizedModel,
-                                stream: true,
-                                messages: [
-                                    { role: "user", content: userContent },
-                                ],
-                                reasoning: {
-                                    effort: normalizedReasoningEffort,
-                                },
-                            }),
-                        });
-                        upstreamStatusCode = candidate.status;
-                        const hasBody = Boolean(candidate.body);
-                        // eslint-disable-next-line no-console
-                        console.log(
-                            `[AIUpstream][${aiRequestId}] phase=connected startedAt=${formatLogTimestamp(attemptStartedAt)} connectMs=${Date.now() - attemptStartedAt} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} status=${candidate.status} hasBody=${hasBody}`,
-                        );
-
-                        if (candidate.status === 200 && hasBody) {
-                            upstream = candidate;
-                            break;
-                        }
-
-                        if (candidate.status !== 200) {
-                            const rawText = await candidate
-                                .text()
-                                .catch(() => "");
-                            lastFailedStatus = candidate.status || 500;
-                            lastFailedMessage =
-                                parseUpstreamErrorMessage(rawText);
-                        } else {
-                            lastFailedStatus = 502;
-                            lastFailedMessage = "AI 响应流为空";
-                        }
-
-                        // eslint-disable-next-line no-console
-                        console.log(
-                            `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
-                        );
-                    } catch (error) {
-                        if (controller.signal.aborted) {
-                            throw error;
-                        }
-                        const parsedError = parseUnknownUpstreamError(error);
-                        lastFailedStatus = parsedError.status;
-                        lastFailedMessage = parsedError.message;
-                        // eslint-disable-next-line no-console
-                        console.log(
-                            `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
-                        );
-                    }
-                }
-
-                if (!upstream || !upstream.body) {
-                    // eslint-disable-next-line no-console
-                    console.log(
-                        `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${lastFailedStatus} message=${lastFailedMessage}`,
-                    );
-                    return res
-                        .status(lastFailedStatus)
-                        .json({ message: lastFailedMessage });
-                }
-
-                res.status(200);
-                res.setHeader(
-                    "Content-Type",
-                    "application/x-ndjson; charset=utf-8",
-                );
-                res.setHeader("Cache-Control", "no-cache, no-transform");
-                res.setHeader("Connection", "keep-alive");
-                res.setHeader("X-Accel-Buffering", "no");
-                res.flushHeaders();
-
-                const decoder = new TextDecoder();
-                let buffer = "";
-                let rawStreamPreview = "";
-
-                const reader = upstream.body.getReader();
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) {
-                        break;
-                    }
-                    if (!value) {
-                        continue;
-                    }
-
-                    const current = decoder.decode(value, { stream: true });
-                    if (
-                        rawStreamPreview.length <
-                        AI_RESPONSE_RAW_LOG_MAX_CHARS * 2
-                    ) {
-                        rawStreamPreview += current;
-                    }
-                    buffer += current;
-
-                    const lines = buffer.split(/\r?\n/);
-                    buffer = lines.pop() ?? "";
-
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (!trimmed.startsWith("data:")) {
-                            continue;
-                        }
-
-                        const data = trimmed.slice(5).trim();
-                        if (data === "[DONE]") {
-                            doneByDoneToken = true;
-                            logAIResponseById(aiRequestId, aiResponseText);
-                            if (aiThinkingText.trim().length > 0) {
-                                logAIThinkingById(aiRequestId, aiThinkingText);
-                            }
-                            writeAIClientStreamEvent(res, { type: "done" });
-                            res.end();
-                            return;
-                        }
-                        if (data.length === 0) {
-                            continue;
-                        }
-
-                        try {
-                            const payload = JSON.parse(data) as unknown;
-                            const extracted = extractStreamTextPayload(payload);
-                            if (extracted.thinkingText.length > 0) {
-                                aiThinkingText += extracted.thinkingText;
-                                streamThinkingChunkCount += 1;
-                                streamThinkingTextLength +=
-                                    extracted.thinkingText.length;
-                                writeAIClientStreamEvent(res, {
-                                    type: "thinking",
-                                    text: extracted.thinkingText,
-                                });
-                            }
-                            if (extracted.answerText.length > 0) {
-                                aiResponseText += extracted.answerText;
-                                streamChunkCount += 1;
-                                streamTextLength += extracted.answerText.length;
-                                writeAIClientStreamEvent(res, {
-                                    type: "answer",
-                                    text: extracted.answerText,
-                                });
-                            }
-                        } catch {
-                            // Ignore non-JSON stream chunks.
-                        }
-                    }
-                }
-
-                buffer += decoder.decode();
-                if (
-                    rawStreamPreview.length <
-                    AI_RESPONSE_RAW_LOG_MAX_CHARS * 2
-                ) {
-                    rawStreamPreview += buffer;
-                }
-
-                if (buffer.length > 0 && buffer.includes("data:")) {
-                    const maybeData = buffer
-                        .split(/\r?\n/)
-                        .map((line) => line.trim())
-                        .find((line) => line.startsWith("data:"));
-                    const value = maybeData ? maybeData.slice(5).trim() : "";
-                    if (value && value !== "[DONE]") {
-                        try {
-                            const payload = JSON.parse(value) as unknown;
-                            const extracted = extractStreamTextPayload(payload);
-                            if (extracted.thinkingText.length > 0) {
-                                aiThinkingText += extracted.thinkingText;
-                                streamThinkingChunkCount += 1;
-                                streamThinkingTextLength +=
-                                    extracted.thinkingText.length;
-                                writeAIClientStreamEvent(res, {
-                                    type: "thinking",
-                                    text: extracted.thinkingText,
-                                });
-                            }
-                            if (extracted.answerText.length > 0) {
-                                aiResponseText += extracted.answerText;
-                                streamChunkCount += 1;
-                                streamTextLength += extracted.answerText.length;
-                                writeAIClientStreamEvent(res, {
-                                    type: "answer",
-                                    text: extracted.answerText,
-                                });
-                            }
-                        } catch {
-                            // Ignore trailing invalid chunk.
-                        }
-                    }
-                }
-
-                doneByNaturalEnd = true;
-                logAIResponseById(aiRequestId, aiResponseText);
-                if (aiThinkingText.trim().length > 0) {
-                    logAIThinkingById(aiRequestId, aiThinkingText);
-                }
-                if (
-                    aiResponseText.trim().length === 0 &&
-                    rawStreamPreview.trim().length > 0
-                ) {
-                    logAIRawResponseById(aiRequestId, rawStreamPreview);
-                }
-                writeAIClientStreamEvent(res, { type: "done" });
-                res.end();
-                return;
-            }
-
-            if (!isGeminiCompatibleProvider(normalizedProvider)) {
-                return res.status(400).json({ message: "provider is invalid" });
-            }
-
-            const geminiParts = buildGeminiUserParts(promptContent);
-            const geminiThinkingConfig = buildGeminiThinkingConfig(
-                normalizedModel,
-                normalizedReasoningEffort,
-            );
-            const geminiAuth = buildGeminiAuthHeaders(
-                normalizedGeminiUrl,
-                normalizedOpenAIApiKey,
-            );
-            // eslint-disable-next-line no-console
-            if (SHOULD_LOG_AI_VERBOSE) {
-                // eslint-disable-next-line no-console
-                console.log(
-                    `[AIUpstreamConfig][${aiRequestId}] provider=${normalizedProvider} thinkingConfig=${JSON.stringify(geminiThinkingConfig)}`,
-                );
-            }
-            // eslint-disable-next-line no-console
-            if (SHOULD_LOG_AI_VERBOSE) {
-                // eslint-disable-next-line no-console
-                console.log(
-                    `[AIUpstreamConfig][${aiRequestId}] provider=${normalizedProvider} authMode=${geminiAuth.mode}`,
-                );
-            }
-            const geminiRequestBody: GeminiGenerateContentRequest = {
-                contents: [
-                    {
-                        role: "user",
-                        parts: geminiParts,
-                    },
-                ],
-                generationConfig: {
-                    thinkingConfig: geminiThinkingConfig,
-                },
-            };
-
-            let completed = false;
-            for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
-                const attemptStartedAt = Date.now();
-                // eslint-disable-next-line no-console
-                console.log(
-                    `[AIUpstream][${aiRequestId}] phase=dispatch startedAt=${formatLogTimestamp(attemptStartedAt)} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} model=${normalizedModel} url=${normalizedGeminiUrl}`,
-                );
-                let candidate: Response | null = null;
-                try {
-                    candidate = await fetch(normalizedGeminiUrl, {
-                        method: "POST",
-                        signal: controller.signal,
-                        headers: geminiAuth.headers,
-                        body: JSON.stringify(geminiRequestBody),
-                    });
-                } catch (error) {
-                    if (controller.signal.aborted) {
-                        throw error;
-                    }
-                    const parsedError = parseUnknownUpstreamError(error);
-                    lastFailedStatus = parsedError.status;
-                    lastFailedMessage = parsedError.message;
-                    // eslint-disable-next-line no-console
-                    console.log(
-                        `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} exception=${lastFailedMessage}`,
-                    );
-                    continue;
-                }
-
-                upstreamStatusCode = candidate.status;
-                const hasBody = Boolean(candidate.body);
-                // eslint-disable-next-line no-console
-                console.log(
-                    `[AIUpstream][${aiRequestId}] phase=connected startedAt=${formatLogTimestamp(attemptStartedAt)} connectMs=${Date.now() - attemptStartedAt} elapsedMs=${elapsedMs()} attempt=${attempt}/${totalAttempts} provider=${normalizedProvider} status=${candidate.status} hasBody=${hasBody}`,
-                );
-
-                if (candidate.status !== 200 || !hasBody) {
-                    if (candidate.status !== 200) {
-                        const rawText = await candidate.text().catch(() => "");
-                        lastFailedStatus = candidate.status || 500;
-                        lastFailedMessage = parseUpstreamErrorMessage(rawText);
-                    } else {
-                        lastFailedStatus = 502;
-                        lastFailedMessage = "AI 响应流为空";
-                    }
-                    // eslint-disable-next-line no-console
-                    console.log(
-                        `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} status=${candidate.status} message=${lastFailedMessage}`,
-                    );
-                    continue;
-                }
-
-                const decoder = new TextDecoder();
-                let buffer = "";
-                let rawStreamPreview = "";
-                let currentEventType = "";
-                let headersSent = false;
-                const pendingEvents: AIClientStreamEvent[] = [];
-
-                const ensureHeaders = () => {
-                    if (headersSent) {
-                        return;
-                    }
-                    res.status(200);
-                    res.setHeader(
-                        "Content-Type",
-                        "application/x-ndjson; charset=utf-8",
-                    );
-                    res.setHeader("Cache-Control", "no-cache, no-transform");
-                    res.setHeader("Connection", "keep-alive");
-                    res.setHeader("X-Accel-Buffering", "no");
-                    res.flushHeaders();
-                    headersSent = true;
-                };
-
-                const flushPendingEvents = () => {
-                    if (pendingEvents.length === 0) {
-                        return;
-                    }
-                    ensureHeaders();
-                    pendingEvents.forEach((event) =>
-                        writeAIClientStreamEvent(res, event),
-                    );
-                    pendingEvents.length = 0;
-                };
-
-                const enqueueEvent = (event: AIClientStreamEvent) => {
-                    if (headersSent) {
-                        writeAIClientStreamEvent(res, event);
-                    } else {
-                        pendingEvents.push(event);
-                    }
-                };
-
-                const commitIfReady = () => {
-                    if (!headersSent && pendingEvents.length > 0) {
-                        flushPendingEvents();
-                    }
-                };
-
-                const handleGeminiData = (
-                    data: string,
-                    eventType: string,
-                ): "continue" | "retry" | "fail" | "done" => {
-                    if (data === "[DONE]") {
-                        doneByDoneToken = true;
-                        flushPendingEvents();
-                        ensureHeaders();
-                        logAIResponseById(aiRequestId, aiResponseText);
-                        if (aiThinkingText.trim().length > 0) {
-                            logAIThinkingById(aiRequestId, aiThinkingText);
-                        }
-                        writeAIClientStreamEvent(res, { type: "done" });
-                        res.end();
-                        return "done";
-                    }
-                    if (eventType === "error") {
-                        const parsedError = parseGeminiStreamErrorPayload(data);
-                        if (parsedError) {
-                            lastFailedStatus = parsedError.status;
-                            lastFailedMessage = parsedError.message;
-                            // eslint-disable-next-line no-console
-                            console.log(
-                                `[AIUpstreamRetry][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} provider=${normalizedProvider} attempt=${attempt}/${totalAttempts} streamError status=${parsedError.status} message=${parsedError.message}`,
-                            );
-                            if (!headersSent && parsedError.retryable) {
-                                return "retry";
-                            }
-                            if (!headersSent) {
-                                return "fail";
-                            }
-                            doneByNaturalEnd = true;
-                            logAIResponseById(aiRequestId, aiResponseText);
-                            if (aiThinkingText.trim().length > 0) {
-                                logAIThinkingById(aiRequestId, aiThinkingText);
-                            }
-                            writeAIClientStreamEvent(res, { type: "done" });
-                            res.end();
-                            return "done";
-                        }
-                    }
-
-                    if (data.length === 0) {
-                        return "continue";
-                    }
-
-                    try {
-                        const payload = JSON.parse(data) as unknown;
-                        const extracted =
-                            extractGeminiStreamTextPayload(payload);
-                        if (extracted.thinkingText.length > 0) {
-                            aiThinkingText += extracted.thinkingText;
-                            streamThinkingChunkCount += 1;
-                            streamThinkingTextLength +=
-                                extracted.thinkingText.length;
-                            enqueueEvent({
-                                type: "thinking",
-                                text: extracted.thinkingText,
-                            });
-                        }
-                        if (extracted.answerText.length > 0) {
-                            aiResponseText += extracted.answerText;
-                            streamChunkCount += 1;
-                            streamTextLength += extracted.answerText.length;
-                            enqueueEvent({
-                                type: "answer",
-                                text: extracted.answerText,
-                            });
-                        }
-                        commitIfReady();
-                    } catch {
-                        // Ignore non-JSON stream chunks.
-                    }
-                    return "continue";
-                };
-
-                const reader = candidate.body!.getReader();
-                let shouldRetry = false;
-                let shouldFail = false;
-
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) {
-                        break;
-                    }
-                    if (!value) {
-                        continue;
-                    }
-
-                    const current = decoder.decode(value, { stream: true });
-                    if (
-                        rawStreamPreview.length <
-                        AI_RESPONSE_RAW_LOG_MAX_CHARS * 2
-                    ) {
-                        rawStreamPreview += current;
-                    }
-                    buffer += current;
-
-                    const lines = buffer.split(/\r?\n/);
-                    buffer = lines.pop() ?? "";
-
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (trimmed.length === 0) {
-                            currentEventType = "";
-                            continue;
-                        }
-                        if (trimmed.startsWith("event:")) {
-                            currentEventType = trimmed
-                                .slice(6)
-                                .trim()
-                                .toLowerCase();
-                            continue;
-                        }
-                        if (!trimmed.startsWith("data:")) {
-                            continue;
-                        }
-
-                        const data = trimmed.slice(5).trim();
-                        const action = handleGeminiData(data, currentEventType);
-                        currentEventType = "";
-
-                        if (action === "retry") {
-                            shouldRetry = true;
-                            break;
-                        }
-                        if (action === "fail") {
-                            shouldFail = true;
-                            break;
-                        }
-                        if (action === "done") {
-                            completed = true;
-                            break;
-                        }
-                    }
-
-                    if (completed || shouldRetry || shouldFail) {
-                        break;
-                    }
-                }
-
-                if (completed) {
+            for (const [index, step] of resolvedRoute.steps.entries()) {
+                if (controller.signal.aborted) {
                     return;
                 }
+                try {
+                    const result = await runRouteStepAttempt({
+                        step,
+                        prompt,
+                        fields: aiFields,
+                        signal: controller.signal,
+                        requestId: `${aiRequestId}-step-${index + 1}`,
+                        onAnswerChunk: (chunk) => {
+                            ensureHeaders();
+                            writeAIClientStreamEvent(res, {
+                                type: "answer",
+                                text: chunk,
+                            });
+                        },
+                        onThinkingChunk: (chunk) => {
+                            ensureHeaders();
+                            writeAIClientStreamEvent(res, {
+                                type: "thinking",
+                                text: chunk,
+                            });
+                        },
+                    });
 
-                if (shouldRetry || shouldFail) {
-                    await reader.cancel().catch(() => {});
-                    if (shouldRetry) {
+                    if (
+                        result.answerText.trim().length === 0 &&
+                        result.thinkingText.trim().length === 0
+                    ) {
+                        failures.push(
+                            `${step.provider.name}: AI 返回为空`,
+                        );
                         continue;
                     }
-                    break;
-                }
 
-                buffer += decoder.decode();
-                if (
-                    rawStreamPreview.length <
-                    AI_RESPONSE_RAW_LOG_MAX_CHARS * 2
-                ) {
-                    rawStreamPreview += buffer;
-                }
-
-                if (buffer.length > 0 && buffer.includes("data:")) {
-                    const maybeData = buffer
-                        .split(/\r?\n/)
-                        .map((line) => line.trim())
-                        .find((line) => line.startsWith("data:"));
-                    const value = maybeData ? maybeData.slice(5).trim() : "";
-                    if (value && value !== "[DONE]") {
-                        const action = handleGeminiData(
-                            value,
-                            currentEventType,
-                        );
-                        if (action === "retry") {
-                            await reader.cancel().catch(() => {});
-                            continue;
-                        }
-                        if (action === "fail") {
-                            await reader.cancel().catch(() => {});
-                            break;
-                        }
-                        if (action === "done") {
-                            completed = true;
-                            return;
-                        }
+                    ensureHeaders();
+                    writeAIClientStreamEvent(res, { type: "done" });
+                    res.end();
+                    return;
+                } catch (error) {
+                    if (controller.signal.aborted) {
+                        return;
                     }
+                    const parsed = parseUnknownUpstreamError(error);
+                    failures.push(`${step.provider.name}: ${parsed.message}`);
                 }
-
-                doneByNaturalEnd = true;
-                flushPendingEvents();
-                ensureHeaders();
-                logAIResponseById(aiRequestId, aiResponseText);
-                if (aiThinkingText.trim().length > 0) {
-                    logAIThinkingById(aiRequestId, aiThinkingText);
-                }
-                if (
-                    aiResponseText.trim().length === 0 &&
-                    rawStreamPreview.trim().length > 0
-                ) {
-                    logAIRawResponseById(aiRequestId, rawStreamPreview);
-                }
-                writeAIClientStreamEvent(res, { type: "done" });
-                res.end();
-                completed = true;
-                return;
             }
 
-            if (!completed) {
-                // eslint-disable-next-line no-console
-                console.log(
-                    `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${lastFailedStatus} message=${lastFailedMessage}`,
-                );
-                return res
-                    .status(lastFailedStatus)
-                    .json({ message: lastFailedMessage });
-            }
-        } catch (error) {
-            if (controller.signal.aborted) {
-                // eslint-disable-next-line no-console
-                console.log(
-                    `[AIResponseAborted][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} reason=${abortReason || "unknown"} upstreamStatus=${upstreamStatusCode ?? "-"} reqAborted=${req.aborted} reqComplete=${req.complete} resEnded=${res.writableEnded} chunks=${streamChunkCount} chars=${streamTextLength} thinkingChunks=${streamThinkingChunkCount} thinkingChars=${streamThinkingTextLength}`,
-                );
-                return;
-            }
-            const parsedError = parseUnknownUpstreamError(error);
             // eslint-disable-next-line no-console
             console.log(
-                `[AIResponseException][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${elapsedMs()} status=${parsedError.status} message=${parsedError.message}`,
+                `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${Date.now() - startedAt} route=${resolvedRoute.route.name} message=${failures.join(" | ")}`,
             );
+            return res.status(502).json({
+                message:
+                    failures.length > 0
+                        ? failures.join(" | ")
+                        : "所有模型提供商均调用失败",
+            });
+        } catch (error) {
+            if (controller.signal.aborted) {
+                return;
+            }
+            const parsed = parseUnknownUpstreamError(error);
             if (res.headersSent) {
                 if (!res.writableEnded) {
                     res.end();
                 }
                 return;
             }
-            return res
-                .status(parsedError.status)
-                .json({ message: parsedError.message });
+            return res.status(parsed.status).json({ message: parsed.message });
         }
     });
 };

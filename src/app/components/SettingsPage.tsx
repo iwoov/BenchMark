@@ -1,12 +1,11 @@
 import type {
     AIDetectConfig,
-    AIDetectProfile,
     FileViewState,
     NamedAIDetectConfig,
     ParsedColumn,
 } from "../../types";
 import {
-    AI_PROVIDER_OPTIONS,
+    AI_PROVIDER_API_TYPE_OPTIONS,
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
 } from "../constants";
@@ -21,6 +20,7 @@ interface SettingsPageProps {
     onOpenActiveFileConfig: () => void;
     onOpenAIStageConfigModal: () => void;
     onOpenAIProfileModal: () => void;
+    onOpenAIRouteModal: () => void;
 }
 
 export function SettingsPage({
@@ -32,19 +32,22 @@ export function SettingsPage({
     onOpenActiveFileConfig,
     onOpenAIStageConfigModal,
     onOpenAIProfileModal,
+    onOpenAIRouteModal,
 }: SettingsPageProps) {
     const visibleDisplayColumns = displayColumns;
     const editableColumns = activeFile.columns.filter((column) =>
         activeFile.selectedEditableColumnKeys.includes(column.key),
     );
     const activeConfig = aiConfigList[0]?.config ?? aiConfig;
-    const profiles = activeConfig.profiles ?? [];
-    const profileMap = new Map(
-        profiles.map((item) => [item.name, item.profile]),
-    );
-    const getProviderLabel = (provider: AIDetectProfile["provider"]) =>
-        AI_PROVIDER_OPTIONS.find((item) => item.value === provider)?.label ??
-        "-";
+    const providers = activeConfig.providers ?? [];
+    const routes = activeConfig.routes ?? [];
+    const providerMap = new Map(providers.map((item) => [item.name, item]));
+    const routeMap = new Map(routes.map((item) => [item.name, item]));
+
+    const getProviderTypeLabel = (apiType: string) =>
+        AI_PROVIDER_API_TYPE_OPTIONS.find((item) => item.value === apiType)
+            ?.label ?? "-";
+
     const getPromptPreview = (prompt: string) => {
         const trimmed = prompt.trim();
         if (!trimmed) {
@@ -133,9 +136,7 @@ export function SettingsPage({
                 <section className="settings-section">
                     <div className="settings-section-head">
                         <h3>AI 设置</h3>
-                        <p>
-                            配置不同阶段任务的提交字段/提示词，并维护模型接口。
-                        </p>
+                        <p>统一维护模型提供商、模型路由，以及当前文件的阶段任务绑定。</p>
                     </div>
                     <div className="settings-grid">
                         <div className="settings-subsection">
@@ -145,43 +146,39 @@ export function SettingsPage({
                             </div>
                             <div className="settings-stage-list">
                                 {AI_STAGE_ORDER.map((stageKey) => {
-                                    const stageConfig =
-                                        activeConfig.stages[stageKey];
-                                    const stageLabel =
-                                        AI_STAGE_LABELS[stageKey];
-                                    const profile = profileMap.get(
-                                        stageConfig.profileName,
-                                    );
-                                    const providerLabel = profile
-                                        ? getProviderLabel(profile.provider)
-                                        : "未配置接口";
+                                    const stageConfig = activeConfig.stages[stageKey];
+                                    const stageLabel = AI_STAGE_LABELS[stageKey];
+                                    const route = routeMap.get(stageConfig.routeName);
+                                    const routeProviders = route
+                                        ? route.steps
+                                              .map((step) => providerMap.get(step.providerName))
+                                              .filter((item): item is NonNullable<typeof item> => Boolean(item))
+                                        : [];
                                     return (
                                         <div
                                             key={stageKey}
                                             className="settings-stage-item"
                                         >
                                             <div className="settings-stage-title">
-                                                <strong>
-                                                    {stageLabel.title}
-                                                </strong>
+                                                <strong>{stageLabel.title}</strong>
                                                 <span className="settings-tag">
-                                                    {stageConfig.profileName ||
-                                                        "未绑定接口"}
+                                                    {stageConfig.routeName || "未绑定路由"}
                                                 </span>
                                                 <span className="settings-tag">
-                                                    {providerLabel}
+                                                    {routeProviders.length > 0
+                                                        ? routeProviders
+                                                              .map((item) => item.name)
+                                                              .join(" -> ")
+                                                        : "未配置提供商"}
                                                 </span>
                                             </div>
                                             <div className="settings-stage-meta">
                                                 <span>{`提交字段 ${stageConfig.submitFieldKeys.length} 个`}</span>
-                                                <span>{`结果字段 AI检测结果`}</span>
-                                                <span>{`重试 ${profile?.retryCount ?? 0} 次`}</span>
-                                                <span>{`模型 ${profile?.model || "-"}`}</span>
+                                                <span>{`重试 ${route?.retryCount ?? 0} 次`}</span>
+                                                <span>{`模型 ${route?.model || "-"}`}</span>
                                             </div>
                                             <div className="settings-stage-prompt">
-                                                {getPromptPreview(
-                                                    stageConfig.prompt,
-                                                )}
+                                                {getPromptPreview(stageConfig.prompt)}
                                             </div>
                                         </div>
                                     );
@@ -197,39 +194,30 @@ export function SettingsPage({
                                 </button>
                             </div>
                         </div>
+
                         <div className="settings-subsection">
                             <div className="settings-subsection-head">
-                                <h4>模型接口配置</h4>
-                                <span>{`共 ${profiles.length} 个接口`}</span>
+                                <h4>模型提供商</h4>
+                                <span>{`共 ${providers.length} 个提供商`}</span>
                             </div>
                             <div className="settings-config-grid">
                                 <div className="settings-config-group">
-                                    <h5>已配置接口</h5>
-                                    {profiles.length > 0 ? (
-                                        profiles.map((item) => {
-                                            return (
-                                                <div
-                                                    key={item.name}
-                                                    className="settings-config-item"
-                                                >
-                                                    <strong>{item.name}</strong>
-                                                    <span>
-                                                        {getProviderLabel(
-                                                            item.profile
-                                                                .provider,
-                                                        )}
-                                                    </span>
-                                                    <span>
-                                                        {item.profile.model ||
-                                                            "未配置模型"}
-                                                    </span>
-                                                    <span className="settings-config-url">
-                                                        {item.profile.url ||
-                                                            "未配置接口 URL"}
-                                                    </span>
-                                                </div>
-                                            );
-                                        })
+                                    <h5>已配置提供商</h5>
+                                    {providers.length > 0 ? (
+                                        providers.map((provider) => (
+                                            <div
+                                                key={provider.name}
+                                                className="settings-config-item"
+                                            >
+                                                <strong>{provider.name}</strong>
+                                                <span>
+                                                    {getProviderTypeLabel(provider.apiType)}
+                                                </span>
+                                                <span className="settings-config-url">
+                                                    {provider.apiUrl || "未配置 API URL"}
+                                                </span>
+                                            </div>
+                                        ))
                                     ) : (
                                         <span className="settings-empty">
                                             暂无配置
@@ -243,7 +231,51 @@ export function SettingsPage({
                                     className="btn"
                                     onClick={onOpenAIProfileModal}
                                 >
-                                    管理接口配置
+                                    管理模型提供商
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="settings-subsection">
+                            <div className="settings-subsection-head">
+                                <h4>模型路由</h4>
+                                <span>{`共 ${routes.length} 条路由`}</span>
+                            </div>
+                            <div className="settings-config-grid">
+                                <div className="settings-config-group">
+                                    <h5>已配置路由</h5>
+                                    {routes.length > 0 ? (
+                                        routes.map((route) => (
+                                            <div
+                                                key={route.name}
+                                                className="settings-config-item"
+                                            >
+                                                <strong>{route.name}</strong>
+                                                <span>{route.model || "未配置模型"}</span>
+                                                <span>{`重试 ${route.retryCount} 次`}</span>
+                                                <span className="settings-config-url">
+                                                    {route.steps.length > 0
+                                                        ? route.steps
+                                                              .map((step) => step.providerName)
+                                                              .join(" -> ")
+                                                        : "未配置回退步骤"}
+                                                </span>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <span className="settings-empty">
+                                            暂无配置
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="settings-section-actions">
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={onOpenAIRouteModal}
+                                >
+                                    管理模型路由
                                 </button>
                             </div>
                         </div>

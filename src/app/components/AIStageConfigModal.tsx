@@ -7,7 +7,7 @@ import type {
     ParsedColumn,
 } from "../../types";
 import {
-    AI_PROVIDER_OPTIONS,
+    AI_PROVIDER_API_TYPE_OPTIONS,
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
 } from "../constants";
@@ -54,16 +54,14 @@ export function AIStageConfigModal({
     }
 
     const stageConfig = draftAIConfig.stages[activeStageKey];
-    const profileOptions = draftAIConfig.profiles ?? [];
-    const activeProfile =
-        profileOptions.find((item) => item.name === stageConfig.profileName) ??
-        profileOptions[0] ??
+    const routeOptions = draftAIConfig.routes ?? [];
+    const providerMap = new Map(
+        draftAIConfig.providers.map((provider) => [provider.name, provider]),
+    );
+    const activeRoute =
+        routeOptions.find((item) => item.name === stageConfig.routeName) ??
+        routeOptions[0] ??
         null;
-    const getProviderLabel = (
-        provider: AIDetectConfig["profiles"][number]["profile"]["provider"],
-    ) =>
-        AI_PROVIDER_OPTIONS.find((item) => item.value === provider)?.label ??
-        "未配置供应商";
 
     const updateStageConfig = (
         updater: (
@@ -78,6 +76,22 @@ export function AIStageConfigModal({
             },
         }));
     };
+
+    const providerSummary = activeRoute
+        ? activeRoute.steps
+              .map((step) => {
+                  const provider = providerMap.get(step.providerName);
+                  if (!provider) {
+                      return step.providerName;
+                  }
+                  const typeLabel =
+                      AI_PROVIDER_API_TYPE_OPTIONS.find(
+                          (item) => item.value === provider.apiType,
+                      )?.label ?? provider.apiType;
+                  return `${provider.name} (${typeLabel})`;
+              })
+              .join(" -> ")
+        : "尚未配置路由";
 
     return (
         <div className="column-modal-mask">
@@ -114,32 +128,24 @@ export function AIStageConfigModal({
                         </span>
                     </div>
                     <label className="ai-config-field">
-                        <span>选择接口配置</span>
+                        <span>选择模型路由</span>
                         <select
-                            value={stageConfig.profileName}
+                            value={stageConfig.routeName}
                             onChange={(event) =>
                                 updateStageConfig((previous) => ({
                                     ...previous,
-                                    profileName: event.target.value,
+                                    routeName: event.target.value,
                                 }))
                             }
                         >
-                            <option value="">请选择接口配置</option>
-                            {profileOptions.map((profile) => (
-                                <option key={profile.name} value={profile.name}>
-                                    {profile.name}
+                            <option value="">请选择模型路由</option>
+                            {routeOptions.map((route) => (
+                                <option key={route.name} value={route.name}>
+                                    {route.name}
                                 </option>
                             ))}
                         </select>
-                        {activeProfile ? (
-                            <small className="ai-config-hint">
-                                {`${getProviderLabel(activeProfile.profile.provider)} · ${activeProfile.profile.model || "未配置模型"}`}
-                            </small>
-                        ) : (
-                            <small className="ai-config-hint">
-                                尚未配置接口
-                            </small>
-                        )}
+                        <small className="ai-config-hint">{providerSummary}</small>
                     </label>
                     <div className="ai-config-field">
                         <span>结果保存</span>

@@ -1,8 +1,9 @@
 import type {
     AIDetectConfig,
-    AIDetectProfile,
+    AIModelRoute,
+    AIProviderApiType,
+    AIProviderEndpoint,
     AIDetectStageConfigMap,
-    NamedAIDetectProfile,
     AIDetectStageConfig,
     NamedAIDetectConfig,
     ParsedColumn,
@@ -10,16 +11,17 @@ import type {
 } from "../types";
 import {
     AI_STAGE_ORDER,
-    DEFAULT_AI_PROFILE_NAME,
-    DEFAULT_AI_PROFILES,
+    DEFAULT_AI_PROVIDER,
+    DEFAULT_AI_PROVIDER_NAME,
+    DEFAULT_AI_ROUTE,
+    DEFAULT_AI_ROUTE_NAME,
     DEFAULT_AI_BATCH_CONCURRENCY,
     DEFAULT_AI_CONFIG_NAME,
     DEFAULT_AI_STAGE_CONFIGS,
     DEFAULT_AI_RETRY_COUNT,
+    DEFAULT_ANTHROPIC_URL,
     DEFAULT_IDEALAB_GEMINI_URL,
     DEFAULT_IDEALAB_OPENAI_URL,
-    DEFAULT_MODELROUTER_GEMINI_URL,
-    DEFAULT_MODELROUTER_OPENAI_URL,
     MAX_AI_BATCH_CONCURRENCY,
     MAX_AI_RETRY_COUNT,
     MIN_AI_BATCH_CONCURRENCY,
@@ -32,46 +34,22 @@ import type {
 } from "./types";
 import { getCellImageSources } from "./file-helpers";
 
-export function getDefaultAIUrl(provider: AIDetectProfile["provider"]): string {
-    if (provider === "gemini") {
+export function getDefaultProviderUrl(apiType: AIProviderApiType): string {
+    if (apiType === "gemini") {
         return DEFAULT_IDEALAB_GEMINI_URL;
     }
-    if (provider === "modelrouter-gemini") {
-        return DEFAULT_MODELROUTER_GEMINI_URL;
-    }
-    if (provider === "modelrouter-openai") {
-        return DEFAULT_MODELROUTER_OPENAI_URL;
+    if (apiType === "anthropic") {
+        return DEFAULT_ANTHROPIC_URL;
     }
     return DEFAULT_IDEALAB_OPENAI_URL;
 }
 
-export function isGeminiProvider(
-    provider: AIDetectProfile["provider"],
-): boolean {
-    return provider === "gemini" || provider === "modelrouter-gemini";
+export function isGeminiApiType(apiType: AIProviderApiType): boolean {
+    return apiType === "gemini";
 }
 
-function inferAIProviderFromUrl(
-    provider: AIDetectProfile["provider"],
-    url: unknown,
-): AIDetectProfile["provider"] {
-    if (typeof url !== "string") {
-        return provider;
-    }
-    const trimmed = url.trim().toLowerCase();
-    if (!trimmed) {
-        return provider;
-    }
-    if (!trimmed.includes("routify.alibaba-inc.com")) {
-        return provider;
-    }
-    if (trimmed.includes("/protocol/vertex/")) {
-        return "modelrouter-gemini";
-    }
-    if (trimmed.includes("/protocol/openai/")) {
-        return "modelrouter-openai";
-    }
-    return provider;
+export function isAnthropicApiType(apiType: AIProviderApiType): boolean {
+    return apiType === "anthropic";
 }
 
 const MODEL_PROVIDER_PREFIXES = new Set([
@@ -82,24 +60,6 @@ const MODEL_PROVIDER_PREFIXES = new Set([
     "vertex",
     "idealab",
 ]);
-
-function splitModelId(
-    value: string,
-    fallbackProvider: string,
-): { provider: string; name: string } {
-    const trimmed = value.trim();
-    if (!trimmed) {
-        return { provider: fallbackProvider, name: "" };
-    }
-    const slashIndex = trimmed.indexOf("/");
-    if (slashIndex > 0) {
-        return {
-            provider: trimmed.slice(0, slashIndex),
-            name: trimmed.slice(slashIndex + 1),
-        };
-    }
-    return { provider: fallbackProvider, name: trimmed };
-}
 
 function stripModelProviderPrefix(value: string): string {
     const trimmed = value.trim();
@@ -116,11 +76,6 @@ function stripModelProviderPrefix(value: string): string {
     }
     const remainder = trimmed.slice(slashIndex + 1).trim();
     return remainder.length > 0 ? remainder : trimmed;
-}
-
-function composeModelId(_provider: string, name: string): string {
-    const trimmedName = name.trim();
-    return trimmedName;
 }
 
 export function getAIBatchTaskStatusText(task: AIBatchTaskState): string {
@@ -429,18 +384,16 @@ export function buildFinalVerdictExtraFields(
     return fields;
 }
 
-export function cloneAIDetectProfile(
-    profile: AIDetectProfile,
-): AIDetectProfile {
-    return { ...profile };
+export function cloneAIProviderEndpoint(
+    provider: AIProviderEndpoint,
+): AIProviderEndpoint {
+    return { ...provider };
 }
 
-export function cloneNamedAIDetectProfile(
-    item: NamedAIDetectProfile,
-): NamedAIDetectProfile {
+export function cloneAIModelRoute(route: AIModelRoute): AIModelRoute {
     return {
-        name: item.name,
-        profile: cloneAIDetectProfile(item.profile),
+        ...route,
+        steps: route.steps.map((step) => ({ ...step })),
     };
 }
 
@@ -454,85 +407,178 @@ export function cloneAIDetectStageConfig(
 }
 
 export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
-    const profiles = config.profiles.map(cloneNamedAIDetectProfile);
+    const providers = config.providers.map(cloneAIProviderEndpoint);
+    const routes = config.routes.map(cloneAIModelRoute);
     const stages = {} as AIDetectStageConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = cloneAIDetectStageConfig(config.stages[stageKey]);
     });
-    return { profiles, stages };
+    return { providers, routes, stages };
 }
 
 export function createDefaultAIDetectConfig(): AIDetectConfig {
-    const profiles = DEFAULT_AI_PROFILES.map(cloneNamedAIDetectProfile);
     const stages = {} as AIDetectStageConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = cloneAIDetectStageConfig(
             DEFAULT_AI_STAGE_CONFIGS[stageKey],
         );
     });
-    return { profiles, stages };
+    return {
+        providers: [cloneAIProviderEndpoint(DEFAULT_AI_PROVIDER)],
+        routes: [cloneAIModelRoute(DEFAULT_AI_ROUTE)],
+        stages,
+    };
 }
 
-function normalizeLoadedAIDetectProfile(
+function normalizeLoadedProvider(
     value: unknown,
-    fallback: AIDetectProfile,
-): AIDetectProfile {
+    fallback: AIProviderEndpoint,
+): AIProviderEndpoint {
     if (!value || typeof value !== "object") {
-        return cloneAIDetectProfile(fallback);
+        return cloneAIProviderEndpoint(fallback);
     }
 
-    const candidate = value as Partial<AIDetectProfile>;
-    const rawProvider = (value as { provider?: unknown }).provider;
-    const provider = inferAIProviderFromUrl(
-        rawProvider === "openai" ||
-            rawProvider === "gemini" ||
-            rawProvider === "modelrouter-openai" ||
-            rawProvider === "modelrouter-gemini"
-            ? rawProvider
-            : rawProvider === "vertex"
-              ? "gemini"
-              : rawProvider === "idealab"
-                ? "openai"
-                : fallback.provider,
-        candidate.url,
-    );
-    const rawModel =
-        typeof candidate.model === "string" && candidate.model.trim().length > 0
-            ? stripModelProviderPrefix(candidate.model)
-            : "";
-    const rawModelProvider =
-        typeof candidate.modelProvider === "string"
-            ? candidate.modelProvider.trim()
-            : "";
-    const rawModelName =
-        typeof candidate.modelName === "string"
-            ? stripModelProviderPrefix(candidate.modelName)
-            : "";
-    const resolvedModel =
-        rawModel.length > 0
-            ? rawModel
-            : rawModelName.length > 0
-              ? composeModelId(rawModelProvider, rawModelName)
-              : fallback.model;
-    const normalizedModel = stripModelProviderPrefix(resolvedModel);
-    const derivedModel = splitModelId(
-        normalizedModel,
-        isGeminiProvider(provider) ? "google" : "openai",
-    );
+    const candidate = value as {
+        name?: unknown;
+        apiType?: unknown;
+        apiUrl?: unknown;
+        apiKey?: unknown;
+        provider?: unknown;
+        url?: unknown;
+    };
+    let apiType = fallback.apiType;
+    if (
+        candidate.apiType === "openai" ||
+        candidate.apiType === "gemini" ||
+        candidate.apiType === "anthropic"
+    ) {
+        apiType = candidate.apiType;
+    } else if (
+        candidate.provider === "gemini" ||
+        candidate.provider === "modelrouter-gemini" ||
+        candidate.provider === "vertex"
+    ) {
+        apiType = "gemini";
+    } else if (candidate.provider === "anthropic") {
+        apiType = "anthropic";
+    } else if (
+        candidate.provider === "openai" ||
+        candidate.provider === "modelrouter-openai" ||
+        candidate.provider === "idealab"
+    ) {
+        apiType = "openai";
+    }
 
     return {
-        provider,
-        url:
-            typeof candidate.url === "string" && candidate.url.trim().length > 0
-                ? candidate.url
-                : getDefaultAIUrl(provider),
-        model:
-            normalizedModel.trim().length > 0
-                ? normalizedModel
-                : stripModelProviderPrefix(fallback.model),
-        modelProvider: rawModelProvider || derivedModel.provider,
-        modelName: rawModelName || derivedModel.name,
+        name:
+            typeof candidate.name === "string" && candidate.name.trim().length
+                ? candidate.name.trim()
+                : fallback.name,
+        apiType,
+        apiUrl:
+            typeof candidate.apiUrl === "string" &&
+            candidate.apiUrl.trim().length > 0
+                ? candidate.apiUrl
+                : typeof candidate.url === "string" &&
+                    candidate.url.trim().length > 0
+                  ? candidate.url
+                  : getDefaultProviderUrl(apiType),
         apiKey: typeof candidate.apiKey === "string" ? candidate.apiKey : "",
+    };
+}
+
+function normalizeLoadedProviders(value: unknown): AIProviderEndpoint[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    const result: AIProviderEndpoint[] = [];
+    const nameCount = new Map<string, number>();
+
+    value.forEach((item, index) => {
+        if (!item || typeof item !== "object") {
+            return;
+        }
+        const candidate = item as { name?: unknown };
+        const rawName =
+            typeof candidate.name === "string" &&
+            candidate.name.trim().length > 0
+                ? candidate.name.trim()
+                : index === 0
+                  ? DEFAULT_AI_PROVIDER_NAME
+                  : `提供商 ${index + 1}`;
+        const count = nameCount.get(rawName) ?? 0;
+        nameCount.set(rawName, count + 1);
+        const name = count > 0 ? `${rawName}-${count + 1}` : rawName;
+        result.push(
+            normalizeLoadedProvider(
+                {
+                    ...item,
+                    name,
+                },
+                DEFAULT_AI_PROVIDER,
+            ),
+        );
+    });
+
+    return result;
+}
+
+function normalizeLoadedRoute(
+    value: unknown,
+    fallback: AIModelRoute,
+    fallbackProviderName: string,
+): AIModelRoute {
+    if (!value || typeof value !== "object") {
+        return cloneAIModelRoute(fallback);
+    }
+
+    const candidate = value as {
+        name?: unknown;
+        model?: unknown;
+        retryCount?: unknown;
+        reasoningEffort?: unknown;
+        steps?: unknown;
+        profileName?: unknown;
+        modelName?: unknown;
+    };
+    const steps = Array.isArray(candidate.steps)
+        ? candidate.steps
+              .map((step) => {
+                  if (!step || typeof step !== "object") {
+                      return null;
+                  }
+                  const providerName = (step as { providerName?: unknown })
+                      .providerName;
+                  if (
+                      typeof providerName !== "string" ||
+                      providerName.trim().length === 0
+                  ) {
+                      return null;
+                  }
+                  return { providerName: providerName.trim() };
+              })
+              .filter((item): item is { providerName: string } => item !== null)
+        : typeof candidate.profileName === "string" &&
+            candidate.profileName.trim().length > 0
+          ? [{ providerName: candidate.profileName.trim() }]
+          : fallback.steps.length > 0
+            ? fallback.steps.map((step) => ({ ...step }))
+            : [{ providerName: fallbackProviderName }];
+
+    return {
+        name:
+            typeof candidate.name === "string" && candidate.name.trim().length
+                ? candidate.name.trim()
+                : fallback.name,
+        model:
+            typeof candidate.model === "string" &&
+            candidate.model.trim().length > 0
+                ? stripModelProviderPrefix(candidate.model)
+                : typeof candidate.modelName === "string" &&
+                    candidate.modelName.trim().length > 0
+                  ? stripModelProviderPrefix(candidate.modelName)
+                  : fallback.model,
         reasoningEffort:
             candidate.reasoningEffort === "low" ||
             candidate.reasoningEffort === "medium" ||
@@ -540,44 +586,46 @@ function normalizeLoadedAIDetectProfile(
                 ? candidate.reasoningEffort
                 : fallback.reasoningEffort,
         retryCount: normalizeAIRetryCount(candidate.retryCount),
+        steps: steps.length > 0 ? steps : [{ providerName: fallbackProviderName }],
     };
 }
 
-function normalizeLoadedProfiles(value: unknown): NamedAIDetectProfile[] {
+function normalizeLoadedRoutes(
+    value: unknown,
+    fallbackProviderName: string,
+): AIModelRoute[] {
     if (!Array.isArray(value)) {
         return [];
     }
 
-    const result: NamedAIDetectProfile[] = [];
+    const result: AIModelRoute[] = [];
     const nameCount = new Map<string, number>();
 
     value.forEach((item, index) => {
         if (!item || typeof item !== "object") {
             return;
         }
-        const candidate = item as {
-            name?: unknown;
-            profile?: unknown;
-        } & Partial<AIDetectProfile>;
+        const candidate = item as { name?: unknown };
         const rawName =
             typeof candidate.name === "string" &&
             candidate.name.trim().length > 0
                 ? candidate.name.trim()
                 : index === 0
-                  ? DEFAULT_AI_PROFILE_NAME
-                  : `接口配置 ${index + 1}`;
+                  ? DEFAULT_AI_ROUTE_NAME
+                  : `模型路由 ${index + 1}`;
         const count = nameCount.get(rawName) ?? 0;
         nameCount.set(rawName, count + 1);
         const name = count > 0 ? `${rawName}-${count + 1}` : rawName;
-        const profileSource =
-            candidate.profile && typeof candidate.profile === "object"
-                ? candidate.profile
-                : candidate;
-        const profile = normalizeLoadedAIDetectProfile(
-            profileSource,
-            DEFAULT_AI_PROFILES[0].profile,
+        result.push(
+            normalizeLoadedRoute(
+                {
+                    ...item,
+                    name,
+                },
+                DEFAULT_AI_ROUTE,
+                fallbackProviderName,
+            ),
         );
-        result.push({ name, profile });
     });
 
     return result;
@@ -586,29 +634,33 @@ function normalizeLoadedProfiles(value: unknown): NamedAIDetectProfile[] {
 function normalizeLoadedAIDetectStageConfig(
     value: unknown,
     fallback: AIDetectStageConfig,
-    fallbackProfileName: string,
+    fallbackRouteName: string,
 ): AIDetectStageConfig {
     if (!value || typeof value !== "object") {
         return {
             ...cloneAIDetectStageConfig(fallback),
-            profileName: fallbackProfileName,
+            routeName: fallbackRouteName,
         };
     }
 
-    const candidate = value as Partial<AIDetectStageConfig>;
+    const candidate = value as Partial<AIDetectStageConfig> & {
+        profileName?: unknown;
+    };
     const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
         ? candidate.submitFieldKeys.filter(
               (item): item is string => typeof item === "string",
           )
         : [];
-    const profileName =
-        typeof candidate.profileName === "string" &&
-        candidate.profileName.trim()
-            ? candidate.profileName.trim()
-            : fallbackProfileName;
+    const routeName =
+        typeof candidate.routeName === "string" && candidate.routeName.trim()
+            ? candidate.routeName.trim()
+            : typeof candidate.profileName === "string" &&
+                candidate.profileName.trim()
+              ? candidate.profileName.trim()
+              : fallbackRouteName;
 
     return {
-        profileName,
+        routeName,
         submitFieldKeys,
         prompt:
             typeof candidate.prompt === "string" &&
@@ -623,136 +675,40 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         return createDefaultAIDetectConfig();
     }
 
-    const candidate = value as { stages?: unknown; profiles?: unknown };
-    const normalizedProfiles = normalizeLoadedProfiles(candidate.profiles);
-
-    if (candidate.stages && typeof candidate.stages === "object") {
-        const rawStages = candidate.stages as Record<string, unknown>;
-        const hasProfileName = AI_STAGE_ORDER.some((stageKey) => {
-            const stageValue = rawStages[stageKey] as {
-                profileName?: unknown;
-            } | null;
-            return (
-                stageValue &&
-                typeof stageValue === "object" &&
-                typeof stageValue.profileName === "string"
-            );
-        });
-
-        const profiles =
-            normalizedProfiles.length > 0
-                ? normalizedProfiles
-                : DEFAULT_AI_PROFILES.map(cloneNamedAIDetectProfile);
-        const fallbackProfileName =
-            profiles[0]?.name ?? DEFAULT_AI_PROFILE_NAME;
-        const stages = {} as AIDetectStageConfigMap;
-
-        if (hasProfileName) {
-            AI_STAGE_ORDER.forEach((stageKey) => {
-                stages[stageKey] = normalizeLoadedAIDetectStageConfig(
-                    rawStages[stageKey],
-                    DEFAULT_AI_STAGE_CONFIGS[stageKey],
-                    fallbackProfileName,
-                );
-            });
-            return { profiles, stages };
-        }
-
-        // Legacy stage payload: provider/url/model/... per stage
-        const legacyProfiles: NamedAIDetectProfile[] = [];
-        const legacyStages = {} as AIDetectStageConfigMap;
-        AI_STAGE_ORDER.forEach((stageKey, index) => {
-            const stageValue = rawStages[stageKey];
-            const profileName =
-                AI_STAGE_ORDER.length > 1
-                    ? `${DEFAULT_AI_PROFILE_NAME}-${index + 1}`
-                    : DEFAULT_AI_PROFILE_NAME;
-            legacyProfiles.push({
-                name: profileName,
-                profile: normalizeLoadedAIDetectProfile(
-                    stageValue,
-                    DEFAULT_AI_PROFILES[0].profile,
-                ),
-            });
-            legacyStages[stageKey] = normalizeLoadedAIDetectStageConfig(
-                stageValue,
-                DEFAULT_AI_STAGE_CONFIGS[stageKey],
-                profileName,
-            );
-        });
-        return {
-            profiles: legacyProfiles,
-            stages: legacyStages,
-        };
-    }
-
-    // Legacy single-config payload
-    const legacyProfile: NamedAIDetectProfile = {
-        name: DEFAULT_AI_PROFILE_NAME,
-        profile: normalizeLoadedAIDetectProfile(
-            value,
-            DEFAULT_AI_PROFILES[0].profile,
-        ),
+    const candidate = value as {
+        stages?: unknown;
+        providers?: unknown;
+        routes?: unknown;
+        profiles?: unknown;
     };
+    const providers = normalizeLoadedProviders(
+        candidate.providers ?? candidate.profiles,
+    );
+    const resolvedProviders =
+        providers.length > 0
+            ? providers
+            : [cloneAIProviderEndpoint(DEFAULT_AI_PROVIDER)];
+    const routes = normalizeLoadedRoutes(
+        candidate.routes,
+        resolvedProviders[0]?.name ?? DEFAULT_AI_PROVIDER_NAME,
+    );
+    const resolvedRoutes =
+        routes.length > 0 ? routes : [cloneAIModelRoute(DEFAULT_AI_ROUTE)];
     const stages = {} as AIDetectStageConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = normalizeLoadedAIDetectStageConfig(
-            value,
+            candidate.stages && typeof candidate.stages === "object"
+                ? (candidate.stages as Record<string, unknown>)[stageKey]
+                : null,
             DEFAULT_AI_STAGE_CONFIGS[stageKey],
-            legacyProfile.name,
+            resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
         );
     });
-    return { profiles: [legacyProfile], stages };
-}
-
-export function normalizeAIConfigName(value: unknown): string {
-    if (typeof value !== "string") {
-        return DEFAULT_AI_CONFIG_NAME;
-    }
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : DEFAULT_AI_CONFIG_NAME;
-}
-
-export function normalizeLoadedNamedAIDetectConfigs(
-    value: unknown,
-): NamedAIDetectConfig[] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-
-    const usedNames = new Set<string>();
-    const result: NamedAIDetectConfig[] = [];
-
-    value.forEach((item) => {
-        if (!item || typeof item !== "object") {
-            return;
-        }
-        const candidate = item as {
-            name?: unknown;
-            config?: unknown;
-            profiles?: unknown;
-            stages?: unknown;
-        };
-        const name = normalizeAIConfigName(candidate.name);
-        if (usedNames.has(name)) {
-            return;
-        }
-
-        const configSource =
-            candidate.config && typeof candidate.config === "object"
-                ? candidate.config
-                : candidate.stages && typeof candidate.stages === "object"
-                  ? {
-                        stages: candidate.stages,
-                        profiles: candidate.profiles,
-                    }
-                  : item;
-        const config = normalizeLoadedAIDetectConfig(configSource);
-        usedNames.add(name);
-        result.push({ name, config });
-    });
-
-    return result;
+    return {
+        providers: resolvedProviders,
+        routes: resolvedRoutes,
+        stages,
+    };
 }
 
 function normalizeAIDetectStageConfigForColumns(
@@ -773,12 +729,16 @@ export function normalizeAIDetectConfigForColumns(
     config: AIDetectConfig,
     columns: ParsedColumn[],
 ): AIDetectConfig {
-    const profiles =
-        config.profiles && config.profiles.length > 0
-            ? config.profiles.map(cloneNamedAIDetectProfile)
-            : DEFAULT_AI_PROFILES.map(cloneNamedAIDetectProfile);
-    const fallbackProfileName = profiles[0]?.name ?? DEFAULT_AI_PROFILE_NAME;
-    const stageProfileNames = new Set(profiles.map((item) => item.name));
+    const providers =
+        config.providers && config.providers.length > 0
+            ? config.providers.map(cloneAIProviderEndpoint)
+            : [cloneAIProviderEndpoint(DEFAULT_AI_PROVIDER)];
+    const routes =
+        config.routes && config.routes.length > 0
+            ? config.routes.map(cloneAIModelRoute)
+            : [cloneAIModelRoute(DEFAULT_AI_ROUTE)];
+    const fallbackRouteName = routes[0]?.name ?? DEFAULT_AI_ROUTE_NAME;
+    const routeNames = new Set(routes.map((item) => item.name));
 
     const stages = {} as AIDetectStageConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
@@ -788,18 +748,61 @@ export function normalizeAIDetectConfigForColumns(
             stageConfig,
             columns,
         );
-        const normalizedProfileName =
-            normalizedStage.profileName &&
-            stageProfileNames.has(normalizedStage.profileName)
-                ? normalizedStage.profileName
-                : fallbackProfileName;
+        const normalizedRouteName =
+            normalizedStage.routeName && routeNames.has(normalizedStage.routeName)
+                ? normalizedStage.routeName
+                : fallbackRouteName;
         stages[stageKey] = {
             ...normalizedStage,
-            profileName: normalizedProfileName,
+            routeName: normalizedRouteName,
         };
     });
 
-    return { profiles, stages };
+    return { providers, routes, stages };
+}
+
+export function normalizeAIConfigName(value: unknown): string {
+    if (typeof value !== "string") {
+        return DEFAULT_AI_CONFIG_NAME;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : DEFAULT_AI_CONFIG_NAME;
+}
+
+export function normalizeLoadedNamedAIDetectConfigs(
+    value: unknown,
+): NamedAIDetectConfig[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    const result: NamedAIDetectConfig[] = [];
+    const usedNames = new Set<string>();
+    value.forEach((item) => {
+        if (!item || typeof item !== "object") {
+            return;
+        }
+        const candidate = item as {
+            name?: unknown;
+            config?: unknown;
+            providers?: unknown;
+            routes?: unknown;
+            stages?: unknown;
+        };
+        const name = normalizeAIConfigName(candidate.name);
+        if (usedNames.has(name)) {
+            return;
+        }
+        const configSource =
+            candidate.config && typeof candidate.config === "object"
+                ? candidate.config
+                : candidate;
+        result.push({
+            name,
+            config: normalizeLoadedAIDetectConfig(configSource),
+        });
+        usedNames.add(name);
+    });
+    return result;
 }
 
 export function normalizeNamedAIDetectConfigsForColumns(
@@ -819,14 +822,9 @@ export function pickAIConfigName(
     if (configs.length === 0) {
         return DEFAULT_AI_CONFIG_NAME;
     }
-    if (typeof preferredName === "string") {
-        const trimmed = preferredName.trim();
-        if (
-            trimmed.length > 0 &&
-            configs.some((item) => item.name === trimmed)
-        ) {
-            return trimmed;
-        }
+    const normalizedPreferred = normalizeAIConfigName(preferredName);
+    if (configs.some((item) => item.name === normalizedPreferred)) {
+        return normalizedPreferred;
     }
     return configs[0].name;
 }
@@ -870,14 +868,9 @@ export function buildAIDetectFieldsForRow(
 
 export async function requestAIDetectResult(
     payload: {
-        provider: AIDetectProfile["provider"];
-        url: string;
-        model: string;
-        apiKey: string;
+        routeName: string;
         prompt: string;
         fields: AIDetectFieldPayload[];
-        reasoningEffort: AIDetectProfile["reasoningEffort"];
-        retryCount: number;
     },
     options?: {
         signal?: AbortSignal;
@@ -886,17 +879,13 @@ export async function requestAIDetectResult(
         onChunk?: (chunk: string) => void;
     },
 ): Promise<AIDetectStreamResult> {
-    const normalizedModel = stripModelProviderPrefix(payload.model);
     const response = await fetch("/api/ai-detect/stream", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
         signal: options?.signal,
-        body: JSON.stringify({
-            ...payload,
-            model: normalizedModel,
-        }),
+        body: JSON.stringify(payload),
     });
 
     if (!response.ok) {

@@ -1,10 +1,10 @@
 import type {
     AIDetectConfig,
-    AIDetectProfile,
+    AIModelRoute,
+    AIProviderEndpoint,
     AIDetectStageConfig,
     AIDetectStageConfigMap,
     AIDetectStageKey,
-    NamedAIDetectProfile,
 } from "../types";
 import type { AIBatchTaskState } from "./types";
 
@@ -31,6 +31,7 @@ export const DEFAULT_MODELROUTER_OPENAI_URL =
     "https://routify.alibaba-inc.com/protocol/openai/v1/";
 export const DEFAULT_MODELROUTER_GEMINI_URL =
     "https://routify.alibaba-inc.com/protocol/vertex/v1beta/";
+export const DEFAULT_ANTHROPIC_URL = "";
 
 export const AI_STAGE_ORDER = [
     "precheck",
@@ -184,25 +185,27 @@ export const DEFAULT_AI_STAGE_PROMPTS: Record<AIDetectStageKey, string> = {
 {{fields_json}}`,
 };
 
-export const DEFAULT_AI_PROFILE_NAME = "默认接口";
+export const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
+export const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
+export const DEFAULT_AI_CONFIG_NAME = "默认配置";
 
-export const DEFAULT_AI_PROFILE: AIDetectProfile = {
-    provider: "openai",
-    url: DEFAULT_IDEALAB_OPENAI_URL,
-    model: "gpt-5.4-2026-03-05",
-    modelProvider: "openai",
-    modelName: "gpt-5.4-2026-03-05",
+export const DEFAULT_AI_PROVIDER: AIProviderEndpoint = {
+    name: DEFAULT_AI_PROVIDER_NAME,
+    apiType: "openai",
+    apiUrl: DEFAULT_IDEALAB_OPENAI_URL,
     apiKey: "",
-    reasoningEffort: "high",
-    retryCount: 5,
 };
 
-export const DEFAULT_AI_PROFILES: NamedAIDetectProfile[] = [
-    { name: DEFAULT_AI_PROFILE_NAME, profile: DEFAULT_AI_PROFILE },
-];
+export const DEFAULT_AI_ROUTE: AIModelRoute = {
+    name: DEFAULT_AI_ROUTE_NAME,
+    model: "gpt-5.4-2026-03-05",
+    reasoningEffort: "high",
+    retryCount: 5,
+    steps: [{ providerName: DEFAULT_AI_PROVIDER_NAME }],
+};
 
 const DEFAULT_AI_STAGE_BASE: Omit<AIDetectStageConfig, "prompt"> = {
-    profileName: DEFAULT_AI_PROFILE_NAME,
+    routeName: DEFAULT_AI_ROUTE_NAME,
     submitFieldKeys: [],
 };
 
@@ -226,17 +229,16 @@ export const DEFAULT_AI_STAGE_CONFIGS: AIDetectStageConfigMap = {
 };
 
 export const DEFAULT_AI_CONFIG: AIDetectConfig = {
-    profiles: DEFAULT_AI_PROFILES,
+    providers: [DEFAULT_AI_PROVIDER],
+    routes: [DEFAULT_AI_ROUTE],
     stages: DEFAULT_AI_STAGE_CONFIGS,
 };
 
-export const DEFAULT_AI_CONFIG_NAME = "默认配置";
 export const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;
-export const AI_PROVIDER_OPTIONS = [
-    { value: "openai", label: "OpenAI 兼容 (Idealab)" },
-    { value: "gemini", label: "Gemini 原生 (Idealab)" },
-    { value: "modelrouter-openai", label: "OpenAI 兼容 (ModelRouter)" },
-    { value: "modelrouter-gemini", label: "Gemini 原生 (ModelRouter)" },
+export const AI_PROVIDER_API_TYPE_OPTIONS = [
+    { value: "openai", label: "OpenAI 兼容" },
+    { value: "gemini", label: "Gemini 原生" },
+    { value: "anthropic", label: "Anthropic 原生" },
 ] as const;
 export const DEFAULT_AI_RETRY_COUNT = 5;
 export const MIN_AI_RETRY_COUNT = 0;

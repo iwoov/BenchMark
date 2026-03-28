@@ -26,7 +26,6 @@ import {
     formatDuration,
     normalizeAIBatchConcurrency,
     normalizeAIDetectConfigForColumns,
-    normalizeLoadedAIDetectConfig,
     normalizeLoadedNamedAIDetectConfigs,
     normalizeNamedAIDetectConfigsForColumns,
     requestAIDetectResult,
@@ -85,6 +84,7 @@ export const useAIManager = ({
     const [isAIStageConfigModalOpen, setIsAIStageConfigModalOpen] =
         useState(false);
     const [isAIProfileModalOpen, setIsAIProfileModalOpen] = useState(false);
+    const [isAIRouteModalOpen, setIsAIRouteModalOpen] = useState(false);
     const [aiConfigLoading, setAIConfigLoading] = useState(false);
     const [aiConfigSaving, setAIConfigSaving] = useState(false);
     const [aiConfigList, setAIConfigList] = useState<NamedAIDetectConfig[]>(
@@ -210,6 +210,7 @@ export const useAIManager = ({
             setAIConfigLoading(false);
             setIsAIStageConfigModalOpen(false);
             setIsAIProfileModalOpen(false);
+            setIsAIRouteModalOpen(false);
             return;
         }
 
@@ -228,20 +229,25 @@ export const useAIManager = ({
                 }
 
                 const payload = (await response.json()) as {
-                    configs?: unknown;
-                    activeConfigName?: unknown;
-                    config?: unknown;
+                    providers?: unknown;
+                    routes?: unknown;
+                    stages?: unknown;
                 };
-                let loadedConfigs = normalizeLoadedNamedAIDetectConfigs(
-                    payload.configs,
-                );
+                let loadedConfigs = normalizeLoadedNamedAIDetectConfigs([
+                    {
+                        name: DEFAULT_AI_CONFIG_NAME,
+                        config: {
+                            providers: payload.providers,
+                            routes: payload.routes,
+                            stages: payload.stages,
+                        },
+                    },
+                ]);
                 if (loadedConfigs.length === 0) {
                     loadedConfigs = [
                         {
                             name: DEFAULT_AI_CONFIG_NAME,
-                            config: normalizeLoadedAIDetectConfig(
-                                payload.config,
-                            ),
+                            config: createDefaultAIDetectConfig(),
                         },
                     ];
                 }
@@ -547,37 +553,33 @@ export const useAIManager = ({
     const getStageLabel = (stageKey: AIDetectStageKey) =>
         AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey;
 
-    const resolveProfileForStage = (
+    const resolveRouteForStage = (
         config: AIDetectConfig,
         stageConfig: AIDetectConfig["stages"][AIDetectStageKey],
     ) => {
-        const profileItem =
-            config.profiles.find(
-                (item) => item.name === stageConfig.profileName,
-            ) ?? config.profiles[0];
-        return profileItem?.profile ?? null;
+        const routeItem =
+            config.routes.find((item) => item.name === stageConfig.routeName) ??
+            config.routes[0];
+        return routeItem ?? null;
     };
 
     const validateStageSetup = (
         stageKey: AIDetectStageKey,
         stageConfig: AIDetectConfig["stages"][AIDetectStageKey],
-        profile: AIDetectConfig["profiles"][number]["profile"] | null,
+        route: AIDetectConfig["routes"][number] | null,
         includeStagePrefix: boolean,
     ): string | null => {
         const prefix = includeStagePrefix
             ? `【${getStageLabel(stageKey)}】`
             : "";
-        if (!profile) {
-            return `${prefix}请先配置接口`;
+        if (!route) {
+            return `${prefix}请先配置模型路由`;
         }
-        if (profile.model.trim().length === 0) {
+        if (route.model.trim().length === 0) {
             return `${prefix}请先配置模型`;
         }
-        if (profile.url.trim().length === 0) {
-            return `${prefix}请先配置 Base URL`;
-        }
-        if (profile.apiKey.trim().length === 0) {
-            return `${prefix}请先配置 API Key`;
+        if (route.steps.length === 0) {
+            return `${prefix}请先至少配置一个提供商回退步骤`;
         }
         if (stageConfig.submitFieldKeys.length === 0) {
             return `${prefix}请先在 AI 配置中选择提交回答字段`;
@@ -610,14 +612,14 @@ export const useAIManager = ({
 
     const runStageRequest = async ({
         stageConfig,
-        profile,
+        route,
         fields,
         signal,
         rowId,
         stageKey,
     }: {
         stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
-        profile: AIDetectConfig["profiles"][number]["profile"];
+        route: AIDetectConfig["routes"][number];
         fields: ReturnType<typeof buildAIDetectFieldsForRow>;
         signal: AbortSignal;
         rowId?: string;
@@ -631,14 +633,9 @@ export const useAIManager = ({
         }
         const streamResult = await requestAIDetectResult(
             {
-                provider: profile.provider,
-                url: profile.url,
-                model: profile.model,
-                apiKey: profile.apiKey,
+                routeName: route.name,
                 prompt: stageConfig.prompt,
                 fields,
-                reasoningEffort: profile.reasoningEffort,
-                retryCount: profile.retryCount,
             },
             {
                 signal,
@@ -683,26 +680,26 @@ export const useAIManager = ({
             AIDetectStageKey,
             {
                 stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
-                profile: AIDetectConfig["profiles"][number]["profile"];
+                route: AIDetectConfig["routes"][number];
             }
         >();
         for (const stageKey of AI_STAGE_ORDER) {
             const stageConfig = normalizedConfig.stages[stageKey];
-            const profile = resolveProfileForStage(
+            const route = resolveRouteForStage(
                 normalizedConfig,
                 stageConfig,
             );
             const error = validateStageSetup(
                 stageKey,
                 stageConfig,
-                profile,
+                route,
                 true,
             );
-            if (error || !profile) {
-                setErrorMessage(error ?? "请先配置接口");
+            if (error || !route) {
+                setErrorMessage(error ?? "请先配置模型路由");
                 return;
             }
-            stageRunMap.set(stageKey, { stageConfig, profile });
+            stageRunMap.set(stageKey, { stageConfig, route });
         }
 
         const precheckConfig = stageRunMap.get("precheck");
@@ -760,7 +757,7 @@ export const useAIManager = ({
                 try {
                     const precheckPromise = runStageRequest({
                         stageConfig: precheckConfig.stageConfig,
-                        profile: precheckConfig.profile,
+                        route: precheckConfig.route,
                         fields: buildStageFieldsForRow(
                             targetColumns,
                             row,
@@ -773,7 +770,7 @@ export const useAIManager = ({
                     });
                     const contextPromise = runStageRequest({
                         stageConfig: contextConfig.stageConfig,
-                        profile: contextConfig.profile,
+                        route: contextConfig.route,
                         fields: buildStageFieldsForRow(
                             targetColumns,
                             row,
@@ -786,7 +783,7 @@ export const useAIManager = ({
                     });
                     const independentPromise = runStageRequest({
                         stageConfig: independentConfig.stageConfig,
-                        profile: independentConfig.profile,
+                        route: independentConfig.route,
                         fields: buildStageFieldsForRow(
                             targetColumns,
                             row,
@@ -815,7 +812,7 @@ export const useAIManager = ({
                         try {
                             const finalText = await runStageRequest({
                                 stageConfig: finalConfig.stageConfig,
-                                profile: finalConfig.profile,
+                                route: finalConfig.route,
                                 fields: buildStageFieldsForRow(
                                     targetColumns,
                                     row,
@@ -958,6 +955,7 @@ export const useAIManager = ({
         }
         setIsAIStageConfigModalOpen(true);
         setIsAIProfileModalOpen(false);
+        setIsAIRouteModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -966,6 +964,17 @@ export const useAIManager = ({
             return;
         }
         setIsAIProfileModalOpen(true);
+        setIsAIStageConfigModalOpen(false);
+        setIsAIRouteModalOpen(false);
+        navigateToSection("settings", "ai");
+    };
+
+    const onOpenAIRouteModal = () => {
+        if (!prepareDraftAIConfig()) {
+            return;
+        }
+        setIsAIRouteModalOpen(true);
+        setIsAIProfileModalOpen(false);
         setIsAIStageConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
@@ -980,6 +989,12 @@ export const useAIManager = ({
         setDraftAIConfig(cloneAIDetectConfig(aiConfig));
         setAIConfigFormMessage("");
         setIsAIProfileModalOpen(false);
+    };
+
+    const onCancelAIRouteModal = () => {
+        setDraftAIConfig(cloneAIDetectConfig(aiConfig));
+        setAIConfigFormMessage("");
+        setIsAIRouteModalOpen(false);
     };
 
     const updateDraftStageConfig = (
@@ -1025,35 +1040,65 @@ export const useAIManager = ({
             activeFile.columns,
         );
 
-        if (!nextConfig.profiles || nextConfig.profiles.length === 0) {
-            setAIConfigFormMessage("请至少配置一个接口");
+        if (!nextConfig.providers || nextConfig.providers.length === 0) {
+            setAIConfigFormMessage("请至少配置一个模型提供商");
             return;
         }
 
-        const profileNameSet = new Set<string>();
-        for (const profileItem of nextConfig.profiles) {
-            const profileName = profileItem.name.trim();
-            if (profileName.length === 0) {
-                setAIConfigFormMessage("接口配置名称不能为空");
+        const providerNameSet = new Set<string>();
+        for (const provider of nextConfig.providers) {
+            const providerName = provider.name.trim();
+            if (providerName.length === 0) {
+                setAIConfigFormMessage("模型提供商名称不能为空");
                 return;
             }
-            if (profileNameSet.has(profileName)) {
-                setAIConfigFormMessage(`接口配置名称重复：${profileName}`);
+            if (providerNameSet.has(providerName)) {
+                setAIConfigFormMessage(`模型提供商名称重复：${providerName}`);
                 return;
             }
-            profileNameSet.add(profileName);
-            const profile = profileItem.profile;
-            if (profile.model.trim().length === 0) {
-                setAIConfigFormMessage(`【${profileName}】模型不能为空`);
+            providerNameSet.add(providerName);
+            if (provider.apiUrl.trim().length === 0) {
+                setAIConfigFormMessage(`【${providerName}】API URL 不能为空`);
                 return;
             }
-            if (profile.url.trim().length === 0) {
-                setAIConfigFormMessage(`【${profileName}】Base URL 不能为空`);
+            if (provider.apiKey.trim().length === 0) {
+                setAIConfigFormMessage(`【${providerName}】API Key 不能为空`);
                 return;
             }
-            if (profile.apiKey.trim().length === 0) {
-                setAIConfigFormMessage(`【${profileName}】API Key 不能为空`);
+        }
+
+        if (!nextConfig.routes || nextConfig.routes.length === 0) {
+            setAIConfigFormMessage("请至少配置一个模型路由");
+            return;
+        }
+
+        const routeNameSet = new Set<string>();
+        for (const route of nextConfig.routes) {
+            const routeName = route.name.trim();
+            if (routeName.length === 0) {
+                setAIConfigFormMessage("模型路由名称不能为空");
                 return;
+            }
+            if (routeNameSet.has(routeName)) {
+                setAIConfigFormMessage(`模型路由名称重复：${routeName}`);
+                return;
+            }
+            routeNameSet.add(routeName);
+            if (route.model.trim().length === 0) {
+                setAIConfigFormMessage(`【${routeName}】模型不能为空`);
+                return;
+            }
+            if (route.steps.length === 0) {
+                setAIConfigFormMessage(`【${routeName}】请至少配置一个回退步骤`);
+                return;
+            }
+            for (const step of route.steps) {
+                if (!providerNameSet.has(step.providerName)) {
+                    setAIConfigFormMessage(
+                        `【${routeName}】引用了不存在的模型提供商：${step.providerName}`,
+                    );
+                    return;
+                }
             }
         }
 
@@ -1063,9 +1108,9 @@ export const useAIManager = ({
                 const stageLabel =
                     AI_STAGE_LABELS[stageKey]?.shortTitle ?? stageKey;
 
-                if (!profileNameSet.has(stageConfig.profileName)) {
+                if (!routeNameSet.has(stageConfig.routeName)) {
                     setAIConfigFormMessage(
-                        `【${stageLabel}】请选择有效的接口配置`,
+                        `【${stageLabel}】请选择有效的模型路由`,
                     );
                     return;
                 }
@@ -1087,27 +1132,57 @@ export const useAIManager = ({
         setErrorMessage("");
 
         try {
-            const response = await fetch(
-                `/api/ai-config/${encodeURIComponent(activeFile.fileName)}`,
-                {
-                    method: "PUT",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        name: nextConfigName,
-                        profiles: nextConfig.profiles,
-                        stages: nextConfig.stages,
-                        setActive: true,
-                    }),
+            const saveProvidersResponse = await fetch("/api/ai-config/providers", {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
                 },
-            );
+                body: JSON.stringify({
+                    providers: nextConfig.providers,
+                }),
+            });
+            if (!saveProvidersResponse.ok) {
+                const payload = (await saveProvidersResponse
+                    .json()
+                    .catch(() => ({}))) as { message?: string };
+                throw new Error(payload.message ?? "保存模型提供商失败");
+            }
 
-            if (!response.ok) {
-                const payload = (await response.json().catch(() => ({}))) as {
-                    message?: string;
-                };
-                throw new Error(payload.message ?? "保存 AI 配置失败");
+            const saveRoutesResponse = await fetch("/api/ai-config/routes", {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    routes: nextConfig.routes,
+                }),
+            });
+            if (!saveRoutesResponse.ok) {
+                const payload = (await saveRoutesResponse
+                    .json()
+                    .catch(() => ({}))) as { message?: string };
+                throw new Error(payload.message ?? "保存模型路由失败");
+            }
+
+            if (!skipStageValidation) {
+                const saveStagesResponse = await fetch(
+                    `/api/ai-config/${encodeURIComponent(activeFile.fileName)}/stages`,
+                    {
+                        method: "PUT",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            stages: nextConfig.stages,
+                        }),
+                    },
+                );
+                if (!saveStagesResponse.ok) {
+                    const payload = (await saveStagesResponse
+                        .json()
+                        .catch(() => ({}))) as { message?: string };
+                    throw new Error(payload.message ?? "保存阶段任务失败");
+                }
             }
 
             setAIConfigList((previous) => [
@@ -1122,6 +1197,7 @@ export const useAIManager = ({
             setAIConfigFormMessage("");
             setIsAIStageConfigModalOpen(false);
             setIsAIProfileModalOpen(false);
+            setIsAIRouteModalOpen(false);
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : "保存 AI 配置失败";
@@ -1132,6 +1208,7 @@ export const useAIManager = ({
     };
 
     const onSaveAIProfileConfig = () => onSaveAIConfig(true);
+    const onSaveAIRouteConfig = () => onSaveAIConfig(true);
     const onSaveAIStageConfig = () => onSaveAIConfig(false);
 
     const onRunAIDetect = async (runKeyOverride?: AIDetectRunKey) => {
@@ -1154,26 +1231,26 @@ export const useAIManager = ({
                 AIDetectStageKey,
                 {
                     stageConfig: AIDetectConfig["stages"][AIDetectStageKey];
-                    profile: AIDetectConfig["profiles"][number]["profile"];
+                    route: AIDetectConfig["routes"][number];
                 }
             >();
             for (const stageKey of AI_STAGE_ORDER) {
                 const stageConfig = normalizedConfig.stages[stageKey];
-                const profile = resolveProfileForStage(
+                const route = resolveRouteForStage(
                     normalizedConfig,
                     stageConfig,
                 );
                 const error = validateStageSetup(
                     stageKey,
                     stageConfig,
-                    profile,
+                    route,
                     true,
                 );
-                if (error || !profile) {
-                    setAIResultMessage(error ?? "请先配置接口");
+                if (error || !route) {
+                    setAIResultMessage(error ?? "请先配置模型路由");
                     return;
                 }
-                stageRunMap.set(stageKey, { stageConfig, profile });
+                stageRunMap.set(stageKey, { stageConfig, route });
             }
 
             aiStreamAbortRef.current?.abort();
@@ -1218,7 +1295,7 @@ export const useAIManager = ({
 
                 const precheckPromise = runStageRequest({
                     stageConfig: precheckConfig.stageConfig,
-                    profile: precheckConfig.profile,
+                    route: precheckConfig.route,
                     fields: buildStageFieldsForRow(
                         activeFile.columns,
                         selectedRow,
@@ -1242,7 +1319,7 @@ export const useAIManager = ({
                     });
                 const contextPromise = runStageRequest({
                     stageConfig: contextConfig.stageConfig,
-                    profile: contextConfig.profile,
+                    route: contextConfig.route,
                     fields: buildStageFieldsForRow(
                         activeFile.columns,
                         selectedRow,
@@ -1266,7 +1343,7 @@ export const useAIManager = ({
                     });
                 const independentPromise = runStageRequest({
                     stageConfig: independentConfig.stageConfig,
-                    profile: independentConfig.profile,
+                    route: independentConfig.route,
                     fields: buildStageFieldsForRow(
                         activeFile.columns,
                         selectedRow,
@@ -1301,7 +1378,7 @@ export const useAIManager = ({
                         startRunAllStage("final_verdict");
                         const finalText = await runStageRequest({
                             stageConfig: finalConfig.stageConfig,
-                            profile: finalConfig.profile,
+                            route: finalConfig.route,
                             fields: buildStageFieldsForRow(
                                 activeFile.columns,
                                 selectedRow,
@@ -1386,26 +1463,21 @@ export const useAIManager = ({
         const stageKey = runKey;
         const stageConfig = normalizedConfig.stages[stageKey];
         const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? "";
-        const profileItem =
-            normalizedConfig.profiles.find(
-                (item) => item.name === stageConfig.profileName,
-            ) ?? normalizedConfig.profiles[0];
-        const profile = profileItem?.profile ?? null;
+        const route =
+            normalizedConfig.routes.find(
+                (item) => item.name === stageConfig.routeName,
+            ) ?? normalizedConfig.routes[0];
 
-        if (!profile) {
-            setAIResultMessage("请先配置接口");
+        if (!route) {
+            setAIResultMessage("请先配置模型路由");
             return;
         }
-        if (profile.model.trim().length === 0) {
+        if (route.model.trim().length === 0) {
             setAIResultMessage("请先配置模型");
             return;
         }
-        if (profile.url.trim().length === 0) {
-            setAIResultMessage("请先配置 Base URL");
-            return;
-        }
-        if (profile.apiKey.trim().length === 0) {
-            setAIResultMessage("请先配置 API Key");
+        if (route.steps.length === 0) {
+            setAIResultMessage("请先配置模型提供商回退步骤");
             return;
         }
         if (stageConfig.submitFieldKeys.length === 0) {
@@ -1455,14 +1527,9 @@ export const useAIManager = ({
         try {
             const streamResult = await requestAIDetectResult(
                 {
-                    provider: profile.provider,
-                    url: profile.url,
-                    model: profile.model,
-                    apiKey: profile.apiKey,
+                    routeName: route.name,
                     prompt: stageConfig.prompt,
                     fields,
-                    reasoningEffort: profile.reasoningEffort,
-                    retryCount: profile.retryCount,
                 },
                 {
                     signal: controller.signal,
@@ -1577,26 +1644,21 @@ export const useAIManager = ({
         const stageKey = activeAIRunKey;
         const stageConfig = normalizedConfig.stages[stageKey];
         const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? "";
-        const profileItem =
-            normalizedConfig.profiles.find(
-                (item) => item.name === stageConfig.profileName,
-            ) ?? normalizedConfig.profiles[0];
-        const profile = profileItem?.profile ?? null;
+        const route =
+            normalizedConfig.routes.find(
+                (item) => item.name === stageConfig.routeName,
+            ) ?? normalizedConfig.routes[0];
 
-        if (!profile) {
-            setErrorMessage("请先配置接口");
+        if (!route) {
+            setErrorMessage("请先配置模型路由");
             return;
         }
-        if (profile.model.trim().length === 0) {
+        if (route.model.trim().length === 0) {
             setErrorMessage("请先配置模型");
             return;
         }
-        if (profile.url.trim().length === 0) {
-            setErrorMessage("请先配置 Base URL");
-            return;
-        }
-        if (profile.apiKey.trim().length === 0) {
-            setErrorMessage("请先配置 API Key");
+        if (route.steps.length === 0) {
+            setErrorMessage("请先配置模型提供商回退步骤");
             return;
         }
         if (stageConfig.submitFieldKeys.length === 0) {
@@ -1672,7 +1734,7 @@ export const useAIManager = ({
                     );
                     const resultText = await runStageRequest({
                         stageConfig,
-                        profile,
+                        route,
                         fields,
                         signal: controller.signal,
                         rowId: row.rowId,
@@ -1764,6 +1826,7 @@ export const useAIManager = ({
         aiConfigSaving,
         isAIStageConfigModalOpen,
         isAIProfileModalOpen,
+        isAIRouteModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -1789,11 +1852,14 @@ export const useAIManager = ({
         isAIDetecting,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
+        onOpenAIRouteModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
+        onCancelAIRouteModal,
         onToggleDraftAISubmitField,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
+        onSaveAIRouteConfig,
         onRunAIDetect,
         onRunAllAIDetect,
         onRunBatchAIAnswer,

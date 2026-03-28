@@ -50,24 +50,29 @@ export type AIDetectStageKey =
 
 export type AIDetectRunKey = AIDetectStageKey | "all";
 
-export interface AIDetectProfile {
-    provider: "openai" | "gemini" | "modelrouter-openai" | "modelrouter-gemini";
-    url: string;
-    model: string;
-    modelProvider?: string;
-    modelName?: string;
+export type AIProviderApiType = "openai" | "gemini" | "anthropic";
+
+export interface AIProviderEndpoint {
+    name: string;
+    apiType: AIProviderApiType;
+    apiUrl: string;
     apiKey: string;
-    reasoningEffort: "low" | "medium" | "high";
-    retryCount: number;
 }
 
-export interface NamedAIDetectProfile {
+export interface AIModelRouteStep {
+    providerName: string;
+}
+
+export interface AIModelRoute {
     name: string;
-    profile: AIDetectProfile;
+    model: string;
+    reasoningEffort: "low" | "medium" | "high";
+    retryCount: number;
+    steps: AIModelRouteStep[];
 }
 
 export interface AIDetectStageConfig {
-    profileName: string;
+    routeName: string;
     submitFieldKeys: string[];
     prompt: string;
 }
@@ -78,7 +83,8 @@ export type AIDetectStageConfigMap = Record<
 >;
 
 export interface AIDetectConfig {
-    profiles: NamedAIDetectProfile[];
+    providers: AIProviderEndpoint[];
+    routes: AIModelRoute[];
     stages: AIDetectStageConfigMap;
 }
 
