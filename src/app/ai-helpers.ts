@@ -1,5 +1,6 @@
 import type {
     AIDetectConfig,
+    AIChatConfig,
     AIModelRoute,
     AIProviderApiType,
     AIProviderEndpoint,
@@ -11,6 +12,7 @@ import type {
 } from "../types";
 import {
     AI_STAGE_ORDER,
+    DEFAULT_AI_CHAT_CONFIG,
     DEFAULT_AI_PROVIDER,
     DEFAULT_AI_PROVIDER_NAME,
     DEFAULT_AI_ROUTE,
@@ -29,6 +31,7 @@ import {
 } from "./constants";
 import type {
     AIBatchTaskState,
+    AIChatMessagePayload,
     AIDetectFieldPayload,
     AIDetectStreamResult,
 } from "./types";
@@ -406,6 +409,13 @@ export function cloneAIDetectStageConfig(
     };
 }
 
+export function cloneAIChatConfig(chatConfig: AIChatConfig): AIChatConfig {
+    return {
+        ...chatConfig,
+        defaultSubmitFieldKeys: [...chatConfig.defaultSubmitFieldKeys],
+    };
+}
+
 export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
     const providers = config.providers.map(cloneAIProviderEndpoint);
     const routes = config.routes.map(cloneAIModelRoute);
@@ -413,7 +423,12 @@ export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = cloneAIDetectStageConfig(config.stages[stageKey]);
     });
-    return { providers, routes, stages };
+    return {
+        providers,
+        routes,
+        stages,
+        chat: cloneAIChatConfig(config.chat),
+    };
 }
 
 export function createDefaultAIDetectConfig(): AIDetectConfig {
@@ -427,6 +442,7 @@ export function createDefaultAIDetectConfig(): AIDetectConfig {
         providers: [cloneAIProviderEndpoint(DEFAULT_AI_PROVIDER)],
         routes: [cloneAIModelRoute(DEFAULT_AI_ROUTE)],
         stages,
+        chat: cloneAIChatConfig(DEFAULT_AI_CHAT_CONFIG),
     };
 }
 
@@ -670,6 +686,39 @@ function normalizeLoadedAIDetectStageConfig(
     };
 }
 
+function normalizeLoadedAIChatConfig(
+    value: unknown,
+    fallbackRouteName: string,
+): AIChatConfig {
+    if (!value || typeof value !== "object") {
+        return {
+            ...cloneAIChatConfig(DEFAULT_AI_CHAT_CONFIG),
+            routeName: fallbackRouteName,
+        };
+    }
+
+    const candidate = value as Partial<AIChatConfig>;
+    const defaultSubmitFieldKeys = Array.isArray(candidate.defaultSubmitFieldKeys)
+        ? candidate.defaultSubmitFieldKeys.filter(
+              (item): item is string => typeof item === "string",
+          )
+        : [];
+    const routeName =
+        typeof candidate.routeName === "string" && candidate.routeName.trim()
+            ? candidate.routeName.trim()
+            : fallbackRouteName;
+
+    return {
+        routeName,
+        defaultSubmitFieldKeys,
+        prompt:
+            typeof candidate.prompt === "string" &&
+            candidate.prompt.trim().length > 0
+                ? candidate.prompt
+                : DEFAULT_AI_CHAT_CONFIG.prompt,
+    };
+}
+
 export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
     if (!value || typeof value !== "object") {
         return createDefaultAIDetectConfig();
@@ -708,6 +757,10 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         providers: resolvedProviders,
         routes: resolvedRoutes,
         stages,
+        chat: normalizeLoadedAIChatConfig(
+            (candidate as { chat?: unknown }).chat,
+            resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
+        ),
     };
 }
 
@@ -758,7 +811,29 @@ export function normalizeAIDetectConfigForColumns(
         };
     });
 
-    return { providers, routes, stages };
+    const keySet = new Set(columns.map((column) => column.key));
+    const chatConfig = config.chat ?? DEFAULT_AI_CHAT_CONFIG;
+    const normalizedChatRouteName =
+        chatConfig.routeName && routeNames.has(chatConfig.routeName)
+            ? chatConfig.routeName
+            : fallbackRouteName;
+
+    return {
+        providers,
+        routes,
+        stages,
+        chat: {
+            routeName: normalizedChatRouteName,
+            prompt:
+                typeof chatConfig.prompt === "string" &&
+                chatConfig.prompt.trim().length > 0
+                    ? chatConfig.prompt
+                    : DEFAULT_AI_CHAT_CONFIG.prompt,
+            defaultSubmitFieldKeys: chatConfig.defaultSubmitFieldKeys.filter(
+                (key) => keySet.has(key),
+            ),
+        },
+    };
 }
 
 export function normalizeAIConfigName(value: unknown): string {
@@ -866,12 +941,9 @@ export function buildAIDetectFieldsForRow(
     return fields;
 }
 
-export async function requestAIDetectResult(
-    payload: {
-        routeName: string;
-        prompt: string;
-        fields: AIDetectFieldPayload[];
-    },
+async function requestAIStreamResult(
+    endpoint: string,
+    payload: Record<string, unknown>,
     options?: {
         signal?: AbortSignal;
         onAnswerChunk?: (chunk: string) => void;
@@ -879,7 +951,7 @@ export async function requestAIDetectResult(
         onChunk?: (chunk: string) => void;
     },
 ): Promise<AIDetectStreamResult> {
-    const response = await fetch("/api/ai-detect/stream", {
+    const response = await fetch(endpoint, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -1012,4 +1084,37 @@ export async function requestAIDetectResult(
         answerText,
         thinkingText,
     };
+}
+
+export async function requestAIDetectResult(
+    payload: {
+        routeName: string;
+        prompt: string;
+        fields: AIDetectFieldPayload[];
+    },
+    options?: {
+        signal?: AbortSignal;
+        onAnswerChunk?: (chunk: string) => void;
+        onThinkingChunk?: (chunk: string) => void;
+        onChunk?: (chunk: string) => void;
+    },
+): Promise<AIDetectStreamResult> {
+    return requestAIStreamResult("/api/ai-detect/stream", payload, options);
+}
+
+export async function requestAIChatResult(
+    payload: {
+        routeName: string;
+        prompt: string;
+        messages: AIChatMessagePayload[];
+        fields: AIDetectFieldPayload[];
+    },
+    options?: {
+        signal?: AbortSignal;
+        onAnswerChunk?: (chunk: string) => void;
+        onThinkingChunk?: (chunk: string) => void;
+        onChunk?: (chunk: string) => void;
+    },
+): Promise<AIDetectStreamResult> {
+    return requestAIStreamResult("/api/ai-chat/stream", payload, options);
 }

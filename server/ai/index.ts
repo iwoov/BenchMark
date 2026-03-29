@@ -6,15 +6,18 @@ import { randomUUID } from "node:crypto";
 import {
     findAIModelRouteByName,
     findAIProviderEndpointByName,
+    getFileAIChatConfig,
     getFileAIStageConfigs,
     listAIModelRoutes,
     listAIProviderEndpoints,
     saveAIModelRoutes,
+    saveFileAIChatConfig,
     saveAIProviderEndpoints,
     saveFileAIStageConfigs,
     type AIModelRouteConfig,
     type AIProviderApiType,
     type AIProviderEndpointConfig,
+    type FileAIChatConfig,
     type FileAIStageConfig,
 } from "../db.js";
 
@@ -818,6 +821,11 @@ type AIDetectField = {
     imageUrl?: string;
 };
 
+type AIChatMessage = {
+    role: "user" | "assistant";
+    content: string;
+};
+
 type OpenAIMessageContentPart =
     | {
           type: "text";
@@ -851,8 +859,11 @@ type GeminiContentPart =
       };
 
 type GeminiGenerateContentRequest = {
+    systemInstruction?: {
+        parts: Array<{ text: string }>;
+    };
     contents: Array<{
-        role: "user";
+        role: "user" | "model";
         parts: GeminiContentPart[];
     }>;
     generationConfig?: {
@@ -1158,6 +1169,149 @@ function toAIDetectFields(value: unknown): AIDetectField[] | null {
     return result;
 }
 
+function toAIChatMessages(value: unknown): AIChatMessage[] | null {
+    if (!Array.isArray(value)) {
+        return null;
+    }
+
+    const result: AIChatMessage[] = [];
+    for (const item of value) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return null;
+        }
+
+        const candidate = item as {
+            role?: unknown;
+            content?: unknown;
+        };
+        if (candidate.role !== "user" && candidate.role !== "assistant") {
+            return null;
+        }
+        if (
+            typeof candidate.content !== "string" ||
+            candidate.content.trim().length === 0
+        ) {
+            return null;
+        }
+        result.push({
+            role: candidate.role,
+            content: candidate.content,
+        });
+    }
+
+    return result;
+}
+
+function buildOpenAIUserContent(
+    promptContent: PromptBuildResult,
+): string | OpenAIMessageContentPart[] {
+    if (promptContent.imageFields.length === 0) {
+        return promptContent.promptText;
+    }
+
+    return [
+        {
+            type: "text",
+            text: promptContent.promptText,
+        },
+        ...promptContent.imageFields.flatMap((field) => {
+            const imageLabel =
+                field.value.trim().length > 0
+                    ? `字段图片：${field.title}（说明：${field.value}）`
+                    : `字段图片：${field.title}`;
+            return [
+                {
+                    type: "text" as const,
+                    text: imageLabel,
+                },
+                {
+                    type: "image_url" as const,
+                    image_url: {
+                        url: field.imageUrl,
+                    },
+                },
+            ];
+        }),
+    ];
+}
+
+function buildChatSystemPrompt(prompt: string, fields: AIDetectField[]): string {
+    if (
+        !prompt.includes("{{fields_json}}") &&
+        !prompt.includes("{{fields_text}}") &&
+        !prompt.includes("{{image_fields}}")
+    ) {
+        return prompt;
+    }
+    return buildPromptContent(prompt, fields).promptText;
+}
+
+function buildOpenAIChatMessages(
+    prompt: string,
+    fields: AIDetectField[],
+    messages: AIChatMessage[],
+): Array<{
+    role: "system" | "user" | "assistant";
+    content: string | OpenAIMessageContentPart[];
+}> {
+    const result: Array<{
+        role: "system" | "user" | "assistant";
+        content: string | OpenAIMessageContentPart[];
+    }> = [
+        {
+            role: "system",
+            content: buildChatSystemPrompt(prompt, fields),
+        },
+    ];
+
+    if (fields.length > 0) {
+        const fieldContext = buildPromptContent(
+            "当前题目的固定上下文字段如下。请在后续对话中始终结合这些字段回答。\n\n{{fields_json}}",
+            fields,
+        );
+        result.push({
+            role: "user",
+            content: buildOpenAIUserContent(fieldContext),
+        });
+    }
+
+    messages.forEach((message) => {
+        result.push({
+            role: message.role,
+            content: message.content,
+        });
+    });
+
+    return result;
+}
+
+function buildGeminiChatContents(
+    fields: AIDetectField[],
+    messages: AIChatMessage[],
+): GeminiGenerateContentRequest["contents"] {
+    const contents: GeminiGenerateContentRequest["contents"] = [];
+
+    if (fields.length > 0) {
+        const fieldContext = buildPromptContent(
+            "当前题目的固定上下文字段如下。请在后续对话中始终结合这些字段回答。\n\n{{fields_json}}",
+            fields,
+        );
+        contents.push({
+            role: "user",
+            parts: buildGeminiUserParts(fieldContext),
+        });
+    }
+
+    messages.forEach((message) => {
+        contents.push({
+            role: message.role === "assistant" ? "model" : "user",
+            parts: [{ text: message.content }],
+        });
+    });
+
+    return contents;
+}
+
 function buildPromptContent(
     prompt: string,
     fields: AIDetectField[],
@@ -1361,6 +1515,51 @@ function validateRoutePayload(
     };
 }
 
+function validateChatPayload(
+    item: unknown,
+    routesByName: Map<string, AIModelRouteConfig>,
+    providersByName: Map<string, AIProviderEndpointConfig>,
+): { chat?: FileAIChatConfig; message?: string } {
+    if (!item || typeof item !== "object") {
+        return { message: "chat must be an object" };
+    }
+    const candidate = item as {
+        routeName?: unknown;
+        prompt?: unknown;
+        defaultSubmitFieldKeys?: unknown;
+    };
+    if (!isNonEmptyString(candidate.routeName)) {
+        return { message: "chat routeName must be a non-empty string" };
+    }
+    const route = routesByName.get(candidate.routeName.trim());
+    if (!route) {
+        return { message: "chat routeName must reference an existing route" };
+    }
+    const routeApiType = getRouteApiType(route, providersByName);
+    if (!routeApiType) {
+        return { message: "chat route providers are invalid" };
+    }
+    if (routeApiType === "anthropic") {
+        return { message: "chat cannot use an anthropic route yet" };
+    }
+    if (!isNonEmptyString(candidate.prompt)) {
+        return { message: "chat prompt must be a non-empty string" };
+    }
+    if (
+        !Array.isArray(candidate.defaultSubmitFieldKeys) ||
+        !candidate.defaultSubmitFieldKeys.every((entry) => typeof entry === "string")
+    ) {
+        return { message: "chat defaultSubmitFieldKeys must be a string array" };
+    }
+    return {
+        chat: {
+            routeName: candidate.routeName.trim(),
+            prompt: candidate.prompt,
+            defaultSubmitFieldKeys: candidate.defaultSubmitFieldKeys,
+        },
+    };
+}
+
 function getRouteApiType(
     route: AIModelRouteConfig,
     providersByName: Map<string, AIProviderEndpointConfig>,
@@ -1452,6 +1651,7 @@ async function runOpenAIProviderAttempt({
     route,
     prompt,
     fields,
+    messages,
     signal,
     requestId,
     onAnswerChunk,
@@ -1461,6 +1661,7 @@ async function runOpenAIProviderAttempt({
     route: AIRoute;
     prompt: string;
     fields: AIDetectField[];
+    messages?: AIChatMessage[];
     signal?: AbortSignal;
     requestId: string;
     onAnswerChunk?: (chunk: string) => void;
@@ -1474,37 +1675,19 @@ async function runOpenAIProviderAttempt({
         throw createAttemptError("url is invalid", 400);
     }
 
-    const promptContent = buildPromptContent(prompt, fields);
-    const userContent: string | OpenAIMessageContentPart[] =
-        promptContent.imageFields.length > 0
-            ? [
-                  {
-                      type: "text",
-                      text: promptContent.promptText,
-                  },
-                  ...promptContent.imageFields.flatMap((field) => {
-                      const imageLabel =
-                          field.value.trim().length > 0
-                              ? `字段图片：${field.title}（说明：${field.value}）`
-                              : `字段图片：${field.title}`;
-                      return [
-                          {
-                              type: "text" as const,
-                              text: imageLabel,
-                          },
-                          {
-                              type: "image_url" as const,
-                              image_url: {
-                                  url: field.imageUrl,
-                              },
-                          },
-                      ];
-                  }),
-              ]
-            : promptContent.promptText;
+    const requestMessages = messages
+        ? buildOpenAIChatMessages(prompt, fields, messages)
+        : [
+              {
+                  role: "user" as const,
+                  content: buildOpenAIUserContent(
+                      buildPromptContent(prompt, fields),
+                  ),
+              },
+          ];
 
     let lastFailedStatus = 500;
-    let lastFailedMessage = "AI 检测请求失败";
+    let lastFailedMessage = messages ? "AI 聊天请求失败" : "AI 检测请求失败";
     const totalAttempts = route.retryCount + 1;
 
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
@@ -1520,7 +1703,7 @@ async function runOpenAIProviderAttempt({
                 body: JSON.stringify({
                     model: normalizedModel,
                     stream: true,
-                    messages: [{ role: "user", content: userContent }],
+                    messages: requestMessages,
                     reasoning: {
                         effort: route.reasoningEffort,
                     },
@@ -1654,6 +1837,7 @@ async function runGeminiProviderAttempt({
     route,
     prompt,
     fields,
+    messages,
     signal,
     requestId,
     onAnswerChunk,
@@ -1663,6 +1847,7 @@ async function runGeminiProviderAttempt({
     route: AIRoute;
     prompt: string;
     fields: AIDetectField[];
+    messages?: AIChatMessage[];
     signal?: AbortSignal;
     requestId: string;
     onAnswerChunk?: (chunk: string) => void;
@@ -1679,8 +1864,6 @@ async function runGeminiProviderAttempt({
         throw createAttemptError("url is invalid", 400);
     }
 
-    const promptContent = buildPromptContent(prompt, fields);
-    const geminiParts = buildGeminiUserParts(promptContent);
     const geminiThinkingConfig = buildGeminiThinkingConfig(
         normalizedModel,
         route.reasoningEffort,
@@ -1690,19 +1873,32 @@ async function runGeminiProviderAttempt({
         provider.apiKey,
     );
     const requestBody: GeminiGenerateContentRequest = {
-        contents: [
-            {
-                role: "user",
-                parts: geminiParts,
-            },
-        ],
+        systemInstruction: messages
+            ? {
+                  parts: [
+                      {
+                          text: buildChatSystemPrompt(prompt, fields),
+                      },
+                  ],
+              }
+            : undefined,
+        contents: messages
+            ? buildGeminiChatContents(fields, messages)
+            : [
+                  {
+                      role: "user",
+                      parts: buildGeminiUserParts(
+                          buildPromptContent(prompt, fields),
+                      ),
+                  },
+              ],
         generationConfig: {
             thinkingConfig: geminiThinkingConfig,
         },
     };
 
     let lastFailedStatus = 500;
-    let lastFailedMessage = "AI 检测请求失败";
+    let lastFailedMessage = messages ? "AI 聊天请求失败" : "AI 检测请求失败";
     const totalAttempts = route.retryCount + 1;
 
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
@@ -1886,10 +2082,143 @@ async function runGeminiProviderAttempt({
     throw createAttemptError(lastFailedMessage, lastFailedStatus);
 }
 
+async function streamAIRouteResponse({
+    req,
+    res,
+    resolvedRoute,
+    prompt,
+    fields,
+    messages,
+}: {
+    req: express.Request;
+    res: express.Response;
+    resolvedRoute: {
+        route: AIRoute;
+        steps: AIResolvedRouteStep[];
+        apiType: AIProvider;
+    };
+    prompt: string;
+    fields: AIDetectField[];
+    messages?: AIChatMessage[];
+}) {
+    const aiFields = normalizeFieldsForAI(fields);
+    const aiRequestId = randomUUID().slice(0, 8);
+    const startedAt = Date.now();
+    const startedAtIso = formatLogTimestamp(startedAt);
+    const failures: string[] = [];
+    let headersCommitted = false;
+    const controller = new AbortController();
+
+    const ensureHeaders = () => {
+        if (headersCommitted) {
+            return;
+        }
+        res.status(200);
+        res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.flushHeaders();
+        headersCommitted = true;
+    };
+
+    const abortUpstream = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    req.on("aborted", abortUpstream);
+    req.on("close", () => {
+        if (req.aborted) {
+            abortUpstream();
+        }
+    });
+    res.on("close", () => {
+        if (!res.writableEnded) {
+            abortUpstream();
+        }
+    });
+
+    try {
+        for (const [index, step] of resolvedRoute.steps.entries()) {
+            if (controller.signal.aborted) {
+                return;
+            }
+            try {
+                const result = await runRouteStepAttempt({
+                    step,
+                    prompt,
+                    fields: aiFields,
+                    messages,
+                    signal: controller.signal,
+                    requestId: `${aiRequestId}-step-${index + 1}`,
+                    onAnswerChunk: (chunk) => {
+                        ensureHeaders();
+                        writeAIClientStreamEvent(res, {
+                            type: "answer",
+                            text: chunk,
+                        });
+                    },
+                    onThinkingChunk: (chunk) => {
+                        ensureHeaders();
+                        writeAIClientStreamEvent(res, {
+                            type: "thinking",
+                            text: chunk,
+                        });
+                    },
+                });
+
+                if (
+                    result.answerText.trim().length === 0 &&
+                    result.thinkingText.trim().length === 0
+                ) {
+                    failures.push(`${step.provider.name}: AI 返回为空`);
+                    continue;
+                }
+
+                ensureHeaders();
+                writeAIClientStreamEvent(res, { type: "done" });
+                res.end();
+                return;
+            } catch (error) {
+                if (controller.signal.aborted) {
+                    return;
+                }
+                const parsed = parseUnknownUpstreamError(error);
+                failures.push(`${step.provider.name}: ${parsed.message}`);
+            }
+        }
+
+        console.log(
+            `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${Date.now() - startedAt} route=${resolvedRoute.route.name} message=${failures.join(" | ")}`,
+        );
+        return res.status(502).json({
+            message:
+                failures.length > 0
+                    ? failures.join(" | ")
+                    : "所有模型提供商均调用失败",
+        });
+    } catch (error) {
+        if (controller.signal.aborted) {
+            return;
+        }
+        const parsed = parseUnknownUpstreamError(error);
+        if (res.headersSent) {
+            if (!res.writableEnded) {
+                res.end();
+            }
+            return;
+        }
+        return res.status(parsed.status).json({ message: parsed.message });
+    }
+}
+
 async function runRouteStepAttempt({
     step,
     prompt,
     fields,
+    messages,
     signal,
     requestId,
     onAnswerChunk,
@@ -1898,6 +2227,7 @@ async function runRouteStepAttempt({
     step: AIResolvedRouteStep;
     prompt: string;
     fields: AIDetectField[];
+    messages?: AIChatMessage[];
     signal?: AbortSignal;
     requestId: string;
     onAnswerChunk?: (chunk: string) => void;
@@ -1912,6 +2242,7 @@ async function runRouteStepAttempt({
             route: step.route,
             prompt,
             fields,
+            messages,
             signal,
             requestId,
             onAnswerChunk,
@@ -1924,6 +2255,7 @@ async function runRouteStepAttempt({
             route: step.route,
             prompt,
             fields,
+            messages,
             signal,
             requestId,
             onAnswerChunk,
@@ -1940,6 +2272,7 @@ export const registerAIRoutes = (app: express.Express) => {
             providers: listAIProviderEndpoints(),
             routes: listAIModelRoutes(),
             stages: getFileAIStageConfigs(fileName),
+            chat: getFileAIChatConfig(fileName),
         });
     });
 
@@ -2080,6 +2413,27 @@ export const registerAIRoutes = (app: express.Express) => {
         return res.json({ ok: true });
     });
 
+    app.put("/api/ai-config/:fileName/chat", (req, res) => {
+        const fileName = decodeURIComponent(req.params.fileName);
+        const { chat } = req.body as { chat?: unknown };
+        const routes = listAIModelRoutes();
+        const providersByName = new Map(
+            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+        );
+        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const validation = validateChatPayload(
+            chat,
+            routesByName,
+            providersByName,
+        );
+        if (!validation.chat) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        saveFileAIChatConfig(fileName, validation.chat);
+        return res.json({ ok: true });
+    });
+
     app.post("/api/ai-config/routes/test", async (req, res) => {
         const { provider, route, stepIndex } = req.body as {
             provider?: unknown;
@@ -2172,118 +2526,56 @@ export const registerAIRoutes = (app: express.Express) => {
             return res.status(400).json({ message: "Anthropic 暂不支持正式调用" });
         }
 
-        const aiFields = normalizeFieldsForAI(fieldPayload);
-        const aiRequestId = randomUUID().slice(0, 8);
-        const startedAt = Date.now();
-        const startedAtIso = formatLogTimestamp(startedAt);
-        const failures: string[] = [];
-        let headersCommitted = false;
-        const controller = new AbortController();
-
-        const ensureHeaders = () => {
-            if (headersCommitted) {
-                return;
-            }
-            res.status(200);
-            res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-            res.setHeader("Cache-Control", "no-cache, no-transform");
-            res.setHeader("Connection", "keep-alive");
-            res.setHeader("X-Accel-Buffering", "no");
-            res.flushHeaders();
-            headersCommitted = true;
-        };
-
-        const abortUpstream = () => {
-            if (!controller.signal.aborted) {
-                controller.abort();
-            }
-        };
-
-        req.on("aborted", abortUpstream);
-        req.on("close", () => {
-            if (req.aborted) {
-                abortUpstream();
-            }
+        return streamAIRouteResponse({
+            req,
+            res,
+            resolvedRoute,
+            prompt,
+            fields: fieldPayload,
         });
-        res.on("close", () => {
-            if (!res.writableEnded) {
-                abortUpstream();
-            }
-        });
+    });
 
-        try {
-            for (const [index, step] of resolvedRoute.steps.entries()) {
-                if (controller.signal.aborted) {
-                    return;
-                }
-                try {
-                    const result = await runRouteStepAttempt({
-                        step,
-                        prompt,
-                        fields: aiFields,
-                        signal: controller.signal,
-                        requestId: `${aiRequestId}-step-${index + 1}`,
-                        onAnswerChunk: (chunk) => {
-                            ensureHeaders();
-                            writeAIClientStreamEvent(res, {
-                                type: "answer",
-                                text: chunk,
-                            });
-                        },
-                        onThinkingChunk: (chunk) => {
-                            ensureHeaders();
-                            writeAIClientStreamEvent(res, {
-                                type: "thinking",
-                                text: chunk,
-                            });
-                        },
-                    });
-
-                    if (
-                        result.answerText.trim().length === 0 &&
-                        result.thinkingText.trim().length === 0
-                    ) {
-                        failures.push(
-                            `${step.provider.name}: AI 返回为空`,
-                        );
-                        continue;
-                    }
-
-                    ensureHeaders();
-                    writeAIClientStreamEvent(res, { type: "done" });
-                    res.end();
-                    return;
-                } catch (error) {
-                    if (controller.signal.aborted) {
-                        return;
-                    }
-                    const parsed = parseUnknownUpstreamError(error);
-                    failures.push(`${step.provider.name}: ${parsed.message}`);
-                }
-            }
-
-            // eslint-disable-next-line no-console
-            console.log(
-                `[AIResponseError][${aiRequestId}] startedAt=${startedAtIso} elapsedMs=${Date.now() - startedAt} route=${resolvedRoute.route.name} message=${failures.join(" | ")}`,
-            );
-            return res.status(502).json({
-                message:
-                    failures.length > 0
-                        ? failures.join(" | ")
-                        : "所有模型提供商均调用失败",
-            });
-        } catch (error) {
-            if (controller.signal.aborted) {
-                return;
-            }
-            const parsed = parseUnknownUpstreamError(error);
-            if (res.headersSent) {
-                if (!res.writableEnded) {
-                    res.end();
-                }
-                return;
-            }
-            return res.status(parsed.status).json({ message: parsed.message });
+    app.post("/api/ai-chat/stream", async (req, res) => {
+        const { routeName, prompt, fields, messages } = req.body as {
+            routeName?: unknown;
+            prompt?: unknown;
+            fields?: unknown;
+            messages?: unknown;
+        };
+        if (!isNonEmptyString(routeName)) {
+            return res.status(400).json({ message: "routeName must be a non-empty string" });
         }
+        if (!isNonEmptyString(prompt)) {
+            return res.status(400).json({ message: "prompt must be a non-empty string" });
+        }
+        const fieldPayload = toAIDetectFields(fields);
+        if (!fieldPayload) {
+            return res.status(400).json({ message: "fields must be an array" });
+        }
+        const messagePayload = toAIChatMessages(messages);
+        if (!messagePayload || messagePayload.length === 0) {
+            return res.status(400).json({ message: "messages must be a non-empty array" });
+        }
+
+        const route = findAIModelRouteByName(routeName.trim());
+        if (!route) {
+            return res.status(404).json({ message: "模型路由不存在" });
+        }
+        const resolvedRoute = resolveRouteSteps(route);
+        if (!resolvedRoute) {
+            return res.status(400).json({ message: "模型路由引用的提供商无效" });
+        }
+        if (resolvedRoute.apiType === "anthropic") {
+            return res.status(400).json({ message: "Anthropic 暂不支持正式调用" });
+        }
+
+        return streamAIRouteResponse({
+            req,
+            res,
+            resolvedRoute,
+            prompt,
+            fields: fieldPayload,
+            messages: messagePayload,
+        });
     });
 };

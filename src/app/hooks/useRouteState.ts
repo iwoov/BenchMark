@@ -58,9 +58,7 @@ export const useRouteState = ({
       const nextRoute = parseHashRoute(window.location.hash);
       setActiveSection(nextRoute.section);
       setActiveSettingsSection(nextRoute.settingsSection);
-      if (nextRoute.section === "detail" && nextRoute.rowId) {
-        onRowIdChange?.(nextRoute.rowId);
-      }
+      onRowIdChange?.(nextRoute.section === "list" ? (nextRoute.rowId ?? null) : null);
     };
 
     window.addEventListener("hashchange", syncRouteState);

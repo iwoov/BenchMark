@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, type ReactNode, useState } from "react";
 import type { ParsedCell, ParsedColumn, ParsedRow } from "../../types";
 import {
     getCellText,
@@ -310,7 +310,13 @@ export const useCellRenderers = ({
         );
     };
 
-    const renderDetailField = (column: ParsedColumn, isHidden = false) => {
+    const renderDetailField = (
+        column: ParsedColumn,
+        isHidden = false,
+        options?: {
+            labelActions?: ReactNode;
+        },
+    ) => {
         if (!selectedRow) {
             return null;
         }
@@ -406,6 +412,11 @@ export const useCellRenderers = ({
                             >
                                 <IconCopy />
                             </button>
+                        </div>
+                    ) : null}
+                    {options?.labelActions ? (
+                        <div className="detail-label-actions">
+                            {options.labelActions}
                         </div>
                     ) : null}
                     {column.editable ? (

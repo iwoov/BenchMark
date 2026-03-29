@@ -21,6 +21,7 @@ interface SettingsPageProps {
     onOpenAIStageConfigModal: () => void;
     onOpenAIProfileModal: () => void;
     onOpenAIRouteModal: () => void;
+    onOpenAIChatConfigModal: () => void;
 }
 
 export function SettingsPage({
@@ -33,6 +34,7 @@ export function SettingsPage({
     onOpenAIStageConfigModal,
     onOpenAIProfileModal,
     onOpenAIRouteModal,
+    onOpenAIChatConfigModal,
 }: SettingsPageProps) {
     const visibleDisplayColumns = displayColumns;
     const editableColumns = activeFile.columns.filter((column) =>
@@ -41,8 +43,10 @@ export function SettingsPage({
     const activeConfig = aiConfigList[0]?.config ?? aiConfig;
     const providers = activeConfig.providers ?? [];
     const routes = activeConfig.routes ?? [];
+    const chatConfig = activeConfig.chat;
     const providerMap = new Map(providers.map((item) => [item.name, item]));
     const routeMap = new Map(routes.map((item) => [item.name, item]));
+    const chatRoute = routeMap.get(chatConfig.routeName);
 
     const getProviderTypeLabel = (apiType: string) =>
         AI_PROVIDER_API_TYPE_OPTIONS.find((item) => item.value === apiType)
@@ -141,57 +145,138 @@ export function SettingsPage({
                     <div className="settings-grid">
                         <div className="settings-subsection">
                             <div className="settings-subsection-head">
-                                <h4>阶段任务</h4>
-                                <span>{`共 ${AI_STAGE_ORDER.length} 个阶段`}</span>
+                                <h4>阶段任务配置</h4>
+                                <span>拆分显示检测任务与聊天任务</span>
                             </div>
-                            <div className="settings-stage-list">
-                                {AI_STAGE_ORDER.map((stageKey) => {
-                                    const stageConfig = activeConfig.stages[stageKey];
-                                    const stageLabel = AI_STAGE_LABELS[stageKey];
-                                    const route = routeMap.get(stageConfig.routeName);
-                                    const routeProviders = route
-                                        ? route.steps
-                                              .map((step) => providerMap.get(step.providerName))
-                                              .filter((item): item is NonNullable<typeof item> => Boolean(item))
-                                        : [];
-                                    return (
-                                        <div
-                                            key={stageKey}
-                                            className="settings-stage-item"
+                            <div className="settings-task-groups">
+                                <div className="settings-task-group">
+                                    <div className="settings-task-group-head">
+                                        <div>
+                                            <h5>AI 检测阶段</h5>
+                                            <span>{`共 ${AI_STAGE_ORDER.length} 个阶段`}</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            onClick={onOpenAIStageConfigModal}
                                         >
+                                            管理阶段任务
+                                        </button>
+                                    </div>
+                                    <div className="settings-stage-list">
+                                        {AI_STAGE_ORDER.map((stageKey) => {
+                                            const stageConfig =
+                                                activeConfig.stages[stageKey];
+                                            const stageLabel =
+                                                AI_STAGE_LABELS[stageKey];
+                                            const route = routeMap.get(
+                                                stageConfig.routeName,
+                                            );
+                                            const routeProviders = route
+                                                ? route.steps
+                                                      .map((step) =>
+                                                          providerMap.get(
+                                                              step.providerName,
+                                                          ),
+                                                      )
+                                                      .filter(
+                                                          (
+                                                              item,
+                                                          ): item is NonNullable<
+                                                              typeof item
+                                                          > => Boolean(item),
+                                                      )
+                                                : [];
+                                            return (
+                                                <div
+                                                    key={stageKey}
+                                                    className="settings-stage-item"
+                                                >
+                                                    <div className="settings-stage-title">
+                                                        <strong>
+                                                            {stageLabel.title}
+                                                        </strong>
+                                                        <span className="settings-tag">
+                                                            {stageConfig.routeName ||
+                                                                "未绑定路由"}
+                                                        </span>
+                                                        <span className="settings-tag">
+                                                            {routeProviders.length >
+                                                            0
+                                                                ? routeProviders
+                                                                      .map(
+                                                                          (
+                                                                              item,
+                                                                          ) =>
+                                                                              item.name,
+                                                                      )
+                                                                      .join(
+                                                                          " -> ",
+                                                                      )
+                                                                : "未配置提供商"}
+                                                        </span>
+                                                    </div>
+                                                    <div className="settings-stage-meta">
+                                                        <span>{`提交字段 ${stageConfig.submitFieldKeys.length} 个`}</span>
+                                                        <span>{`重试 ${route?.retryCount ?? 0} 次`}</span>
+                                                        <span>{`模型 ${route?.model || "-"}`}</span>
+                                                    </div>
+                                                    <div className="settings-stage-prompt">
+                                                        {getPromptPreview(
+                                                            stageConfig.prompt,
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="settings-task-group">
+                                    <div className="settings-task-group-head">
+                                        <div>
+                                            <h5>题目详情聊天</h5>
+                                            <span>独立于检测阶段的聊天任务</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={onOpenAIChatConfigModal}
+                                        >
+                                            配置聊天任务
+                                        </button>
+                                    </div>
+                                    <div className="settings-stage-list">
+                                        <div className="settings-stage-item">
                                             <div className="settings-stage-title">
-                                                <strong>{stageLabel.title}</strong>
+                                                <strong>聊天任务配置</strong>
                                                 <span className="settings-tag">
-                                                    {stageConfig.routeName || "未绑定路由"}
+                                                    {chatConfig.routeName ||
+                                                        "未绑定路由"}
                                                 </span>
                                                 <span className="settings-tag">
-                                                    {routeProviders.length > 0
-                                                        ? routeProviders
-                                                              .map((item) => item.name)
+                                                    {chatRoute
+                                                        ? chatRoute.steps
+                                                              .map(
+                                                                  (step) =>
+                                                                      step.providerName,
+                                                              )
                                                               .join(" -> ")
                                                         : "未配置提供商"}
                                                 </span>
                                             </div>
                                             <div className="settings-stage-meta">
-                                                <span>{`提交字段 ${stageConfig.submitFieldKeys.length} 个`}</span>
-                                                <span>{`重试 ${route?.retryCount ?? 0} 次`}</span>
-                                                <span>{`模型 ${route?.model || "-"}`}</span>
+                                                <span>{`默认字段 ${chatConfig.defaultSubmitFieldKeys.length} 个`}</span>
+                                                <span>{`模型 ${chatRoute?.model || "-"}`}</span>
                                             </div>
                                             <div className="settings-stage-prompt">
-                                                {getPromptPreview(stageConfig.prompt)}
+                                                {getPromptPreview(
+                                                    chatConfig.prompt,
+                                                )}
                                             </div>
                                         </div>
-                                    );
-                                })}
-                            </div>
-                            <div className="settings-section-actions">
-                                <button
-                                    type="button"
-                                    className="btn btn-primary"
-                                    onClick={onOpenAIStageConfigModal}
-                                >
-                                    管理阶段任务
-                                </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -279,6 +364,7 @@ export function SettingsPage({
                                 </button>
                             </div>
                         </div>
+
                     </div>
                 </section>
             ) : null}

@@ -28,8 +28,10 @@ import {
     normalizeAIDetectConfigForColumns,
     normalizeLoadedNamedAIDetectConfigs,
     normalizeNamedAIDetectConfigsForColumns,
+    requestAIChatResult,
     requestAIDetectResult,
 } from "../ai-helpers";
+import type { AIChatMessage, AIChatMessagePayload } from "../types";
 
 type NavigateToSection = (
     section: MainSection,
@@ -85,6 +87,8 @@ export const useAIManager = ({
         useState(false);
     const [isAIProfileModalOpen, setIsAIProfileModalOpen] = useState(false);
     const [isAIRouteModalOpen, setIsAIRouteModalOpen] = useState(false);
+    const [isAIChatConfigModalOpen, setIsAIChatConfigModalOpen] =
+        useState(false);
     const [aiConfigLoading, setAIConfigLoading] = useState(false);
     const [aiConfigSaving, setAIConfigSaving] = useState(false);
     const [aiConfigList, setAIConfigList] = useState<NamedAIDetectConfig[]>(
@@ -128,10 +132,18 @@ export const useAIManager = ({
     const [rowBatchStatuses, setRowBatchStatuses] = useState<
         Record<string, "success" | "failed">
     >({});
+    const [chatMessages, setChatMessages] = useState<AIChatMessage[]>([]);
+    const [chatInput, setChatInput] = useState("");
+    const [chatStatusMessage, setChatStatusMessage] = useState("");
+    const [activeChatRouteName, setActiveChatRouteName] = useState("");
+    const [isAIChatting, setIsAIChatting] = useState(false);
+    const [aiChatElapsedMs, setAIChatElapsedMs] = useState(0);
 
     const aiStreamAbortRef = useRef<AbortController | null>(null);
+    const aiChatAbortRef = useRef<AbortController | null>(null);
     const aiBatchAbortRef = useRef<AbortController | null>(null);
     const aiDetectStartedAtRef = useRef<number | null>(null);
+    const aiChatStartedAtRef = useRef<number | null>(null);
     const aiBatchPersistTimerRef = useRef<number | null>(null);
     const rowStreamCharsRef = useRef<
         Record<string, Partial<Record<AIDetectStageKey, number>>>
@@ -145,6 +157,8 @@ export const useAIManager = ({
         return () => {
             aiStreamAbortRef.current?.abort();
             aiStreamAbortRef.current = null;
+            aiChatAbortRef.current?.abort();
+            aiChatAbortRef.current = null;
             aiBatchAbortRef.current?.abort();
             aiBatchAbortRef.current = null;
             if (rowStreamFlushTimerRef.current !== null) {
@@ -175,6 +189,20 @@ export const useAIManager = ({
     }, [isAIDetecting]);
 
     useEffect(() => {
+        if (!isAIChatting) {
+            return;
+        }
+        const startedAt = aiChatStartedAtRef.current ?? Date.now();
+        aiChatStartedAtRef.current = startedAt;
+        const timerId = window.setInterval(() => {
+            setAIChatElapsedMs(Date.now() - startedAt);
+        }, 250);
+        return () => {
+            window.clearInterval(timerId);
+        };
+    }, [isAIChatting]);
+
+    useEffect(() => {
         setAIThinkingText("");
         setAIResultText("");
         setAIResultMessage("");
@@ -183,7 +211,16 @@ export const useAIManager = ({
         aiDetectStartedAtRef.current = null;
         setAIDetectElapsedMs(0);
         setIsAIDetecting(false);
-    }, [activeFileId, selectedRowId]);
+        aiChatAbortRef.current?.abort();
+        aiChatAbortRef.current = null;
+        aiChatStartedAtRef.current = null;
+        setAIChatElapsedMs(0);
+        setIsAIChatting(false);
+        setChatMessages([]);
+        setChatInput("");
+        setChatStatusMessage("");
+        setActiveChatRouteName(aiConfig.chat.routeName);
+    }, [activeFileId, selectedRowId, aiConfig.chat.routeName]);
 
     useEffect(() => {
         resetRowStreamProgress();
@@ -211,6 +248,8 @@ export const useAIManager = ({
             setIsAIStageConfigModalOpen(false);
             setIsAIProfileModalOpen(false);
             setIsAIRouteModalOpen(false);
+            setIsAIChatConfigModalOpen(false);
+            setActiveChatRouteName(nextConfig.chat.routeName);
             return;
         }
 
@@ -232,6 +271,7 @@ export const useAIManager = ({
                     providers?: unknown;
                     routes?: unknown;
                     stages?: unknown;
+                    chat?: unknown;
                 };
                 let loadedConfigs = normalizeLoadedNamedAIDetectConfigs([
                     {
@@ -240,6 +280,7 @@ export const useAIManager = ({
                             providers: payload.providers,
                             routes: payload.routes,
                             stages: payload.stages,
+                            chat: payload.chat,
                         },
                     },
                 ]);
@@ -271,6 +312,7 @@ export const useAIManager = ({
                 setAIConfig(activeConfig);
                 setDraftAIConfig(cloneAIDetectConfig(activeConfig));
                 setAIConfigFormMessage("");
+                setActiveChatRouteName(activeConfig.chat.routeName);
             } catch {
                 if (disposed) {
                     return;
@@ -288,6 +330,7 @@ export const useAIManager = ({
                 setAIConfig(fallbackConfig);
                 setDraftAIConfig(cloneAIDetectConfig(fallbackConfig));
                 setAIConfigFormMessage("");
+                setActiveChatRouteName(fallbackConfig.chat.routeName);
             } finally {
                 if (!disposed) {
                     setAIConfigLoading(false);
@@ -325,6 +368,15 @@ export const useAIManager = ({
             },
         ]);
         setAIConfig(nextSelectedConfig);
+        setActiveChatRouteName((previous) => {
+            if (
+                previous &&
+                nextSelectedConfig.routes.some((item) => item.name === previous)
+            ) {
+                return previous;
+            }
+            return nextSelectedConfig.chat.routeName;
+        });
         setDraftAIConfig((previous) =>
             normalizeAIDetectConfigForColumns(previous, activeFile.columns),
         );
@@ -336,6 +388,7 @@ export const useAIManager = ({
             ? Math.round((aiBatchTask.completed / aiBatchTask.total) * 100)
             : 0;
     const aiDetectElapsedText = formatDuration(aiDetectElapsedMs);
+    const aiChatElapsedText = formatDuration(aiChatElapsedMs);
     const aiMergedStreamText = useMemo(
         () => composeAISaveText(aiResultText, aiThinkingText),
         [aiResultText, aiThinkingText],
@@ -344,6 +397,7 @@ export const useAIManager = ({
     const canRunAIDetect =
         Boolean(selectedRow) &&
         !isAIDetecting &&
+        !isAIChatting &&
         !aiConfigLoading &&
         !isAIBatchRunning;
     const runAllTimerText =
@@ -588,6 +642,44 @@ export const useAIManager = ({
             return `${prefix}请先配置 Prompt`;
         }
         return null;
+    };
+
+    const buildChatFieldsForRow = (
+        columns: ParsedColumn[],
+        row: ParsedRow,
+        config: AIDetectConfig,
+    ) =>
+        buildAIDetectFieldsForRow(
+            columns,
+            row,
+            config.chat.defaultSubmitFieldKeys,
+        );
+
+    const validateChatSetup = (
+        config: AIDetectConfig,
+        routeName: string,
+    ): {
+        route: AIDetectConfig["routes"][number] | null;
+        error: string | null;
+    } => {
+        const route =
+            config.routes.find((item) => item.name === routeName) ??
+            config.routes.find((item) => item.name === config.chat.routeName) ??
+            config.routes[0] ??
+            null;
+        if (!route) {
+            return { route: null, error: "请先配置模型路由" };
+        }
+        if (route.model.trim().length === 0) {
+            return { route, error: "请先配置模型" };
+        }
+        if (route.steps.length === 0) {
+            return { route, error: "请先至少配置一个提供商回退步骤" };
+        }
+        if (config.chat.prompt.trim().length === 0) {
+            return { route, error: "请先配置聊天 Prompt" };
+        }
+        return { route, error: null };
     };
 
     const buildStageFieldsForRow = (
@@ -934,6 +1026,12 @@ export const useAIManager = ({
                 config: nextConfig,
             },
         ]);
+        setActiveChatRouteName((previous) => {
+            if (nextConfig.routes.some((item) => item.name === previous)) {
+                return previous;
+            }
+            return nextConfig.chat.routeName;
+        });
     };
 
     const prepareDraftAIConfig = () => {
@@ -956,6 +1054,7 @@ export const useAIManager = ({
         setIsAIStageConfigModalOpen(true);
         setIsAIProfileModalOpen(false);
         setIsAIRouteModalOpen(false);
+        setIsAIChatConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -966,6 +1065,7 @@ export const useAIManager = ({
         setIsAIProfileModalOpen(true);
         setIsAIStageConfigModalOpen(false);
         setIsAIRouteModalOpen(false);
+        setIsAIChatConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -976,6 +1076,18 @@ export const useAIManager = ({
         setIsAIRouteModalOpen(true);
         setIsAIProfileModalOpen(false);
         setIsAIStageConfigModalOpen(false);
+        setIsAIChatConfigModalOpen(false);
+        navigateToSection("settings", "ai");
+    };
+
+    const onOpenAIChatConfigModal = () => {
+        if (!prepareDraftAIConfig()) {
+            return;
+        }
+        setIsAIChatConfigModalOpen(true);
+        setIsAIProfileModalOpen(false);
+        setIsAIStageConfigModalOpen(false);
+        setIsAIRouteModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -995,6 +1107,12 @@ export const useAIManager = ({
         setDraftAIConfig(cloneAIDetectConfig(aiConfig));
         setAIConfigFormMessage("");
         setIsAIRouteModalOpen(false);
+    };
+
+    const onCancelAIChatConfigModal = () => {
+        setDraftAIConfig(cloneAIDetectConfig(aiConfig));
+        setAIConfigFormMessage("");
+        setIsAIChatConfigModalOpen(false);
     };
 
     const updateDraftStageConfig = (
@@ -1024,6 +1142,25 @@ export const useAIManager = ({
             return {
                 ...stage,
                 submitFieldKeys,
+            };
+        });
+    };
+
+    const onToggleDraftAIChatSubmitField = (columnKey: string) => {
+        setDraftAIConfig((previous) => {
+            const exists =
+                previous.chat.defaultSubmitFieldKeys.includes(columnKey);
+            const defaultSubmitFieldKeys = exists
+                ? previous.chat.defaultSubmitFieldKeys.filter(
+                      (key) => key !== columnKey,
+                  )
+                : [...previous.chat.defaultSubmitFieldKeys, columnKey];
+            return {
+                ...previous,
+                chat: {
+                    ...previous.chat,
+                    defaultSubmitFieldKeys,
+                },
             };
         });
     };
@@ -1198,6 +1335,7 @@ export const useAIManager = ({
             setIsAIStageConfigModalOpen(false);
             setIsAIProfileModalOpen(false);
             setIsAIRouteModalOpen(false);
+            setIsAIChatConfigModalOpen(false);
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : "保存 AI 配置失败";
@@ -1211,8 +1349,232 @@ export const useAIManager = ({
     const onSaveAIRouteConfig = () => onSaveAIConfig(true);
     const onSaveAIStageConfig = () => onSaveAIConfig(false);
 
+    const onSaveAIChatConfig = async () => {
+        if (!activeFile) {
+            return;
+        }
+
+        const nextConfig = normalizeAIDetectConfigForColumns(
+            draftAIConfig,
+            activeFile.columns,
+        );
+        const routeNameSet = new Set(nextConfig.routes.map((item) => item.name));
+        if (!routeNameSet.has(nextConfig.chat.routeName)) {
+            setAIConfigFormMessage("聊天模型路由无效");
+            return;
+        }
+        if (nextConfig.chat.prompt.trim().length === 0) {
+            setAIConfigFormMessage("聊天 Prompt 不能为空");
+            return;
+        }
+
+        setAIConfigSaving(true);
+        setAIConfigFormMessage("");
+        setErrorMessage("");
+
+        try {
+            const response = await fetch(
+                `/api/ai-config/${encodeURIComponent(activeFile.fileName)}/chat`,
+                {
+                    method: "PUT",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        chat: nextConfig.chat,
+                    }),
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response
+                    .json()
+                    .catch(() => ({}))) as { message?: string };
+                throw new Error(payload.message ?? "保存聊天配置失败");
+            }
+
+            syncActiveAIConfigState(nextConfig);
+            setDraftAIConfig(cloneAIDetectConfig(nextConfig));
+            setActiveChatRouteName(nextConfig.chat.routeName);
+            setAIConfigFormMessage("");
+            setIsAIChatConfigModalOpen(false);
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "保存聊天配置失败";
+            setAIConfigFormMessage(message);
+        } finally {
+            setAIConfigSaving(false);
+        }
+    };
+
+    const onClearAIChatSession = () => {
+        if (isAIChatting) {
+            return;
+        }
+        setChatMessages([]);
+        setChatInput("");
+        setChatStatusMessage("");
+    };
+
+    const onSendAIChatMessage = async () => {
+        if (!activeFile || !selectedRow) {
+            return;
+        }
+        if (isAIDetecting || isAIBatchRunning || isAIChatting) {
+            return;
+        }
+
+        const content = chatInput.trim();
+        if (content.length === 0) {
+            setChatStatusMessage("请输入聊天内容");
+            return;
+        }
+
+        const normalizedConfig = normalizeAIDetectConfigForColumns(
+            aiConfig,
+            activeFile.columns,
+        );
+        syncActiveAIConfigState(normalizedConfig);
+        const { route, error } = validateChatSetup(
+            normalizedConfig,
+            activeChatRouteName,
+        );
+        if (error || !route) {
+            setChatStatusMessage(error ?? "请先配置聊天模型路由");
+            return;
+        }
+        if (route.name !== activeChatRouteName) {
+            setActiveChatRouteName(route.name);
+        }
+
+        const userMessage: AIChatMessage = {
+            id: `user-${Date.now()}`,
+            role: "user",
+            content,
+            createdAt: Date.now(),
+            status: "done",
+        };
+        const assistantMessageId = `assistant-${Date.now()}`;
+        const nextMessages = [...chatMessages, userMessage];
+        const requestMessages: AIChatMessagePayload[] = nextMessages.map(
+            (message) => ({
+                role: message.role,
+                content: message.content,
+            }),
+        );
+        const chatFields = buildChatFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            normalizedConfig,
+        );
+
+        setChatMessages([
+            ...nextMessages,
+            {
+                id: assistantMessageId,
+                role: "assistant",
+                content: "",
+                createdAt: Date.now(),
+                status: "streaming",
+            },
+        ]);
+        setChatInput("");
+        setChatStatusMessage("");
+        setIsAIChatting(true);
+        setAIChatElapsedMs(0);
+        aiChatStartedAtRef.current = Date.now();
+        aiChatAbortRef.current?.abort();
+        const controller = new AbortController();
+        aiChatAbortRef.current = controller;
+
+        try {
+            const streamResult = await requestAIChatResult(
+                {
+                    routeName: route.name,
+                    prompt: normalizedConfig.chat.prompt,
+                    messages: requestMessages,
+                    fields: chatFields,
+                },
+                {
+                    signal: controller.signal,
+                    onAnswerChunk: (chunk) => {
+                        setChatMessages((previous) =>
+                            previous.map((message) =>
+                                message.id === assistantMessageId
+                                    ? {
+                                          ...message,
+                                          content: message.content + chunk,
+                                      }
+                                    : message,
+                            ),
+                        );
+                    },
+                },
+            );
+            const answerText = streamResult.answerText.trim();
+            if (answerText.length === 0) {
+                setChatMessages((previous) =>
+                    previous.map((message) =>
+                        message.id === assistantMessageId
+                            ? {
+                                  ...message,
+                                  content: "AI 返回为空",
+                                  status: "error",
+                              }
+                            : message,
+                    ),
+                );
+                setChatStatusMessage("AI 返回为空");
+            } else {
+                setChatMessages((previous) =>
+                    previous.map((message) =>
+                        message.id === assistantMessageId
+                            ? {
+                                  ...message,
+                                  content: answerText,
+                                  status: "done",
+                              }
+                            : message,
+                    ),
+                );
+                setChatStatusMessage("");
+            }
+        } catch (error) {
+            if (controller.signal.aborted) {
+                setChatStatusMessage("聊天已取消");
+            } else {
+                const message =
+                    error instanceof Error ? error.message : "AI 聊天失败";
+                setChatMessages((previous) =>
+                    previous.map((item) =>
+                        item.id === assistantMessageId
+                            ? {
+                                  ...item,
+                                  content: item.content || message,
+                                  status: "error",
+                              }
+                            : item,
+                    ),
+                );
+                setChatStatusMessage(message);
+            }
+        } finally {
+            if (aiChatAbortRef.current === controller) {
+                aiChatAbortRef.current = null;
+            }
+            if (aiChatStartedAtRef.current) {
+                setAIChatElapsedMs(Date.now() - aiChatStartedAtRef.current);
+                aiChatStartedAtRef.current = null;
+            }
+            setIsAIChatting(false);
+        }
+    };
+
     const onRunAIDetect = async (runKeyOverride?: AIDetectRunKey) => {
         if (!activeFile || !selectedRow) {
+            return;
+        }
+        if (isAIChatting) {
+            setAIResultMessage("AI 聊天进行中，暂不可发起检测");
             return;
         }
         if (isAIBatchRunning) {
@@ -1592,7 +1954,7 @@ export const useAIManager = ({
         if (!activeFile) {
             return;
         }
-        if (isAIDetecting || isAIBatchRunning) {
+        if (isAIDetecting || isAIBatchRunning || isAIChatting) {
             return;
         }
 
@@ -1827,6 +2189,7 @@ export const useAIManager = ({
         isAIStageConfigModalOpen,
         isAIProfileModalOpen,
         isAIRouteModalOpen,
+        isAIChatConfigModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -1850,19 +2213,33 @@ export const useAIManager = ({
         rowStreamProgress,
         rowBatchStatuses,
         isAIDetecting,
+        chatMessages,
+        chatInput,
+        setChatInput,
+        chatStatusMessage,
+        activeChatRouteName,
+        setActiveChatRouteName,
+        isAIChatting,
+        aiChatElapsedText,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
+        onOpenAIChatConfigModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
         onCancelAIRouteModal,
+        onCancelAIChatConfigModal,
         onToggleDraftAISubmitField,
+        onToggleDraftAIChatSubmitField,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
         onSaveAIRouteConfig,
+        onSaveAIChatConfig,
         onRunAIDetect,
         onRunAllAIDetect,
         onRunBatchAIAnswer,
+        onSendAIChatMessage,
+        onClearAIChatSession,
         openAIRunModalForStage,
         onAIResultTextChange,
     };

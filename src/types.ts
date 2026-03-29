@@ -77,6 +77,12 @@ export interface AIDetectStageConfig {
     prompt: string;
 }
 
+export interface AIChatConfig {
+    routeName: string;
+    prompt: string;
+    defaultSubmitFieldKeys: string[];
+}
+
 export type AIDetectStageConfigMap = Record<
     AIDetectStageKey,
     AIDetectStageConfig
@@ -86,6 +92,7 @@ export interface AIDetectConfig {
     providers: AIProviderEndpoint[];
     routes: AIModelRoute[];
     stages: AIDetectStageConfigMap;
+    chat: AIChatConfig;
 }
 
 export interface NamedAIDetectConfig {

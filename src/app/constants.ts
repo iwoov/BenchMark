@@ -1,5 +1,6 @@
 import type {
     AIDetectConfig,
+    AIChatConfig,
     AIModelRoute,
     AIProviderEndpoint,
     AIDetectStageConfig,
@@ -185,6 +186,19 @@ export const DEFAULT_AI_STAGE_PROMPTS: Record<AIDetectStageKey, string> = {
 {{fields_json}}`,
 };
 
+export const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
+
+你会收到两类信息：
+1. 当前题目的固定字段上下文（可能包含题干、选项、答案、解析、图片说明等）
+2. 用户和你的多轮聊天记录
+
+请遵守以下要求：
+- 优先基于当前题目上下文回答，不要脱离题目泛泛而谈。
+- 如果用户的问题依赖当前字段中没有提供的信息，要明确说明缺失了什么。
+- 回答尽量直接、准确、结构清晰。
+- 如果字段中包含参考答案或解析，只有在用户问题确实相关时才引用，并说明依据来源于当前题目字段。
+- 不要输出 JSON，也不要重复粘贴全部字段内容，除非用户明确要求。`;
+
 export const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
 export const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
@@ -207,6 +221,12 @@ export const DEFAULT_AI_ROUTE: AIModelRoute = {
 const DEFAULT_AI_STAGE_BASE: Omit<AIDetectStageConfig, "prompt"> = {
     routeName: DEFAULT_AI_ROUTE_NAME,
     submitFieldKeys: [],
+};
+
+export const DEFAULT_AI_CHAT_CONFIG: AIChatConfig = {
+    routeName: DEFAULT_AI_ROUTE_NAME,
+    prompt: DEFAULT_AI_CHAT_PROMPT,
+    defaultSubmitFieldKeys: [],
 };
 
 export const DEFAULT_AI_STAGE_CONFIGS: AIDetectStageConfigMap = {
@@ -232,6 +252,7 @@ export const DEFAULT_AI_CONFIG: AIDetectConfig = {
     providers: [DEFAULT_AI_PROVIDER],
     routes: [DEFAULT_AI_ROUTE],
     stages: DEFAULT_AI_STAGE_CONFIGS,
+    chat: DEFAULT_AI_CHAT_CONFIG,
 };
 
 export const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;

@@ -1,7 +1,6 @@
 import type { FileViewState } from "../../types";
 import type { MainSection, SettingsSection } from "../types";
 import {
-  IconInspect,
   IconListTree,
   IconPanelLeft,
   IconSliders,
@@ -51,20 +50,6 @@ export function WorkspaceSidebar({
         </span>
         <span className="workspace-nav-copy">
           <strong>题目列表</strong>
-        </span>
-      </button>
-      <button
-        type="button"
-        className={`workspace-nav-item ${activeSection === "detail" ? "active" : ""}`}
-        onClick={() => onNavigate("detail")}
-        disabled={!activeFile}
-        title="题目详情"
-      >
-        <span className="workspace-nav-icon" aria-hidden="true">
-          <IconInspect />
-        </span>
-        <span className="workspace-nav-copy">
-          <strong>题目详情</strong>
         </span>
       </button>
       <button

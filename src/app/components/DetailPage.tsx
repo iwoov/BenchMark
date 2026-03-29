@@ -7,14 +7,18 @@ import {
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
 } from "react";
-import type { AIDetectStageKey, ParsedColumn, ParsedRow } from "../../types";
+import type {
+    AIDetectStageKey,
+    ParsedColumn,
+    ParsedRow,
+} from "../../types";
 import {
     extractAIResultFinalAnswer,
     parseAIResultJSON,
     readBooleanLike,
 } from "../ai-helpers";
-import { getCellImageSources, normalizeHeaderTitle } from "../file-helpers";
-import { IconChevron, IconCopy } from "../icons";
+import { normalizeHeaderTitle } from "../file-helpers";
+import { IconChevron } from "../icons";
 import {
     AI_RUN_ALL_LABEL,
     AI_STAGE_LABELS,
@@ -101,42 +105,6 @@ function getRiskBadgeClass(level: string): string {
         return "badge-warning";
     }
     return "badge-invalid";
-}
-
-async function normalizeImageBlobForClipboard(blob: Blob): Promise<Blob> {
-    if (blob.type === "image/png") {
-        return blob;
-    }
-
-    const objectUrl = URL.createObjectURL(blob);
-    try {
-        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-            const nextImage = new Image();
-            nextImage.onload = () => resolve(nextImage);
-            nextImage.onerror = () => reject(new Error("image decode failed"));
-            nextImage.src = objectUrl;
-        });
-
-        const canvas = document.createElement("canvas");
-        canvas.width = image.naturalWidth || image.width;
-        canvas.height = image.naturalHeight || image.height;
-        const context = canvas.getContext("2d");
-        if (!context) {
-            throw new Error("canvas context unavailable");
-        }
-
-        context.drawImage(image, 0, 0);
-        const pngBlob = await new Promise<Blob | null>((resolve) => {
-            canvas.toBlob(resolve, "image/png");
-        });
-        if (!pngBlob) {
-            throw new Error("png encode failed");
-        }
-
-        return pngBlob;
-    } finally {
-        URL.revokeObjectURL(objectUrl);
-    }
 }
 
 function renderPrecheckResult(parsed: Record<string, unknown>) {
@@ -737,7 +705,11 @@ interface DetailPageProps {
     canRunAllAIDetect: boolean;
     runAllTimerText?: string;
     runAllStageTimers?: Partial<Record<AIDetectStageKey, string>>;
-    renderDetailField: (column: ParsedColumn, isHidden: boolean) => ReactNode;
+    renderDetailField: (
+        column: ParsedColumn,
+        isHidden: boolean,
+        options?: { labelActions?: ReactNode },
+    ) => ReactNode;
     aiResults?: Partial<Record<AIDetectStageKey, string>>;
 }
 
@@ -756,11 +728,18 @@ export function DetailPage({
     aiResults,
 }: DetailPageProps) {
     const [detailImageZoom, setDetailImageZoom] = useState(100);
-    const [isCopyingImage, setIsCopyingImage] = useState(false);
-    const [copyImageFeedback, setCopyImageFeedback] = useState<{
-        tone: "success" | "error";
-        text: string;
-    } | null>(null);
+    const [isAIDetectSectionCollapsed, setIsAIDetectSectionCollapsed] =
+        useState(false);
+    const [aiDetectCardHeight, setAIDetectCardHeight] = useState(220);
+    const aiDetectResizeRef = useRef<{
+        active: boolean;
+        startY: number;
+        startHeight: number;
+    }>({
+        active: false,
+        startY: 0,
+        startHeight: 220,
+    });
 
     if (!selectedRow) {
         return (
@@ -845,35 +824,34 @@ export function DetailPage({
     ]);
     const hasHeroLayout =
         problemTextColumns.length > 0 || imageColumns.length > 0;
-    const firstImageSrc = useMemo(() => {
-        for (const column of imageColumns) {
-            const imageSources = getCellImageSources(
-                selectedRow.values[column.key],
-            );
-            if (imageSources.length > 0) {
-                return imageSources[0];
-            }
-        }
-        return null;
-    }, [imageColumns, selectedRow]);
-
     useEffect(() => {
         setDetailImageZoom(100);
-        setIsCopyingImage(false);
-        setCopyImageFeedback(null);
     }, [selectedRow.rowId]);
 
     useEffect(() => {
-        if (!copyImageFeedback) {
-            return;
-        }
+        const handleMouseMove = (event: MouseEvent) => {
+            if (!aiDetectResizeRef.current.active) {
+                return;
+            }
+            const deltaY = event.clientY - aiDetectResizeRef.current.startY;
+            const nextHeight = Math.min(
+                480,
+                Math.max(140, aiDetectResizeRef.current.startHeight + deltaY),
+            );
+            setAIDetectCardHeight(nextHeight);
+        };
 
-        const timeoutId = window.setTimeout(() => {
-            setCopyImageFeedback(null);
-        }, 2400);
+        const handleMouseUp = () => {
+            aiDetectResizeRef.current.active = false;
+        };
 
-        return () => window.clearTimeout(timeoutId);
-    }, [copyImageFeedback]);
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, []);
 
     const decreaseImageZoom = () => {
         setDetailImageZoom((previous) => Math.max(50, previous - 25));
@@ -883,55 +861,15 @@ export function DetailPage({
         setDetailImageZoom((previous) => Math.min(250, previous + 25));
     };
 
-    const copyFirstImage = async () => {
-        if (!firstImageSrc || isCopyingImage) {
-            return;
-        }
-
-        try {
-            setIsCopyingImage(true);
-            setCopyImageFeedback(null);
-
-            const response = await fetch(firstImageSrc);
-            if (!response.ok) {
-                throw new Error(`copy image failed: ${response.status}`);
-            }
-
-            const imageBlob = await response.blob();
-            if (
-                !navigator.clipboard?.write ||
-                typeof ClipboardItem === "undefined"
-            ) {
-                setCopyImageFeedback({
-                    tone: "error",
-                    text: window.isSecureContext
-                        ? "当前浏览器不支持脚本复制图片，请右键图片复制"
-                        : "当前页面不是安全上下文，请用 localhost/https 打开",
-                });
-                return;
-            }
-
-            const clipboardBlob =
-                await normalizeImageBlobForClipboard(imageBlob);
-            await navigator.clipboard.write([
-                new ClipboardItem({
-                    "image/png": clipboardBlob,
-                }),
-            ]);
-
-            setCopyImageFeedback({
-                tone: "success",
-                text: "已复制第一张图片",
-            });
-        } catch (error) {
-            console.error("[DetailImageCopy] failed", error);
-            setCopyImageFeedback({
-                tone: "error",
-                text: "复制图片失败",
-            });
-        } finally {
-            setIsCopyingImage(false);
-        }
+    const startResizeAIDetectSection = (
+        event: ReactMouseEvent<HTMLButtonElement>,
+    ) => {
+        aiDetectResizeRef.current = {
+            active: true,
+            startY: event.clientY,
+            startHeight: aiDetectCardHeight,
+        };
+        event.preventDefault();
     };
 
     return (
@@ -941,210 +879,238 @@ export function DetailPage({
                     <strong className="record-detail-ai-title">
                         AI自动化检测
                     </strong>
-                    <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={onRunAllAIDetect}
-                        disabled={!canRunAllAIDetect}
-                    >
-                        {runAllTimerText
-                            ? `执行全部中 ${runAllTimerText}`
-                            : AI_RUN_ALL_LABEL}
-                    </button>
-                </div>
-                <div className="record-detail-ai-results">
-                    <div className="record-detail-ai-results-grid">
-                        {AI_STAGE_ORDER.map((stageKey) => {
-                            const label = AI_STAGE_LABELS[stageKey];
-                            const content = aiResults?.[stageKey] ?? "";
-                            const stageTimer = runAllStageTimers?.[stageKey];
-                            const hasResult = content.trim().length > 0;
-                            const isRunAllRunning = Boolean(runAllTimerText);
-                            const buttonLabel = hasResult
-                                ? "查看"
-                                : isRunAllRunning
-                                  ? (stageTimer ?? "00:00")
-                                  : "运行";
-                            const buttonAriaLabel = hasResult
-                                ? `查看 ${label.shortTitle}`
-                                : isRunAllRunning
-                                  ? `运行中 ${label.shortTitle}`
-                                  : `运行 ${label.shortTitle}`;
-                            const isButtonDisabled =
-                                !hasResult && isRunAllRunning;
-                            return (
-                                <div
-                                    key={stageKey}
-                                    className="record-detail-ai-result-card"
-                                >
-                                    <div className="record-detail-ai-result-title">
-                                        <div className="record-detail-ai-result-title-text">
-                                            <span>{label.shortTitle}</span>
-                                            <small>{label.title}</small>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            className="btn btn-ghost ai-stage-run-btn"
-                                            aria-label={buttonAriaLabel}
-                                            onClick={() =>
-                                                onOpenAIRunModal(stageKey)
-                                            }
-                                            disabled={isButtonDisabled}
-                                        >
-                                            {buttonLabel}
-                                        </button>
-                                    </div>
-                                    <div className="record-detail-ai-result-body">
-                                        {renderAIResultContent(
-                                            stageKey,
-                                            content,
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
+                    <div className="record-detail-ai-header-actions">
+                        <button
+                            type="button"
+                            className="btn"
+                            onClick={() =>
+                                setIsAIDetectSectionCollapsed(
+                                    (previous) => !previous,
+                                )
+                            }
+                        >
+                            {isAIDetectSectionCollapsed ? "展开" : "折叠"}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={onRunAllAIDetect}
+                            disabled={!canRunAllAIDetect}
+                        >
+                            {runAllTimerText
+                                ? `执行全部中 ${runAllTimerText}`
+                                : AI_RUN_ALL_LABEL}
+                        </button>
                     </div>
                 </div>
-            </div>
-            <div className="record-detail-header">
-                <h3>字段详情</h3>
-                <span>点击字段左侧勾选框可控制显示/隐藏</span>
-            </div>
-            <div className="detail-fields">
-                {hasHeroLayout ? (
-                    <section className="detail-problem-layout">
-                        <div className="detail-problem-main">
-                            <div
-                                className="detail-problem-main-grid"
-                                style={
-                                    {
-                                        "--detail-problem-row-count":
-                                            problemTextColumns.length,
-                                    } as CSSProperties
-                                }
-                            >
-                                {problemTextColumns.map((column) =>
-                                    renderDetailField(column, false),
-                                )}
-                            </div>
-                        </div>
-                        <div className="detail-problem-side">
-                            {imageColumns.length > 0 ? (
-                                <>
-                                    <div className="detail-problem-side-head">
-                                        <div className="detail-problem-side-title">
-                                            <strong>题目图片</strong>
-                                            {copyImageFeedback ? (
-                                                <span
-                                                    className={`detail-copy-feedback tone-${copyImageFeedback.tone}`}
-                                                    role="status"
-                                                >
-                                                    {copyImageFeedback.text}
-                                                </span>
-                                            ) : null}
-                                        </div>
-                                        <div className="detail-image-toolbar">
+                {!isAIDetectSectionCollapsed ? (
+                    <div
+                        className="record-detail-ai-results"
+                        style={
+                            {
+                                "--ai-detect-card-height": `${aiDetectCardHeight}px`,
+                            } as CSSProperties
+                        }
+                    >
+                        <div className="record-detail-ai-results-grid">
+                            {AI_STAGE_ORDER.map((stageKey) => {
+                                const label = AI_STAGE_LABELS[stageKey];
+                                const content = aiResults?.[stageKey] ?? "";
+                                const stageTimer = runAllStageTimers?.[stageKey];
+                                const hasResult = content.trim().length > 0;
+                                const isRunAllRunning = Boolean(runAllTimerText);
+                                const buttonLabel = hasResult
+                                    ? "查看"
+                                    : isRunAllRunning
+                                      ? (stageTimer ?? "00:00")
+                                      : "运行";
+                                const buttonAriaLabel = hasResult
+                                    ? `查看 ${label.shortTitle}`
+                                    : isRunAllRunning
+                                      ? `运行中 ${label.shortTitle}`
+                                      : `运行 ${label.shortTitle}`;
+                                const isButtonDisabled =
+                                    !hasResult && isRunAllRunning;
+                                return (
+                                    <div
+                                        key={stageKey}
+                                        className="record-detail-ai-result-card"
+                                    >
+                                        <div className="record-detail-ai-result-title">
+                                            <div className="record-detail-ai-result-title-text">
+                                                <span>{label.shortTitle}</span>
+                                                <small>{label.title}</small>
+                                            </div>
                                             <button
                                                 type="button"
-                                                className="btn btn-ghost detail-image-copy-btn"
+                                                className="btn btn-ghost ai-stage-run-btn"
+                                                aria-label={buttonAriaLabel}
                                                 onClick={() =>
-                                                    void copyFirstImage()
+                                                    onOpenAIRunModal(stageKey)
                                                 }
-                                                disabled={
-                                                    !firstImageSrc ||
-                                                    isCopyingImage
-                                                }
-                                                aria-label="复制第一张题目图片"
-                                                title="复制第一张题目图片"
+                                                disabled={isButtonDisabled}
                                             >
-                                                <IconCopy />
+                                                {buttonLabel}
                                             </button>
-                                            <div className="detail-image-zoom-controls">
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost"
-                                                    onClick={decreaseImageZoom}
-                                                    disabled={
-                                                        detailImageZoom <= 50
-                                                    }
-                                                >
-                                                    -
-                                                </button>
-                                                <span>{`${detailImageZoom}%`}</span>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost"
-                                                    onClick={() =>
-                                                        setDetailImageZoom(100)
-                                                    }
-                                                >
-                                                    100%
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost"
-                                                    onClick={increaseImageZoom}
-                                                    disabled={
-                                                        detailImageZoom >= 250
-                                                    }
-                                                >
-                                                    +
-                                                </button>
-                                            </div>
+                                        </div>
+                                        <div className="record-detail-ai-result-body">
+                                            {renderAIResultContent(
+                                                stageKey,
+                                                content,
+                                            )}
                                         </div>
                                     </div>
+                                );
+                            })}
+                        </div>
+                        <button
+                            type="button"
+                            className="record-detail-ai-resize-handle"
+                            onMouseDown={startResizeAIDetectSection}
+                            aria-label="拖动调整 AI 自动化检测高度"
+                            title="拖动调整 AI 自动化检测高度"
+                        >
+                            <span />
+                        </button>
+                    </div>
+                ) : null}
+            </div>
+            <div className="detail-page-layout">
+                <div className="detail-page-main">
+                    <div className="record-detail-header">
+                        <h3>字段详情</h3>
+                        <span>点击字段左侧勾选框可控制显示/隐藏</span>
+                    </div>
+                    <div className="detail-fields">
+                        {hasHeroLayout ? (
+                            <section className="detail-problem-layout">
+                                <div className="detail-problem-main">
                                     <div
-                                        className="detail-problem-image-panels"
+                                        className="detail-problem-main-grid"
                                         style={
                                             {
-                                                "--detail-image-scale": `${detailImageZoom / 100}`,
+                                                "--detail-problem-row-count":
+                                                    problemTextColumns.length,
                                             } as CSSProperties
                                         }
                                     >
-                                        {imageColumns.map((column) => (
-                                            <DraggableImagePanel
-                                                key={`${selectedRow.rowId}_${column.key}_hero`}
-                                                canDrag={detailImageZoom > 100}
-                                                zoomLevel={detailImageZoom}
-                                                panelId={`${selectedRow.rowId}_${column.key}`}
-                                            >
-                                                {renderDetailField(
-                                                    column,
-                                                    false,
-                                                )}
-                                            </DraggableImagePanel>
-                                        ))}
+                                        {problemTextColumns.map((column) =>
+                                            renderDetailField(column, false),
+                                        )}
                                     </div>
-                                </>
-                            ) : null}
-                        </div>
-                    </section>
-                ) : null}
-                {sourceColumnsBelowHero.map((column) =>
-                    renderDetailField(column, false),
-                )}
-                {regularDisplayColumns.map((column) =>
-                    renderDetailField(column, false),
-                )}
-                {hiddenColumns.length > 0 ? (
-                    <div className="hidden-fields-section">
-                        <button
-                            type="button"
-                            className={`hidden-fields-toggle ${showHiddenFields ? "expanded" : ""}`}
-                            onClick={onToggleHiddenFields}
-                        >
-                            <IconChevron />
-                            <span>{hiddenColumns.length} 个已隐藏字段</span>
-                        </button>
-                        {showHiddenFields ? (
-                            <div className="hidden-fields-list">
-                                {hiddenColumns.map((column) =>
-                                    renderDetailField(column, true),
-                                )}
+                                </div>
+                                <div className="detail-problem-side">
+                                    {imageColumns.length > 0 ? (
+                                        <>
+                                            <div
+                                                className="detail-problem-image-panels"
+                                                style={
+                                                    {
+                                                        "--detail-image-scale": `${detailImageZoom / 100}`,
+                                                    } as CSSProperties
+                                                }
+                                            >
+                                                {imageColumns.map((column) => (
+                                                    <DraggableImagePanel
+                                                        key={`${selectedRow.rowId}_${column.key}_hero`}
+                                                        canDrag={
+                                                            detailImageZoom >
+                                                            100
+                                                        }
+                                                        zoomLevel={
+                                                            detailImageZoom
+                                                        }
+                                                        panelId={`${selectedRow.rowId}_${column.key}`}
+                                                    >
+                                                        {renderDetailField(
+                                                            column,
+                                                            false,
+                                                            imageColumns[0]
+                                                                ?.key ===
+                                                            column.key
+                                                                ? {
+                                                                      labelActions: (
+                                                                          <div className="detail-image-toolbar inline-toolbar">
+                                                                              <div className="detail-image-zoom-controls">
+                                                                                  <button
+                                                                                      type="button"
+                                                                                      className="btn btn-ghost"
+                                                                                      onClick={
+                                                                                          decreaseImageZoom
+                                                                                      }
+                                                                                      disabled={
+                                                                                          detailImageZoom <=
+                                                                                          50
+                                                                                      }
+                                                                                  >
+                                                                                      -
+                                                                                  </button>
+                                                                                  <span>{`${detailImageZoom}%`}</span>
+                                                                                  <button
+                                                                                      type="button"
+                                                                                      className="btn btn-ghost"
+                                                                                      onClick={() =>
+                                                                                          setDetailImageZoom(
+                                                                                              100,
+                                                                                          )
+                                                                                      }
+                                                                                  >
+                                                                                      100%
+                                                                                  </button>
+                                                                                  <button
+                                                                                      type="button"
+                                                                                      className="btn btn-ghost"
+                                                                                      onClick={
+                                                                                          increaseImageZoom
+                                                                                      }
+                                                                                      disabled={
+                                                                                          detailImageZoom >=
+                                                                                          250
+                                                                                      }
+                                                                                  >
+                                                                                      +
+                                                                                  </button>
+                                                                              </div>
+                                                                          </div>
+                                                                      ),
+                                                                  }
+                                                                : undefined,
+                                                        )}
+                                                    </DraggableImagePanel>
+                                                ))}
+                                            </div>
+                                        </>
+                                    ) : null}
+                                </div>
+                            </section>
+                        ) : null}
+                        {sourceColumnsBelowHero.map((column) =>
+                            renderDetailField(column, false),
+                        )}
+                        {regularDisplayColumns.map((column) =>
+                            renderDetailField(column, false),
+                        )}
+                        {hiddenColumns.length > 0 ? (
+                            <div className="hidden-fields-section">
+                                <button
+                                    type="button"
+                                    className={`hidden-fields-toggle ${showHiddenFields ? "expanded" : ""}`}
+                                    onClick={onToggleHiddenFields}
+                                >
+                                    <IconChevron />
+                                    <span>{hiddenColumns.length} 个已隐藏字段</span>
+                                </button>
+                                {showHiddenFields ? (
+                                    <div className="hidden-fields-list">
+                                        {hiddenColumns.map((column) =>
+                                            renderDetailField(column, true),
+                                        )}
+                                    </div>
+                                ) : null}
                             </div>
                         ) : null}
                     </div>
-                ) : null}
+                </div>
             </div>
         </section>
     );

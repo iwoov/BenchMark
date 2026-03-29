@@ -67,6 +67,18 @@ const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
 const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
 const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
+const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
+
+你会收到两类信息：
+1. 当前题目的固定字段上下文（可能包含题干、选项、答案、解析、图片说明等）
+2. 用户和你的多轮聊天记录
+
+请遵守以下要求：
+- 优先基于当前题目上下文回答，不要脱离题目泛泛而谈。
+- 如果用户的问题依赖当前字段中没有提供的信息，要明确说明缺失了什么。
+- 回答尽量直接、准确、结构清晰。
+- 如果字段中包含参考答案或解析，只有在用户问题确实相关时才引用，并说明依据来源于当前题目字段。
+- 不要输出 JSON，也不要重复粘贴全部字段内容，除非用户明确要求。`;
 
 function sanitizeBackupLabel(value: string): string {
     const normalized = value.trim().replace(/\s+/g, "_");
@@ -361,6 +373,7 @@ function createFileAIStageConfigTable(): void {
     CREATE TABLE IF NOT EXISTS file_ai_stage_configs (
       file_name TEXT PRIMARY KEY,
       stages_json TEXT NOT NULL,
+      chat_json TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
@@ -370,6 +383,10 @@ function ensureAIRoutingTables(): void {
     createAIProviderEndpointTable();
     createAIModelRouteTable();
     createFileAIStageConfigTable();
+    const columns = new Set(getTableColumns("file_ai_stage_configs"));
+    if (!columns.has("chat_json")) {
+        db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN chat_json TEXT");
+    }
 }
 
 function createSyncDatabaseBackup(label: string): string {
@@ -490,6 +507,12 @@ export interface FileAIStageConfig {
     routeName: string;
     submitFieldKeys: string[];
     prompt: string;
+}
+
+export interface FileAIChatConfig {
+    routeName: string;
+    prompt: string;
+    defaultSubmitFieldKeys: string[];
 }
 
 function parseJsonStringArray(value: string | null | undefined): string[] {
@@ -1605,6 +1628,58 @@ function parseFileStageConfigMap(
     return stages;
 }
 
+function normalizeFileChatConfig(
+    value: unknown,
+    fallbackRouteName: string,
+): FileAIChatConfig {
+    if (!value || typeof value !== "object") {
+        return {
+            routeName: fallbackRouteName,
+            prompt: DEFAULT_AI_CHAT_PROMPT,
+            defaultSubmitFieldKeys: [],
+        };
+    }
+    const candidate = value as {
+        routeName?: unknown;
+        prompt?: unknown;
+        defaultSubmitFieldKeys?: unknown;
+    };
+    return {
+        routeName:
+            typeof candidate.routeName === "string" &&
+            candidate.routeName.trim().length > 0
+                ? candidate.routeName.trim()
+                : fallbackRouteName,
+        prompt:
+            typeof candidate.prompt === "string" &&
+            candidate.prompt.trim().length > 0
+                ? candidate.prompt
+                : DEFAULT_AI_CHAT_PROMPT,
+        defaultSubmitFieldKeys: Array.isArray(candidate.defaultSubmitFieldKeys)
+            ? candidate.defaultSubmitFieldKeys.filter(
+                  (item): item is string => typeof item === "string",
+              )
+            : [],
+    };
+}
+
+function parseFileChatConfig(
+    value: string | null | undefined,
+    fallbackRouteName: string,
+): FileAIChatConfig {
+    if (!value) {
+        return normalizeFileChatConfig(null, fallbackRouteName);
+    }
+    try {
+        return normalizeFileChatConfig(
+            JSON.parse(value) as unknown,
+            fallbackRouteName,
+        );
+    } catch {
+        return normalizeFileChatConfig(null, fallbackRouteName);
+    }
+}
+
 export function listAIProviderEndpoints(): AIProviderEndpointConfig[] {
     const rows = db
         .prepare(
@@ -1725,6 +1800,18 @@ export function getFileAIStageConfigs(
     return parseFileStageConfigMap(row?.stages_json, DEFAULT_AI_ROUTE_NAME);
 }
 
+export function getFileAIChatConfig(fileName: string): FileAIChatConfig {
+    const row = db
+        .prepare(
+            `SELECT chat_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as { chat_json: string | null } | undefined;
+
+    return parseFileChatConfig(row?.chat_json, DEFAULT_AI_ROUTE_NAME);
+}
+
 export function saveFileAIStageConfigs(
     fileName: string,
     stages: Record<AIDetectStageKey, FileAIStageConfig>,
@@ -1736,6 +1823,19 @@ export function saveFileAIStageConfigs(
            stages_json = excluded.stages_json,
            updated_at = CURRENT_TIMESTAMP`,
     ).run(fileName, JSON.stringify(stages));
+}
+
+export function saveFileAIChatConfig(
+    fileName: string,
+    chat: FileAIChatConfig,
+): void {
+    db.prepare(
+        `INSERT INTO file_ai_stage_configs (file_name, stages_json, chat_json, updated_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_name) DO UPDATE SET
+           chat_json = excluded.chat_json,
+           updated_at = CURRENT_TIMESTAMP`,
+    ).run(fileName, JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)), JSON.stringify(chat));
 }
 
 export function findAIProviderEndpointByName(

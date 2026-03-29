@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+} from "react";
 import {
     AI_RUN_ALL_KEY,
     AI_RUN_ALL_LABEL,
@@ -19,9 +26,11 @@ import { AIProfileModal } from "./app/components/AIProfileModal";
 import { AIRouteModal } from "./app/components/AIRouteModal";
 import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
 import { AIRunModal } from "./app/components/AIRunModal";
+import { AIChatConfigModal } from "./app/components/AIChatConfigModal";
+import { AIChatSidebar } from "./app/components/AIChatSidebar";
 import { ImageLightbox } from "./app/components/ImageLightbox";
 import { FilterConfigModal } from "./app/components/FilterConfigModal";
-import { IconFile } from "./app/icons";
+import { IconFile, IconMessageSquare } from "./app/icons";
 import { useTheme } from "./app/hooks/useTheme";
 import { getInitialRoute, useRouteState } from "./app/hooks/useRouteState";
 import { useFileStore } from "./app/hooks/useFileStore";
@@ -37,11 +46,23 @@ function App() {
     const [errorMessage, setErrorMessage] = useState<string>("");
     const [showHiddenFields, setShowHiddenFields] = useState(false);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const [isDetailChatSidebarHidden, setIsDetailChatSidebarHidden] =
+        useState(true);
+    const [detailChatSidebarWidth, setDetailChatSidebarWidth] = useState(360);
     const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
     const [latexRenderOverrides, setLatexRenderOverrides] = useState<
         Record<string, boolean>
     >({});
     const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+    const detailChatResizeRef = useRef<{
+        active: boolean;
+        startX: number;
+        startWidth: number;
+    }>({
+        active: false,
+        startX: 0,
+        startWidth: 360,
+    });
 
     const { theme, toggleTheme } = useTheme();
     const { activeSection, activeSettingsSection, navigateToSection } =
@@ -122,6 +143,7 @@ function App() {
         isAIStageConfigModalOpen,
         isAIProfileModalOpen,
         isAIRouteModalOpen,
+        isAIChatConfigModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -142,19 +164,33 @@ function App() {
         rowStreamProgress,
         rowBatchStatuses,
         isAIDetecting,
+        chatMessages,
+        chatInput,
+        setChatInput,
+        chatStatusMessage,
+        activeChatRouteName,
+        setActiveChatRouteName,
+        isAIChatting,
+        aiChatElapsedText,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
+        onOpenAIChatConfigModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
         onCancelAIRouteModal,
+        onCancelAIChatConfigModal,
         onToggleDraftAISubmitField,
+        onToggleDraftAIChatSubmitField,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
         onSaveAIRouteConfig,
+        onSaveAIChatConfig,
         onRunAIDetect,
         onRunAllAIDetect,
         onRunBatchAIAnswer,
+        onSendAIChatMessage,
+        onClearAIChatSession,
         openAIRunModalForStage,
         onAIResultTextChange,
     } = useAIManager({
@@ -183,6 +219,31 @@ function App() {
         navigateToSection,
     ]);
 
+    useEffect(() => {
+        const handleMouseMove = (event: MouseEvent) => {
+            if (!detailChatResizeRef.current.active) {
+                return;
+            }
+            const deltaX = detailChatResizeRef.current.startX - event.clientX;
+            const nextWidth = Math.min(
+                560,
+                Math.max(280, detailChatResizeRef.current.startWidth + deltaX),
+            );
+            setDetailChatSidebarWidth(nextWidth);
+        };
+
+        const handleMouseUp = () => {
+            detailChatResizeRef.current.active = false;
+        };
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, []);
+
     const aiSubmitFieldColumns = useMemo(
         () => (activeFile ? activeFile.columns : []),
         [activeFile],
@@ -190,7 +251,7 @@ function App() {
 
     const openRowDetail = (rowId: string) => {
         setSelectedRowId(rowId);
-        navigateToSection("detail", activeSettingsSection, rowId);
+        navigateToSection("list", activeSettingsSection, rowId);
     };
 
     const onRunSelectedBatchAIAnswer = async () => {
@@ -219,6 +280,21 @@ function App() {
             setPreviewImageSrc,
         });
 
+    const isDetailView = activeSection === "list" && selectedRowId !== null;
+    const isDetailChatSidebarVisible =
+        isDetailView && activeFile !== null && !isDetailChatSidebarHidden;
+
+    const startResizeDetailChatSidebar = (
+        event: ReactMouseEvent<HTMLButtonElement>,
+    ) => {
+        detailChatResizeRef.current = {
+            active: true,
+            startX: event.clientX,
+            startWidth: detailChatSidebarWidth,
+        };
+        event.preventDefault();
+    };
+
     return (
         <div className="app-shell">
             <HeaderBar
@@ -243,7 +319,12 @@ function App() {
 
             {/* ─── Main Content ─── */}
             <main
-                className={`main-content main-workspace ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}
+                className={`main-content main-workspace ${isSidebarCollapsed ? "sidebar-collapsed" : ""} ${isDetailChatSidebarVisible ? "detail-chat-visible" : ""}`}
+                style={
+                    {
+                        "--detail-chat-sidebar-width": `${detailChatSidebarWidth}px`,
+                    } as CSSProperties
+                }
             >
                 <WorkspaceSidebar
                     isCollapsed={isSidebarCollapsed}
@@ -272,7 +353,7 @@ function App() {
                         <>
                             <section className="workspace-topbar">
                                 <div className="toolbar page-toolbar">
-                                    {activeSection === "list" ? (
+                                    {activeSection === "list" && !isDetailView ? (
                                         <div className="list-toolbar">
                                             <div className="filter-bar">
                                                 <button
@@ -431,7 +512,7 @@ function App() {
                                             </div>
                                         </div>
                                     ) : null}
-                                    {activeSection === "detail" ? (
+                                    {isDetailView ? (
                                         <div className="toolbar-actions">
                                             <button
                                                 type="button"
@@ -466,6 +547,21 @@ function App() {
                                             >
                                                 下一题
                                             </button>
+                                            {!isDetailChatSidebarVisible ? (
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost detail-chat-open-btn detail-chat-open-toolbar"
+                                                    onClick={() =>
+                                                        setIsDetailChatSidebarHidden(
+                                                            false,
+                                                        )
+                                                    }
+                                                    aria-label="显示 AI 聊天"
+                                                    title="显示 AI 聊天"
+                                                >
+                                                    <IconMessageSquare />
+                                                </button>
+                                            ) : null}
                                         </div>
                                     ) : null}
                                     {activeSection === "settings" ? (
@@ -500,7 +596,7 @@ function App() {
                             </section>
 
                             <section className="workspace-view">
-                                {activeSection === "list" ? (
+                                {activeSection === "list" && !isDetailView ? (
                                     <section className="page-panel">
                                         <ListPage
                                             activeFile={activeFile}
@@ -536,7 +632,7 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {activeSection === "detail" ? (
+                                {isDetailView ? (
                                     <section className="page-panel detail-page-panel">
                                         <DetailPage
                                             selectedRow={selectedRow}
@@ -587,6 +683,9 @@ function App() {
                                             onOpenAIRouteModal={
                                                 onOpenAIRouteModal
                                             }
+                                            onOpenAIChatConfigModal={
+                                                onOpenAIChatConfigModal
+                                            }
                                         />
                                     </section>
                                 ) : null}
@@ -594,6 +693,34 @@ function App() {
                         </>
                     )}
                 </section>
+
+                {isDetailChatSidebarVisible ? (
+                    <div className="detail-chat-shell">
+                        <button
+                            type="button"
+                            className="detail-chat-resize-handle"
+                            onMouseDown={startResizeDetailChatSidebar}
+                            aria-label="拖动调整 AI 聊天侧边栏宽度"
+                            title="拖动调整 AI 聊天侧边栏宽度"
+                        >
+                            <span />
+                        </button>
+                        <AIChatSidebar
+                            routes={aiConfig.routes}
+                            activeRouteName={activeChatRouteName}
+                            chatMessages={chatMessages}
+                            chatInput={chatInput}
+                            chatStatusMessage={chatStatusMessage}
+                            isAIChatting={isAIChatting}
+                            aiChatElapsedText={aiChatElapsedText}
+                            onHide={() => setIsDetailChatSidebarHidden(true)}
+                            onRouteChange={setActiveChatRouteName}
+                            onInputChange={setChatInput}
+                            onSend={onSendAIChatMessage}
+                            onClear={onClearAIChatSession}
+                        />
+                    </div>
+                ) : null}
             </main>
             {/* ─── Column Selection Modal ─── */}
             <ColumnConfigModal
@@ -652,6 +779,20 @@ function App() {
                 aiConfigSaving={aiConfigSaving}
                 onCancel={onCancelAIRouteModal}
                 onSave={onSaveAIRouteConfig}
+            />
+            <AIChatConfigModal
+                isOpen={isAIChatConfigModalOpen}
+                activeFile={activeFile}
+                aiConfigFormMessage={aiConfigFormMessage}
+                draftAIConfig={draftAIConfig}
+                setDraftAIConfig={setDraftAIConfig}
+                aiSubmitFieldColumns={aiSubmitFieldColumns}
+                aiConfigSaving={aiConfigSaving}
+                onToggleDraftAIChatSubmitField={
+                    onToggleDraftAIChatSubmitField
+                }
+                onCancel={onCancelAIChatConfigModal}
+                onSave={onSaveAIChatConfig}
             />
             <AIRunModal
                 isOpen={isAIRunModalOpen}

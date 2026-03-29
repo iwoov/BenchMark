@@ -5,7 +5,7 @@ export interface ColumnPrefsConfig {
   filterKeys?: string[];
 }
 
-export type MainSection = "list" | "detail" | "settings";
+export type MainSection = "list" | "settings";
 export type SettingsSection = "fields" | "ai";
 
 export interface RouteState {
@@ -20,6 +20,19 @@ export interface AIDetectFieldPayload {
   value: string;
   imageUrl?: string;
   imageUrls?: string[];
+}
+
+export interface AIChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  status?: "streaming" | "done" | "error";
+}
+
+export interface AIChatMessagePayload {
+  role: "user" | "assistant";
+  content: string;
 }
 
 export interface AIDetectStreamResult {
