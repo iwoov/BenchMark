@@ -148,6 +148,10 @@ export const useListView = ({
         setBatchSelectedRowIds(visibleRows.map((row) => row.rowId));
     };
 
+    const onSelectCurrentPageBatchRows = () => {
+        setBatchSelectedRowIds(paginatedRows.map((row) => row.rowId));
+    };
+
     const onClearBatchRows = () => {
         setBatchSelectedRowIds([]);
     };
@@ -174,6 +178,7 @@ export const useListView = ({
         batchSelectedRowIdSet,
         onToggleBatchRowSelection,
         onSelectAllBatchRows,
+        onSelectCurrentPageBatchRows,
         onClearBatchRows,
         listRangeStart,
         listRangeEnd,

@@ -134,6 +134,7 @@ function App() {
         batchSelectedRowIdSet,
         onToggleBatchRowSelection,
         onSelectAllBatchRows,
+        onSelectCurrentPageBatchRows,
         onClearBatchRows,
     } = useListView({
         activeFile,
@@ -594,6 +595,20 @@ function App() {
                                                             type="button"
                                                             className="btn"
                                                             onClick={
+                                                                onSelectCurrentPageBatchRows
+                                                            }
+                                                            disabled={
+                                                                paginatedRows.length ===
+                                                                    0 ||
+                                                                isAIBatchRunning
+                                                            }
+                                                        >
+                                                            仅选当前页
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn"
+                                                            onClick={
                                                                 onSelectAllBatchRows
                                                             }
                                                             disabled={
@@ -607,7 +622,7 @@ function App() {
                                                             visibleRows.length >
                                                                 0
                                                                 ? "取消全选"
-                                                                : "全选可见"}
+                                                                : "全选筛选结果"}
                                                         </button>
                                                         <button
                                                             type="button"

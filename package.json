@@ -13,6 +13,7 @@
         "start": "PORT=5173 node dist-server/index.js",
         "preview": "vite preview",
         "typecheck": "tsc -b",
+        "db:backfill-level1": "node ./scripts/db/backfill-level1-from-discipline.mjs",
         "package:zip": "bash ./scripts/package-zip.sh"
     },
     "dependencies": {
