@@ -3,6 +3,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type ChangeEvent,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
@@ -20,7 +21,7 @@ import {
     readBooleanLike,
 } from "../ai-helpers";
 import { normalizeHeaderTitle } from "../file-helpers";
-import { IconChevron } from "../icons";
+import { IconChevron, IconEdit } from "../icons";
 import {
     AI_CLEANING_TOOL_LABELS,
     AI_CLEANING_TOOL_ORDER,
@@ -71,10 +72,7 @@ function renderInfoBlock(
     );
 }
 
-function renderTagLine(
-    tags: string[],
-    onRemoveTag?: (tag: string) => void,
-) {
+function renderTagLine(tags: string[], onRemoveTag?: (tag: string) => void) {
     if (tags.length === 0) {
         return null;
     }
@@ -100,6 +98,144 @@ function renderTagLine(
                     </span>
                 ))}
             </div>
+        </div>
+    );
+}
+
+function BiochemLevel1Result({
+    rowId,
+    content,
+    level1Options,
+    onSaveDiscipline,
+}: {
+    rowId: string;
+    content: string;
+    level1Options: string[];
+    onSaveDiscipline?: (discipline: string) => Promise<void>;
+}) {
+    const parsed = parseAIResultJSON(content);
+    const discipline = readTextValue(parsed?.discipline);
+    const confidence = readTextValue(parsed?.confidence);
+    const reason = readTextValue(parsed?.reason);
+    const [isEditing, setIsEditing] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const [pendingDiscipline, setPendingDiscipline] = useState(discipline);
+    const [saveMessage, setSaveMessage] = useState("");
+
+    const selectableOptions = useMemo(() => {
+        const items = [...level1Options];
+        if (
+            discipline.length > 0 &&
+            !items.some((item) => item.trim() === discipline)
+        ) {
+            items.unshift(discipline);
+        }
+        return Array.from(
+            new Set(
+                items
+                    .map((item) => item.trim())
+                    .filter((item) => item.length > 0),
+            ),
+        );
+    }, [discipline, level1Options]);
+
+    useEffect(() => {
+        setIsEditing(false);
+        setIsSaving(false);
+        setPendingDiscipline(discipline);
+        setSaveMessage("");
+    }, [discipline, rowId]);
+
+    const handleDisciplineChange = async (
+        event: ChangeEvent<HTMLSelectElement>,
+    ) => {
+        const nextValue = event.target.value.trim();
+        setPendingDiscipline(nextValue);
+        if (
+            nextValue.length === 0 ||
+            nextValue === discipline ||
+            !onSaveDiscipline
+        ) {
+            setIsEditing(false);
+            setSaveMessage("");
+            return;
+        }
+
+        setIsSaving(true);
+        setSaveMessage("");
+        try {
+            await onSaveDiscipline(nextValue);
+            setIsEditing(false);
+            setSaveMessage("已自动保存");
+        } catch (error) {
+            setSaveMessage(
+                error instanceof Error ? error.message : "保存 discipline 失败",
+            );
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="ai-result-formatted">
+            <div className="ai-result-inline-edit-row">
+                <div className="ai-result-inline-edit-label">discipline</div>
+                <button
+                    type="button"
+                    className="btn btn-ghost ai-inline-edit-trigger"
+                    onClick={() => {
+                        setPendingDiscipline(discipline);
+                        setSaveMessage("");
+                        setIsEditing((previous) => !previous);
+                    }}
+                    disabled={isSaving || selectableOptions.length === 0}
+                    aria-label="编辑生化 Level1 discipline"
+                    title={
+                        selectableOptions.length > 0
+                            ? "编辑 discipline"
+                            : "暂无可选的 level1"
+                    }
+                >
+                    <IconEdit />
+                </button>
+            </div>
+            <div className="ai-result-inline-edit-value">
+                {isEditing ? (
+                    <select
+                        value={pendingDiscipline}
+                        onChange={handleDisciplineChange}
+                        disabled={isSaving || selectableOptions.length === 0}
+                    >
+                        <option value="">请选择 Level1</option>
+                        {selectableOptions.map((item) => (
+                            <option key={item} value={item}>
+                                {item}
+                            </option>
+                        ))}
+                    </select>
+                ) : hasMeaningfulText(discipline) ? (
+                    <span className="ai-result-badge badge-valid">
+                        {discipline}
+                    </span>
+                ) : (
+                    <span className="ai-result-empty">未设置</span>
+                )}
+            </div>
+            <div className="ai-result-status-row">
+                {hasMeaningfulText(confidence) ? (
+                    <span
+                        className={`ai-result-badge ${getRiskBadgeClass(confidence)}`}
+                    >
+                        {`置信度：${confidence}`}
+                    </span>
+                ) : null}
+            </div>
+            {saveMessage ? (
+                <div className="record-detail-ai-cleaning-message">
+                    {saveMessage}
+                </div>
+            ) : null}
+            {renderInfoBlock("判断依据", reason, "neutral")}
         </div>
     );
 }
@@ -820,6 +956,7 @@ function DraggableImagePanel({
 
 interface DetailPageProps {
     selectedRow: ParsedRow | null;
+    level1Options: string[];
     displayColumns: ParsedColumn[];
     hiddenColumns: ParsedColumn[];
     showHiddenFields: boolean;
@@ -842,11 +979,13 @@ interface DetailPageProps {
     aiCleaningStreamText: string;
     aiCleaningStatusMessage: string;
     onRemoveLevel3Tag?: (tag: string) => void;
+    onUpdateBiochemLevel1Discipline?: (discipline: string) => Promise<void>;
     onRunAICleaning: (toolKey: AICleaningToolKey) => void;
 }
 
 export function DetailPage({
     selectedRow,
+    level1Options,
     displayColumns,
     hiddenColumns,
     showHiddenFields,
@@ -865,6 +1004,7 @@ export function DetailPage({
     aiCleaningStreamText,
     aiCleaningStatusMessage,
     onRemoveLevel3Tag,
+    onUpdateBiochemLevel1Discipline,
     onRunAICleaning,
 }: DetailPageProps) {
     const [detailImageZoom, setDetailImageZoom] = useState(100);
@@ -950,11 +1090,7 @@ export function DetailPage({
         const reasoningIndex = orderedColumns.findIndex((column) =>
             isReasoningColumn(column),
         );
-        if (
-            tagIndex >= 0 &&
-            reasoningIndex >= 0 &&
-            tagIndex > reasoningIndex
-        ) {
+        if (tagIndex >= 0 && reasoningIndex >= 0 && tagIndex > reasoningIndex) {
             const [tagColumn] = orderedColumns.splice(tagIndex, 1);
             orderedColumns.splice(reasoningIndex, 0, tagColumn);
         }
@@ -1072,9 +1208,11 @@ export function DetailPage({
                             {AI_STAGE_ORDER.map((stageKey) => {
                                 const label = AI_STAGE_LABELS[stageKey];
                                 const content = aiResults?.[stageKey] ?? "";
-                                const stageTimer = runAllStageTimers?.[stageKey];
+                                const stageTimer =
+                                    runAllStageTimers?.[stageKey];
                                 const hasResult = content.trim().length > 0;
-                                const isRunAllRunning = Boolean(runAllTimerText);
+                                const isRunAllRunning =
+                                    Boolean(runAllTimerText);
                                 const buttonLabel = hasResult
                                     ? "查看"
                                     : isRunAllRunning
@@ -1144,7 +1282,8 @@ export function DetailPage({
                             const isActiveTool =
                                 activeAICleaningToolKey === toolKey;
                             const displayContent =
-                                isActiveTool && aiCleaningStreamText.trim().length > 0
+                                isActiveTool &&
+                                aiCleaningStreamText.trim().length > 0
                                     ? aiCleaningStreamText
                                     : savedContent;
                             return (
@@ -1171,14 +1310,26 @@ export function DetailPage({
                                         </button>
                                     </div>
                                     <div className="record-detail-ai-result-body">
-                                        {renderAICleaningResultContent(
-                                            toolKey,
-                                            displayContent,
-                                            toolKey === "generate_level3_tags"
-                                                ? {
-                                                      onRemoveLevel3Tag,
-                                                  }
-                                                : undefined,
+                                        {toolKey === "biochem_level1_refine" ? (
+                                            <BiochemLevel1Result
+                                                rowId={selectedRow.rowId}
+                                                content={displayContent}
+                                                level1Options={level1Options}
+                                                onSaveDiscipline={
+                                                    onUpdateBiochemLevel1Discipline
+                                                }
+                                            />
+                                        ) : (
+                                            renderAICleaningResultContent(
+                                                toolKey,
+                                                displayContent,
+                                                toolKey ===
+                                                    "generate_level3_tags"
+                                                    ? {
+                                                          onRemoveLevel3Tag,
+                                                      }
+                                                    : undefined,
+                                            )
                                         )}
                                     </div>
                                     {isActiveTool && aiCleaningStatusMessage ? (
@@ -1244,52 +1395,53 @@ export function DetailPage({
                                                             false,
                                                             imageColumns[0]
                                                                 ?.key ===
-                                                            column.key
+                                                                column.key
                                                                 ? {
-                                                                      labelActions: (
-                                                                          <div className="detail-image-toolbar inline-toolbar">
-                                                                              <div className="detail-image-zoom-controls">
-                                                                                  <button
-                                                                                      type="button"
-                                                                                      className="btn btn-ghost"
-                                                                                      onClick={
-                                                                                          decreaseImageZoom
-                                                                                      }
-                                                                                      disabled={
-                                                                                          detailImageZoom <=
-                                                                                          50
-                                                                                      }
-                                                                                  >
-                                                                                      -
-                                                                                  </button>
-                                                                                  <span>{`${detailImageZoom}%`}</span>
-                                                                                  <button
-                                                                                      type="button"
-                                                                                      className="btn btn-ghost"
-                                                                                      onClick={() =>
-                                                                                          setDetailImageZoom(
-                                                                                              100,
-                                                                                          )
-                                                                                      }
-                                                                                  >
-                                                                                      100%
-                                                                                  </button>
-                                                                                  <button
-                                                                                      type="button"
-                                                                                      className="btn btn-ghost"
-                                                                                      onClick={
-                                                                                          increaseImageZoom
-                                                                                      }
-                                                                                      disabled={
-                                                                                          detailImageZoom >=
-                                                                                          250
-                                                                                      }
-                                                                                  >
-                                                                                      +
-                                                                                  </button>
+                                                                      labelActions:
+                                                                          (
+                                                                              <div className="detail-image-toolbar inline-toolbar">
+                                                                                  <div className="detail-image-zoom-controls">
+                                                                                      <button
+                                                                                          type="button"
+                                                                                          className="btn btn-ghost"
+                                                                                          onClick={
+                                                                                              decreaseImageZoom
+                                                                                          }
+                                                                                          disabled={
+                                                                                              detailImageZoom <=
+                                                                                              50
+                                                                                          }
+                                                                                      >
+                                                                                          -
+                                                                                      </button>
+                                                                                      <span>{`${detailImageZoom}%`}</span>
+                                                                                      <button
+                                                                                          type="button"
+                                                                                          className="btn btn-ghost"
+                                                                                          onClick={() =>
+                                                                                              setDetailImageZoom(
+                                                                                                  100,
+                                                                                              )
+                                                                                          }
+                                                                                      >
+                                                                                          100%
+                                                                                      </button>
+                                                                                      <button
+                                                                                          type="button"
+                                                                                          className="btn btn-ghost"
+                                                                                          onClick={
+                                                                                              increaseImageZoom
+                                                                                          }
+                                                                                          disabled={
+                                                                                              detailImageZoom >=
+                                                                                              250
+                                                                                          }
+                                                                                      >
+                                                                                          +
+                                                                                      </button>
+                                                                                  </div>
                                                                               </div>
-                                                                          </div>
-                                                                      ),
+                                                                          ),
                                                                   }
                                                                 : undefined,
                                                         )}
@@ -1315,7 +1467,9 @@ export function DetailPage({
                                     onClick={onToggleHiddenFields}
                                 >
                                     <IconChevron />
-                                    <span>{hiddenColumns.length} 个已隐藏字段</span>
+                                    <span>
+                                        {hiddenColumns.length} 个已隐藏字段
+                                    </span>
                                 </button>
                                 {showHiddenFields ? (
                                     <div className="hidden-fields-list">

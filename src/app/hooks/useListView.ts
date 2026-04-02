@@ -91,17 +91,17 @@ export const useListView = ({
     }, [listPage, totalListPages]);
 
     useEffect(() => {
-        if (!activeFile || visibleRows.length === 0) {
+        if (!activeFile) {
             return;
         }
 
         if (
             selectedRowId !== null &&
-            !visibleRows.some((row) => row.rowId === selectedRowId)
+            !activeFile.rows.some((row) => row.rowId === selectedRowId)
         ) {
             setSelectedRowId(null);
         }
-    }, [activeFile, visibleRows, selectedRowId, setSelectedRowId]);
+    }, [activeFile, selectedRowId, setSelectedRowId]);
 
     useEffect(() => {
         if (!activeFile) {
@@ -116,8 +116,9 @@ export const useListView = ({
     }, [activeFile?.fileId, visibleRows]);
 
     const selectedRow = useMemo(
-        () => visibleRows.find((row) => row.rowId === selectedRowId) ?? null,
-        [visibleRows, selectedRowId],
+        () =>
+            activeFile?.rows.find((row) => row.rowId === selectedRowId) ?? null,
+        [activeFile, selectedRowId],
     );
 
     const activeRowIndex = selectedRow

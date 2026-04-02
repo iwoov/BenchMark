@@ -21,6 +21,7 @@ import {
     normalizeAIBatchConcurrency,
     parseAIResultJSON,
 } from "./app/ai-helpers";
+import { getLevelColumnKey } from "./app/file-helpers";
 import { HeaderBar } from "./app/components/HeaderBar";
 import { WorkspaceSidebar } from "./app/components/WorkspaceSidebar";
 import { DashboardPage } from "./app/components/DashboardPage";
@@ -359,6 +360,104 @@ function App() {
                 updatedAt: new Date().toISOString(),
             },
             mappedFieldValues,
+        );
+    };
+
+    const biochemLevel1FieldKey = useMemo(() => {
+        const mappedFieldKey =
+            aiConfig.cleaning.biochem_level1_refine.outputMappings.find(
+                (item) => item.outputKey === "discipline",
+            )?.targetFieldKey ?? "";
+        if (mappedFieldKey.trim().length > 0) {
+            return mappedFieldKey.trim();
+        }
+        if (!activeFile) {
+            return "";
+        }
+        return getLevelColumnKey(activeFile.columns, "level1") ?? "";
+    }, [activeFile, aiConfig.cleaning.biochem_level1_refine.outputMappings]);
+
+    const level1ColumnKey = useMemo(
+        () =>
+            activeFile
+                ? (getLevelColumnKey(activeFile.columns, "level1") ?? "")
+                : "",
+        [activeFile],
+    );
+
+    const onUpdateBiochemLevel1Discipline = async (discipline: string) => {
+        if (!selectedRow || !activeFile) {
+            return;
+        }
+
+        const nextDiscipline = discipline.trim();
+        if (nextDiscipline.length === 0) {
+            return;
+        }
+
+        const currentResult =
+            selectedRow.cleaningResults?.biochem_level1_refine ?? null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const nextParsed = {
+            ...(parsed && typeof parsed === "object" ? parsed : {}),
+            discipline: nextDiscipline,
+            confidence:
+                parsed && typeof parsed === "object" && "confidence" in parsed
+                    ? parsed.confidence
+                    : "",
+            reason:
+                parsed && typeof parsed === "object" && "reason" in parsed
+                    ? parsed.reason
+                    : "",
+        };
+        const nextParsedJsonText = JSON.stringify(nextParsed);
+        const nextResponseText = JSON.stringify(nextParsed, null, 2);
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(activeFile.fileId)}/cleaning-results/biochem_level1_refine`,
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    rowId: selectedRow.rowId,
+                    fileName: activeFile.fileName,
+                    responseText: nextResponseText,
+                    parsedJsonText: nextParsedJsonText,
+                }),
+            },
+        );
+        if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+                message?: string;
+            };
+            const message = payload.message ?? "更新生化 Level1 失败";
+            setErrorMessage(message);
+            throw new Error(message);
+        }
+
+        const mappedFieldValues: Record<string, string> = {};
+        if (biochemLevel1FieldKey.length > 0) {
+            mappedFieldValues[biochemLevel1FieldKey] = nextDiscipline;
+        }
+        if (level1ColumnKey.length > 0) {
+            mappedFieldValues[level1ColumnKey] = nextDiscipline;
+        }
+        updateRowCleaningResult(
+            activeFile.fileId,
+            selectedRow.rowId,
+            "biochem_level1_refine",
+            {
+                responseText: nextResponseText,
+                parsedJsonText: nextParsedJsonText,
+                updatedAt: new Date().toISOString(),
+            },
+            Object.keys(mappedFieldValues).length > 0
+                ? mappedFieldValues
+                : undefined,
         );
     };
 
@@ -819,6 +918,9 @@ function App() {
                                     <section className="page-panel detail-page-panel">
                                         <DetailPage
                                             selectedRow={selectedRow}
+                                            level1Options={
+                                                activeFile?.level1Options ?? []
+                                            }
                                             displayColumns={displayColumns}
                                             hiddenColumns={hiddenColumns}
                                             showHiddenFields={showHiddenFields}
@@ -858,6 +960,9 @@ function App() {
                                             }
                                             onRemoveLevel3Tag={
                                                 onRemoveLevel3Tag
+                                            }
+                                            onUpdateBiochemLevel1Discipline={
+                                                onUpdateBiochemLevel1Discipline
                                             }
                                             onRunAICleaning={onRunAICleaning}
                                         />
