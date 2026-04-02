@@ -38,6 +38,12 @@ const REASONING_COPY_FIELD_ALIASES = [
     "analysis",
     "solution",
 ] as const;
+const LEVEL3_TAG_FIELD_ALIASES = [
+    "标签",
+    "level3标签",
+    "level3 标签",
+    "tags",
+] as const;
 
 function matchesCopyFieldAlias(
     title: string,
@@ -57,6 +63,13 @@ function isCopyableProblemTextColumn(column: ParsedColumn): boolean {
     );
 }
 
+function isLevel3TagFieldTitle(column: ParsedColumn): boolean {
+    const normalizedTitle = normalizeHeaderTitle(column.title);
+    return LEVEL3_TAG_FIELD_ALIASES.some(
+        (alias) => normalizedTitle === normalizeHeaderTitle(alias),
+    );
+}
+
 function getExternalUrl(value: string): string | null {
     const trimmed = value.trim();
     if (!/^https?:\/\//i.test(trimmed)) {
@@ -70,8 +83,16 @@ function getExternalUrl(value: string): string | null {
     }
 }
 
+function splitTagValues(value: string): string[] {
+    return value
+        .split(/,\s*|\n+|，|；|;|\||[ \u3000]{2,}/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+}
+
 export const useCellRenderers = ({
     selectedRow,
+    level3TagsFieldKey,
     latexRenderOverrides,
     onToggleLatexRender,
     onToggleDisplayColumn,
@@ -80,6 +101,7 @@ export const useCellRenderers = ({
     setPreviewImageSrc,
 }: {
     selectedRow: ParsedRow | null;
+    level3TagsFieldKey?: string;
     latexRenderOverrides: Record<string, boolean>;
     onToggleLatexRender: (columnKey: string) => void;
     onToggleDisplayColumn: (columnKey: string) => void;
@@ -315,6 +337,7 @@ export const useCellRenderers = ({
         isHidden = false,
         options?: {
             labelActions?: ReactNode;
+            valueContent?: ReactNode;
         },
     ) => {
         if (!selectedRow) {
@@ -338,6 +361,13 @@ export const useCellRenderers = ({
             isCopyableProblemTextColumn(column) &&
             copyText.trim().length > 0;
         const isFieldCopied = copiedFieldKey === column.key;
+        const isLevel3TagsField =
+            !isHidden &&
+            ((typeof level3TagsFieldKey === "string" &&
+                level3TagsFieldKey.length > 0 &&
+                column.key === level3TagsFieldKey) ||
+                isLevel3TagFieldTitle(column));
+        const tags = isLevel3TagsField ? splitTagValues(copyText) : [];
 
         const handleCopyFieldText = async () => {
             if (!canCopyFieldText || !navigator.clipboard?.writeText) {
@@ -350,6 +380,14 @@ export const useCellRenderers = ({
             } catch (error) {
                 console.error("[DetailFieldCopy] failed", error);
             }
+        };
+
+        const handleRemoveTag = (tag: string) => {
+            if (!isLevel3TagsField) {
+                return;
+            }
+            const nextTags = tags.filter((item) => item !== tag);
+            onEditCell(selectedRow.rowId, column.key, nextTags.join(", "));
         };
 
         return (
@@ -430,11 +468,43 @@ export const useCellRenderers = ({
                 </div>
                 {!isHidden ? (
                     <div className="detail-value">
-                        {renderCellContent(
-                            selectedRow,
-                            column,
-                            isLatexRenderingEnabled,
-                        )}
+                        {options?.valueContent ??
+                            (isLevel3TagsField ? (
+                                tags.length > 0 ? (
+                                    <div className="detail-tag-inline">
+                                        <strong>标签：</strong>
+                                        <div className="detail-tag-inline-list">
+                                            {tags.map((tag) => (
+                                                <span
+                                                    key={tag}
+                                                    className="detail-tag-chip"
+                                                >
+                                                    <span>{tag}</span>
+                                                    <button
+                                                        type="button"
+                                                        className="detail-tag-delete"
+                                                        onClick={() =>
+                                                            handleRemoveTag(tag)
+                                                        }
+                                                        aria-label={`删除标签 ${tag}`}
+                                                        title={`删除标签 ${tag}`}
+                                                    >
+                                                        删除
+                                                    </button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <span className="empty-text">-</span>
+                                )
+                            ) : (
+                                renderCellContent(
+                                    selectedRow,
+                                    column,
+                                    isLatexRenderingEnabled,
+                                )
+                            ))}
                     </div>
                 ) : null}
             </div>

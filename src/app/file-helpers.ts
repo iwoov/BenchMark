@@ -1,4 +1,6 @@
 import type {
+    AICleaningToolKey,
+    AICleaningToolResult,
     FileViewState,
     FilterCondition,
     ParsedCell,
@@ -6,6 +8,8 @@ import type {
     ParsedFile,
     ParsedRow,
     AIDetectStageKey,
+    StatisticsChartType,
+    StatisticsConfig,
 } from "../types";
 import {
     EMPTY_FILTER_VALUE,
@@ -16,11 +20,21 @@ import {
     OPENSOURCE_TITLE_ALIASES,
     QUALIFIED_TITLE_ALIASES,
     TIME_TITLE_ALIASES,
+    AI_CLEANING_TOOL_ORDER,
     AI_STAGE_ORDER,
 } from "./constants";
 
 const LEGACY_AI_RESULT_WITH_CONFIG_KEY = "__ai_result_with_config__";
 const LEGACY_AI_RESULT_WITH_CONFIG_TITLE = "AI解析结果+AI配置名";
+const DEFAULT_STATISTICS_CHART_TYPE: StatisticsChartType = "bar";
+const DEFAULT_STATISTICS_FIELD_TITLES = [
+    "level1",
+    "level2",
+    "level3",
+    "是否合格",
+    "创建人",
+    "质检员",
+] as const;
 
 export function normalizeHeaderTitle(value: string): string {
     return value.replace(/\s+/g, "").toLowerCase();
@@ -219,6 +233,69 @@ export function normalizeColumnSelection(
     };
 }
 
+function isStatisticsChartType(value: unknown): value is StatisticsChartType {
+    return (
+        value === "bar" ||
+        value === "pie" ||
+        value === "line" ||
+        value === "table"
+    );
+}
+
+function getDefaultStatisticsFieldKeys(columns: ParsedColumn[]): string[] {
+    const matchedKeys = DEFAULT_STATISTICS_FIELD_TITLES.map(
+        (title) =>
+            columns.find(
+                (column) => normalizeHeaderTitle(column.title) === title,
+            )?.key,
+    ).filter((key): key is string => typeof key === "string");
+
+    if (matchedKeys.length > 0) {
+        return deduplicateKeys(matchedKeys);
+    }
+
+    return columns.slice(0, 2).map((column) => column.key);
+}
+
+export function normalizeStatisticsConfig(
+    columns: ParsedColumn[],
+    statisticsConfig?: Partial<StatisticsConfig> | null,
+): StatisticsConfig {
+    const allowedKeys = new Set(getAllColumnKeys(columns));
+    const rawSelectedFieldKeys = Array.isArray(
+        statisticsConfig?.selectedFieldKeys,
+    )
+        ? deduplicateKeys(
+              statisticsConfig.selectedFieldKeys.filter(
+                  (key): key is string => typeof key === "string",
+              ),
+          ).filter((key) => allowedKeys.has(key))
+        : getDefaultStatisticsFieldKeys(columns).filter((key) =>
+              allowedKeys.has(key),
+          );
+
+    const rawChartTypeByField =
+        statisticsConfig?.chartTypeByField &&
+        typeof statisticsConfig.chartTypeByField === "object"
+            ? statisticsConfig.chartTypeByField
+            : {};
+
+    const chartTypeByField = columns.reduce<
+        Record<string, StatisticsChartType>
+    >((acc, column) => {
+        const chartType = rawChartTypeByField[column.key];
+        acc[column.key] = isStatisticsChartType(chartType)
+            ? chartType
+            : DEFAULT_STATISTICS_CHART_TYPE;
+        return acc;
+    }, {});
+
+    return {
+        selectedFieldKeys: rawSelectedFieldKeys,
+        chartTypeByField,
+    };
+}
+
 function normalizeFilterConditions(
     columns: ParsedColumn[],
     filterConditions?: FilterCondition[],
@@ -295,6 +372,7 @@ export function toViewState(
             cleanedParsed.columns,
             filterConditions,
         ),
+        statisticsConfig: normalizeStatisticsConfig(cleanedParsed.columns),
     };
 }
 
@@ -317,6 +395,10 @@ export function applyColumnConfigToFile(
         filterConditions: normalizeFilterConditions(
             file.columns,
             file.filterConditions,
+        ),
+        statisticsConfig: normalizeStatisticsConfig(
+            file.columns,
+            file.statisticsConfig,
         ),
     };
 }
@@ -433,6 +515,43 @@ function normalizeRowAIResults(
                 // Ignore non-serializable payloads.
             }
         }
+    });
+    return result;
+}
+
+function normalizeRowCleaningResults(
+    value: unknown,
+): Partial<Record<AICleaningToolKey, AICleaningToolResult>> {
+    if (!value || typeof value !== "object") {
+        return {};
+    }
+
+    const raw = value as Record<string, unknown>;
+    const result: Partial<Record<AICleaningToolKey, AICleaningToolResult>> = {};
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        const item = raw[toolKey];
+        if (!item || typeof item !== "object") {
+            return;
+        }
+        const candidate = item as {
+            responseText?: unknown;
+            parsedJsonText?: unknown;
+            updatedAt?: unknown;
+        };
+        if (typeof candidate.responseText !== "string") {
+            return;
+        }
+        result[toolKey] = {
+            responseText: candidate.responseText,
+            parsedJsonText:
+                typeof candidate.parsedJsonText === "string"
+                    ? candidate.parsedJsonText
+                    : undefined,
+            updatedAt:
+                typeof candidate.updatedAt === "string"
+                    ? candidate.updatedAt
+                    : undefined,
+        };
     });
     return result;
 }
@@ -592,16 +711,20 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             const aiResults = normalizeRowAIResults(
                 item.aiResults ?? legacyAIResults,
             );
-            return aiResults
-                ? {
-                      rowId: item.rowId,
-                      values,
-                      aiResults,
-                  }
-                : {
-                      rowId: item.rowId,
-                      values,
-                  };
+            const cleaningResults = normalizeRowCleaningResults(
+                (item as Record<string, unknown>).cleaningResults,
+            );
+            const nextRow: ParsedRow = {
+                rowId: item.rowId,
+                values,
+            };
+            if (Object.keys(aiResults).length > 0) {
+                nextRow.aiResults = aiResults;
+            }
+            if (Object.keys(cleaningResults).length > 0) {
+                nextRow.cleaningResults = cleaningResults;
+            }
+            return nextRow;
         })
         .filter((row): row is ParsedRow => row !== null);
 
@@ -706,6 +829,10 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         filterConditions: normalizeFilterConditions(
             cleanedParsed.columns,
             mergedFilterConditions,
+        ),
+        statisticsConfig: normalizeStatisticsConfig(
+            cleanedParsed.columns,
+            candidate.statisticsConfig,
         ),
     };
 }

@@ -14,6 +14,10 @@ type ImportableFileState = ParsedWorkbook & {
         columnKey?: string;
         value?: string;
     }>;
+    statisticsConfig?: {
+        selectedFieldKeys?: string[];
+        chartTypeByField?: Record<string, string>;
+    };
     selectedFilterColumnKeys?: string[];
     columnFilterValues?: Record<string, string>;
 };
@@ -91,6 +95,43 @@ function toSafeFilterConditions(
             (item): item is { id: string; columnKey: string; value: string } =>
                 item !== null,
         );
+}
+
+function isStatisticsChartType(value: unknown): value is string {
+    return (
+        value === "bar" ||
+        value === "pie" ||
+        value === "line" ||
+        value === "table"
+    );
+}
+
+function normalizeStatisticsConfig(
+    value: unknown,
+    validColumnKeys: Set<string>,
+): {
+    selectedFieldKeys: string[];
+    chartTypeByField: Record<string, string>;
+} {
+    const record = isRecord(value) ? value : {};
+    const selectedFieldKeys = toSafeStringArray(
+        record.selectedFieldKeys,
+    ).filter((key) => validColumnKeys.has(key));
+    const rawChartTypeByField = isRecord(record.chartTypeByField)
+        ? record.chartTypeByField
+        : {};
+    const chartTypeByField = Object.entries(rawChartTypeByField).reduce<
+        Record<string, string>
+    >((acc, [key, item]) => {
+        if (validColumnKeys.has(key) && isStatisticsChartType(item)) {
+            acc[key] = item;
+        }
+        return acc;
+    }, {});
+    return {
+        selectedFieldKeys,
+        chartTypeByField,
+    };
 }
 
 function normalizeRowAIResults(value: unknown): Record<string, string> {
@@ -613,6 +654,10 @@ export function mergeImportedFileState(
     const rawFilterConditions = toSafeFilterConditions(
         existingStateRecord.filterConditions,
     ).filter((condition) => validColumnKeys.has(condition.columnKey));
+    const statisticsConfig = normalizeStatisticsConfig(
+        existingStateRecord.statisticsConfig,
+        validColumnKeys,
+    );
 
     const level1Key = findColumnKeyByNormalizedTitle(mergedColumns, "level1");
     const level2Key = findColumnKeyByNormalizedTitle(mergedColumns, "level2");
@@ -662,6 +707,13 @@ export function mergeImportedFileState(
         if (legacyFilterConditions.length > 0) {
             nextState.filterConditions = legacyFilterConditions;
         }
+    }
+    if (
+        isRecord(existingStateRecord.statisticsConfig) ||
+        statisticsConfig.selectedFieldKeys.length > 0 ||
+        Object.keys(statisticsConfig.chartTypeByField).length > 0
+    ) {
+        nextState.statisticsConfig = statisticsConfig;
     }
 
     return {

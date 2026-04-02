@@ -522,6 +522,10 @@
     --ai-detect-card-height: 220px;
 }
 
+.record-detail-ai-cleaning-results {
+    --ai-detect-card-height: 220px;
+}
+
 .record-detail-ai-results-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -591,6 +595,12 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+}
+
+.record-detail-ai-cleaning-message {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
 }
 
 .record-detail-ai-resize-handle {
@@ -1824,6 +1834,120 @@
     overflow-wrap: anywhere;
 }
 
+.detail-tag-inline {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex-wrap: wrap;
+    line-height: 1.6;
+}
+
+.detail-tag-inline strong {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.detail-tag-inline-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.detail-tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-glass);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1;
+}
+
+.detail-tag-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 22px;
+    border: 1px solid rgba(255, 107, 107, 0.28);
+    border-radius: 999px;
+    background: rgba(255, 107, 107, 0.1);
+    color: var(--warning);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 0 8px;
+    transition:
+        background var(--transition-fast),
+        color var(--transition-fast),
+        border-color var(--transition-fast);
+}
+
+.detail-tag-delete:hover {
+    background: rgba(255, 107, 107, 0.18);
+    border-color: rgba(255, 107, 107, 0.42);
+    color: var(--warning);
+}
+
+.ai-inline-tag-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ai-inline-tag-row strong {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.ai-inline-tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.ai-inline-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.ai-inline-tag-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 107, 107, 0.12);
+    color: var(--warning);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    padding: 0;
+}
+
+.ai-inline-tag-remove:hover {
+    background: rgba(255, 107, 107, 0.2);
+}
+
 .empty-text {
     color: var(--text-muted);
 }
@@ -2558,6 +2682,53 @@
     accent-color: var(--accent);
 }
 
+.ai-config-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ai-config-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+.ai-config-mapping-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.ai-config-mapping-row {
+    display: grid;
+    grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+    gap: 12px;
+    align-items: end;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-glass);
+    padding: 10px;
+}
+
+.ai-config-mapping-key {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.ai-config-mapping-key strong {
+    font-size: 12px;
+    color: var(--text-primary);
+    font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.ai-config-mapping-key span {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
 .ai-config-prompt-field textarea {
     width: 100%;
     min-height: 140px;
@@ -2692,6 +2863,10 @@
 
     .ai-config-fields {
         max-height: 120px;
+    }
+
+    .ai-config-mapping-row {
+        grid-template-columns: 1fr;
     }
 }
 

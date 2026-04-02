@@ -6,17 +6,22 @@ import { randomUUID } from "node:crypto";
 import {
     findAIModelRouteByName,
     findAIProviderEndpointByName,
+    getFileAICleaningConfig,
     getFileAIChatConfig,
     getFileAIStageConfigs,
     listAIModelRoutes,
     listAIProviderEndpoints,
     saveAIModelRoutes,
+    saveFileAICleaningConfig,
     saveFileAIChatConfig,
     saveAIProviderEndpoints,
     saveFileAIStageConfigs,
+    type AICleaningToolKey,
     type AIModelRouteConfig,
     type AIProviderApiType,
     type AIProviderEndpointConfig,
+    type FileAICleaningConfigMap,
+    type FileAICleaningToolConfig,
     type FileAIChatConfig,
     type FileAIStageConfig,
 } from "../db.js";
@@ -32,6 +37,10 @@ type AIDetectStageKey =
     | "context_audit"
     | "independent_solving"
     | "final_verdict";
+type AICleaningOutputMapping = {
+    outputKey: string;
+    targetFieldKey: string;
+};
 type AIRouteStep = {
     providerName: string;
 };
@@ -57,6 +66,22 @@ const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
     context_audit: "Context Audit",
     independent_solving: "Independent Solving",
     final_verdict: "Final Verdict",
+};
+const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
+    "generate_level3_tags",
+    "biochem_level1_refine",
+];
+const AI_CLEANING_TOOL_LABELS: Record<AICleaningToolKey, string> = {
+    generate_level3_tags: "生成 level3 标签",
+    biochem_level1_refine: "细分生化 level1",
+};
+const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
+    generate_level3_tags: [
+        "representation_method",
+        "representation_type",
+        "tags",
+    ],
+    biochem_level1_refine: ["discipline", "confidence", "reason"],
 };
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
@@ -1560,6 +1585,132 @@ function validateChatPayload(
     };
 }
 
+function validateCleaningPayload(
+    item: unknown,
+    routesByName: Map<string, AIModelRouteConfig>,
+    providersByName: Map<string, AIProviderEndpointConfig>,
+): { cleaning?: FileAICleaningConfigMap; message?: string } {
+    if (!item || typeof item !== "object") {
+        return { message: "cleaning must be an object" };
+    }
+
+    const cleaning = {} as FileAICleaningConfigMap;
+    for (const toolKey of AI_CLEANING_TOOL_ORDER) {
+        const toolValue = (item as Record<string, unknown>)[toolKey];
+        if (!toolValue || typeof toolValue !== "object") {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} config must be an object`,
+            };
+        }
+        const candidate = toolValue as {
+            routeName?: unknown;
+            submitFieldKeys?: unknown;
+            prompt?: unknown;
+            autoFillEnabled?: unknown;
+            outputMappings?: unknown;
+        };
+        if (!isNonEmptyString(candidate.routeName)) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} routeName must be a non-empty string`,
+            };
+        }
+        const route = routesByName.get(candidate.routeName.trim());
+        if (!route) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} routeName must reference an existing route`,
+            };
+        }
+        const routeApiType = getRouteApiType(route, providersByName);
+        if (!routeApiType) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} route providers are invalid`,
+            };
+        }
+        if (routeApiType === "anthropic") {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} cannot use an anthropic route yet`,
+            };
+        }
+        if (
+            !Array.isArray(candidate.submitFieldKeys) ||
+            !candidate.submitFieldKeys.every((entry) => typeof entry === "string")
+        ) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} submitFieldKeys must be a string array`,
+            };
+        }
+        if (!isNonEmptyString(candidate.prompt)) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} prompt must be a non-empty string`,
+            };
+        }
+        if (!Array.isArray(candidate.outputMappings)) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} outputMappings must be an array`,
+            };
+        }
+        const allowedOutputKeys = new Set(AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey]);
+        const mappingMap = new Map<string, AICleaningOutputMapping>();
+        for (const mapping of candidate.outputMappings) {
+            if (!mapping || typeof mapping !== "object") {
+                return {
+                    message: `${AI_CLEANING_TOOL_LABELS[toolKey]} outputMappings must contain objects`,
+                };
+            }
+            const outputKey = (mapping as { outputKey?: unknown }).outputKey;
+            const targetFieldKey = (mapping as { targetFieldKey?: unknown })
+                .targetFieldKey;
+            if (!isNonEmptyString(outputKey)) {
+                return {
+                    message: `${AI_CLEANING_TOOL_LABELS[toolKey]} outputKey must be a non-empty string`,
+                };
+            }
+            if (!allowedOutputKeys.has(outputKey.trim())) {
+                return {
+                    message: `${AI_CLEANING_TOOL_LABELS[toolKey]} contains invalid outputKey: ${outputKey}`,
+                };
+            }
+            if (
+                targetFieldKey !== undefined &&
+                targetFieldKey !== null &&
+                typeof targetFieldKey !== "string"
+            ) {
+                return {
+                    message: `${AI_CLEANING_TOOL_LABELS[toolKey]} targetFieldKey must be a string`,
+                };
+            }
+            if (mappingMap.has(outputKey.trim())) {
+                return {
+                    message: `${AI_CLEANING_TOOL_LABELS[toolKey]} outputKey duplicated: ${outputKey}`,
+                };
+            }
+            mappingMap.set(outputKey.trim(), {
+                outputKey: outputKey.trim(),
+                targetFieldKey:
+                    typeof targetFieldKey === "string"
+                        ? targetFieldKey.trim()
+                        : "",
+            });
+        }
+        if (mappingMap.size !== allowedOutputKeys.size) {
+            return {
+                message: `${AI_CLEANING_TOOL_LABELS[toolKey]} outputMappings are incomplete`,
+            };
+        }
+        cleaning[toolKey] = {
+            routeName: candidate.routeName.trim(),
+            submitFieldKeys: candidate.submitFieldKeys,
+            prompt: candidate.prompt,
+            autoFillEnabled: candidate.autoFillEnabled === true,
+            outputMappings: AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey].map(
+                (outputKey) => mappingMap.get(outputKey)!,
+            ),
+        } satisfies FileAICleaningToolConfig;
+    }
+
+    return { cleaning };
+}
+
 function getRouteApiType(
     route: AIModelRouteConfig,
     providersByName: Map<string, AIProviderEndpointConfig>,
@@ -2273,6 +2424,7 @@ export const registerAIRoutes = (app: express.Express) => {
             routes: listAIModelRoutes(),
             stages: getFileAIStageConfigs(fileName),
             chat: getFileAIChatConfig(fileName),
+            cleaning: getFileAICleaningConfig(fileName),
         });
     });
 
@@ -2431,6 +2583,27 @@ export const registerAIRoutes = (app: express.Express) => {
         }
 
         saveFileAIChatConfig(fileName, validation.chat);
+        return res.json({ ok: true });
+    });
+
+    app.put("/api/ai-config/:fileName/cleaning", (req, res) => {
+        const fileName = decodeURIComponent(req.params.fileName);
+        const { cleaning } = req.body as { cleaning?: unknown };
+        const routes = listAIModelRoutes();
+        const providersByName = new Map(
+            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+        );
+        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const validation = validateCleaningPayload(
+            cleaning,
+            routesByName,
+            providersByName,
+        );
+        if (!validation.cleaning) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        saveFileAICleaningConfig(fileName, validation.cleaning);
         return res.json({ ok: true });
     });
 

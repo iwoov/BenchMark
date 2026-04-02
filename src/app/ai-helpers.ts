@@ -1,6 +1,10 @@
 import type {
     AIDetectConfig,
     AIChatConfig,
+    AICleaningConfigMap,
+    AICleaningOutputMapping,
+    AICleaningToolConfig,
+    AICleaningToolKey,
     AIModelRoute,
     AIProviderApiType,
     AIProviderEndpoint,
@@ -11,8 +15,11 @@ import type {
     ParsedRow,
 } from "../types";
 import {
+    AI_CLEANING_TOOL_LABELS,
+    AI_CLEANING_TOOL_ORDER,
     AI_STAGE_ORDER,
     DEFAULT_AI_CHAT_CONFIG,
+    DEFAULT_AI_CLEANING_CONFIGS,
     DEFAULT_AI_PROVIDER,
     DEFAULT_AI_PROVIDER_NAME,
     DEFAULT_AI_ROUTE,
@@ -416,26 +423,55 @@ export function cloneAIChatConfig(chatConfig: AIChatConfig): AIChatConfig {
     };
 }
 
+export function cloneAICleaningOutputMapping(
+    mapping: AICleaningOutputMapping,
+): AICleaningOutputMapping {
+    return { ...mapping };
+}
+
+export function cloneAICleaningToolConfig(
+    toolConfig: AICleaningToolConfig,
+): AICleaningToolConfig {
+    return {
+        ...toolConfig,
+        submitFieldKeys: [...toolConfig.submitFieldKeys],
+        outputMappings: toolConfig.outputMappings.map(
+            cloneAICleaningOutputMapping,
+        ),
+    };
+}
+
 export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
     const providers = config.providers.map(cloneAIProviderEndpoint);
     const routes = config.routes.map(cloneAIModelRoute);
     const stages = {} as AIDetectStageConfigMap;
+    const cleaning = {} as AICleaningConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = cloneAIDetectStageConfig(config.stages[stageKey]);
+    });
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        cleaning[toolKey] = cloneAICleaningToolConfig(config.cleaning[toolKey]);
     });
     return {
         providers,
         routes,
         stages,
         chat: cloneAIChatConfig(config.chat),
+        cleaning,
     };
 }
 
 export function createDefaultAIDetectConfig(): AIDetectConfig {
     const stages = {} as AIDetectStageConfigMap;
+    const cleaning = {} as AICleaningConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = cloneAIDetectStageConfig(
             DEFAULT_AI_STAGE_CONFIGS[stageKey],
+        );
+    });
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        cleaning[toolKey] = cloneAICleaningToolConfig(
+            DEFAULT_AI_CLEANING_CONFIGS[toolKey],
         );
     });
     return {
@@ -443,6 +479,7 @@ export function createDefaultAIDetectConfig(): AIDetectConfig {
         routes: [cloneAIModelRoute(DEFAULT_AI_ROUTE)],
         stages,
         chat: cloneAIChatConfig(DEFAULT_AI_CHAT_CONFIG),
+        cleaning,
     };
 }
 
@@ -719,6 +756,79 @@ function normalizeLoadedAIChatConfig(
     };
 }
 
+function normalizeLoadedAICleaningToolConfig(
+    value: unknown,
+    fallback: AICleaningToolConfig,
+    fallbackRouteName: string,
+    toolKey: AICleaningToolKey,
+): AICleaningToolConfig {
+    if (!value || typeof value !== "object") {
+        return {
+            ...cloneAICleaningToolConfig(fallback),
+            routeName: fallbackRouteName,
+        };
+    }
+
+    const candidate = value as Partial<AICleaningToolConfig>;
+    const submitFieldKeys = Array.isArray(candidate.submitFieldKeys)
+        ? candidate.submitFieldKeys.filter(
+              (item): item is string => typeof item === "string",
+          )
+        : [];
+    const allowedOutputKeys = new Set(AI_CLEANING_TOOL_LABELS[toolKey].outputKeys);
+    const fallbackOutputMap = new Map(
+        fallback.outputMappings.map((item) => [item.outputKey, item]),
+    );
+    const candidateOutputMap = new Map<string, AICleaningOutputMapping>();
+    if (Array.isArray(candidate.outputMappings)) {
+        candidate.outputMappings.forEach((item) => {
+            if (!item || typeof item !== "object") {
+                return;
+            }
+            const outputKey = (item as { outputKey?: unknown }).outputKey;
+            const targetFieldKey = (item as { targetFieldKey?: unknown })
+                .targetFieldKey;
+            if (
+                typeof outputKey !== "string" ||
+                !allowedOutputKeys.has(outputKey.trim())
+            ) {
+                return;
+            }
+            candidateOutputMap.set(outputKey.trim(), {
+                outputKey: outputKey.trim(),
+                targetFieldKey:
+                    typeof targetFieldKey === "string" ? targetFieldKey : "",
+            });
+        });
+    }
+    const outputMappings = AI_CLEANING_TOOL_LABELS[toolKey].outputKeys.map(
+        (outputKey) =>
+            cloneAICleaningOutputMapping(
+                candidateOutputMap.get(outputKey) ??
+                    fallbackOutputMap.get(outputKey) ?? {
+                        outputKey,
+                        targetFieldKey: "",
+                    },
+            ),
+    );
+    const routeName =
+        typeof candidate.routeName === "string" && candidate.routeName.trim()
+            ? candidate.routeName.trim()
+            : fallbackRouteName;
+
+    return {
+        routeName,
+        submitFieldKeys,
+        prompt:
+            typeof candidate.prompt === "string" &&
+            candidate.prompt.trim().length > 0
+                ? candidate.prompt
+                : fallback.prompt,
+        autoFillEnabled: candidate.autoFillEnabled === true,
+        outputMappings,
+    };
+}
+
 export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
     if (!value || typeof value !== "object") {
         return createDefaultAIDetectConfig();
@@ -729,6 +839,7 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         providers?: unknown;
         routes?: unknown;
         profiles?: unknown;
+        cleaning?: unknown;
     };
     const providers = normalizeLoadedProviders(
         candidate.providers ?? candidate.profiles,
@@ -744,6 +855,7 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
     const resolvedRoutes =
         routes.length > 0 ? routes : [cloneAIModelRoute(DEFAULT_AI_ROUTE)];
     const stages = {} as AIDetectStageConfigMap;
+    const cleaning = {} as AICleaningConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         stages[stageKey] = normalizeLoadedAIDetectStageConfig(
             candidate.stages && typeof candidate.stages === "object"
@@ -751,6 +863,16 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
                 : null,
             DEFAULT_AI_STAGE_CONFIGS[stageKey],
             resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
+        );
+    });
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        cleaning[toolKey] = normalizeLoadedAICleaningToolConfig(
+            candidate.cleaning && typeof candidate.cleaning === "object"
+                ? (candidate.cleaning as Record<string, unknown>)[toolKey]
+                : null,
+            DEFAULT_AI_CLEANING_CONFIGS[toolKey],
+            resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
+            toolKey,
         );
     });
     return {
@@ -761,6 +883,7 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
             (candidate as { chat?: unknown }).chat,
             resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
         ),
+        cleaning,
     };
 }
 
@@ -794,6 +917,7 @@ export function normalizeAIDetectConfigForColumns(
     const routeNames = new Set(routes.map((item) => item.name));
 
     const stages = {} as AIDetectStageConfigMap;
+    const cleaning = {} as AICleaningConfigMap;
     AI_STAGE_ORDER.forEach((stageKey) => {
         const stageConfig =
             config.stages?.[stageKey] ?? DEFAULT_AI_STAGE_CONFIGS[stageKey];
@@ -817,6 +941,42 @@ export function normalizeAIDetectConfigForColumns(
         chatConfig.routeName && routeNames.has(chatConfig.routeName)
             ? chatConfig.routeName
             : fallbackRouteName;
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        const toolConfig =
+            config.cleaning?.[toolKey] ?? DEFAULT_AI_CLEANING_CONFIGS[toolKey];
+        const normalizedRouteName =
+            toolConfig.routeName && routeNames.has(toolConfig.routeName)
+                ? toolConfig.routeName
+                : fallbackRouteName;
+        const outputMappings = AI_CLEANING_TOOL_LABELS[toolKey].outputKeys.map(
+            (outputKey) => {
+                const matched = toolConfig.outputMappings.find(
+                    (item) => item.outputKey === outputKey,
+                );
+                return {
+                    outputKey,
+                    targetFieldKey:
+                        matched?.targetFieldKey &&
+                        keySet.has(matched.targetFieldKey)
+                            ? matched.targetFieldKey
+                            : "",
+                };
+            },
+        );
+        cleaning[toolKey] = {
+            routeName: normalizedRouteName,
+            prompt:
+                typeof toolConfig.prompt === "string" &&
+                toolConfig.prompt.trim().length > 0
+                    ? toolConfig.prompt
+                    : DEFAULT_AI_CLEANING_CONFIGS[toolKey].prompt,
+            autoFillEnabled: toolConfig.autoFillEnabled === true,
+            submitFieldKeys: toolConfig.submitFieldKeys.filter((key) =>
+                keySet.has(key),
+            ),
+            outputMappings,
+        };
+    });
 
     return {
         providers,
@@ -833,6 +993,7 @@ export function normalizeAIDetectConfigForColumns(
                 (key) => keySet.has(key),
             ),
         },
+        cleaning,
     };
 }
 

@@ -1,6 +1,9 @@
 import type {
     AIDetectConfig,
     AIChatConfig,
+    AICleaningConfigMap,
+    AICleaningToolConfig,
+    AICleaningToolKey,
     AIModelRoute,
     AIProviderEndpoint,
     AIDetectStageConfig,
@@ -199,6 +202,86 @@ export const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
 - 如果字段中包含参考答案或解析，只有在用户问题确实相关时才引用，并说明依据来源于当前题目字段。
 - 不要输出 JSON，也不要重复粘贴全部字段内容，除非用户明确要求。`;
 
+export const AI_CLEANING_TOOL_ORDER = [
+    "generate_level3_tags",
+    "biochem_level1_refine",
+] as const;
+
+export const AI_CLEANING_TOOL_LABELS: Record<
+    AICleaningToolKey,
+    {
+        title: string;
+        shortTitle: string;
+        description: string;
+        outputKeys: string[];
+    }
+> = {
+    generate_level3_tags: {
+        title: "生成 level3 标签",
+        shortTitle: "Level3 标签",
+        description:
+            "分析题目表征方法、表征类型，并输出最多 3 个代表性标签。",
+        outputKeys: [
+            "representation_method",
+            "representation_type",
+            "tags",
+        ],
+    },
+    biochem_level1_refine: {
+        title: "细分生化 level1",
+        shortTitle: "生化 Level1",
+        description:
+            "判断题目所属的生物学科方向，并给出置信度与判断依据。",
+        outputKeys: ["discipline", "confidence", "reason"],
+    },
+};
+
+export const DEFAULT_AI_CLEANING_PROMPTS: Record<AICleaningToolKey, string> = {
+    generate_level3_tags: `你是一个专业的题目分析专家。请分析用户提交的题目，但不要回答题目内容。
+
+你的任务是：
+1. 分析题目涉及的表征方法（如：XRD、NMR、拉曼光谱、冷冻电镜、透射电镜、Western blot、红外光谱、质谱、荧光光谱、扫描电镜、原子力显微镜等）
+2. 判断题目的表征类型（如：结构表征、成分分析、形貌观察、性能测试、生物检测等）
+3. 提炼出最能代表题目特征的标签，最多 3 个
+
+请严格按照以下 JSON 格式返回结果，不要包含 Markdown 标记或额外说明：
+{
+  "representation_method": "题目的表征方法描述",
+  "representation_type": "题目的表征类型",
+  "tags": ["XRD", "结构表征", "晶体分析"]
+}
+
+注意事项：
+- 不要解答题目
+- 不要输出题目答案
+- 只分析题目的表征特征
+- tags 数组最多包含 3 个元素
+
+字段内容如下：
+{{fields_json}}`,
+    biochem_level1_refine: `你是一个专业的生物学科分类专家。请分析用户提交的生物方向题目，根据题目内容和图片判断该题目的学科研究方向。
+
+你的任务是：
+识别题目所属的学科领域，优先从以下学科中选择：
+- 结构生物化学：涉及蛋白质结构、核酸结构、分子结构解析、晶体学等
+- 分子生物学：涉及基因表达、DNA复制、转录翻译、基因调控等
+- 细胞生物化学：涉及细胞信号转导、细胞代谢、细胞器功能、细胞周期等
+- 系统生物化学：涉及代谢网络、生物系统调控、组学分析、通路分析等
+- 酶学与生物催化：涉及酶反应机制、酶动力学、生物催化、酶工程等
+
+如果题目不属于以上任何学科，请判断并返回该题目实际所属的生物学科名称。
+
+请严格按照以下 JSON 格式返回结果，不要包含 Markdown 标记或额外说明：
+{
+  "discipline": "学科名称",
+  "confidence": "高/中/低",
+  "reason": "判断依据的简要说明"
+}
+
+字段内容如下：
+{{fields_json}}`,
+};
+
 export const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
 export const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
 export const DEFAULT_AI_CONFIG_NAME = "默认配置";
@@ -229,6 +312,38 @@ export const DEFAULT_AI_CHAT_CONFIG: AIChatConfig = {
     defaultSubmitFieldKeys: [],
 };
 
+const DEFAULT_AI_CLEANING_TOOL_BASE: Omit<
+    AICleaningToolConfig,
+    "prompt" | "outputMappings"
+> = {
+    routeName: DEFAULT_AI_ROUTE_NAME,
+    submitFieldKeys: [],
+    autoFillEnabled: false,
+};
+
+export const DEFAULT_AI_CLEANING_CONFIGS: AICleaningConfigMap = {
+    generate_level3_tags: {
+        ...DEFAULT_AI_CLEANING_TOOL_BASE,
+        prompt: DEFAULT_AI_CLEANING_PROMPTS.generate_level3_tags,
+        outputMappings: AI_CLEANING_TOOL_LABELS.generate_level3_tags.outputKeys.map(
+            (outputKey) => ({
+                outputKey,
+                targetFieldKey: "",
+            }),
+        ),
+    },
+    biochem_level1_refine: {
+        ...DEFAULT_AI_CLEANING_TOOL_BASE,
+        prompt: DEFAULT_AI_CLEANING_PROMPTS.biochem_level1_refine,
+        outputMappings: AI_CLEANING_TOOL_LABELS.biochem_level1_refine.outputKeys.map(
+            (outputKey) => ({
+                outputKey,
+                targetFieldKey: "",
+            }),
+        ),
+    },
+};
+
 export const DEFAULT_AI_STAGE_CONFIGS: AIDetectStageConfigMap = {
     precheck: {
         ...DEFAULT_AI_STAGE_BASE,
@@ -253,6 +368,7 @@ export const DEFAULT_AI_CONFIG: AIDetectConfig = {
     routes: [DEFAULT_AI_ROUTE],
     stages: DEFAULT_AI_STAGE_CONFIGS,
     chat: DEFAULT_AI_CHAT_CONFIG,
+    cleaning: DEFAULT_AI_CLEANING_CONFIGS,
 };
 
 export const AI_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const;

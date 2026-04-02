@@ -55,11 +55,18 @@ export type AIDetectStageKey =
     | "context_audit"
     | "independent_solving"
     | "final_verdict";
+export type AICleaningToolKey =
+    | "generate_level3_tags"
+    | "biochem_level1_refine";
 const AI_STAGE_ORDER: AIDetectStageKey[] = [
     "precheck",
     "context_audit",
     "independent_solving",
     "final_verdict",
+];
+const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
+    "generate_level3_tags",
+    "biochem_level1_refine",
 ];
 const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
 const DEFAULT_AI_RETRY_COUNT = 5;
@@ -79,6 +86,51 @@ const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
 - 回答尽量直接、准确、结构清晰。
 - 如果字段中包含参考答案或解析，只有在用户问题确实相关时才引用，并说明依据来源于当前题目字段。
 - 不要输出 JSON，也不要重复粘贴全部字段内容，除非用户明确要求。`;
+const DEFAULT_AI_CLEANING_PROMPTS: Record<AICleaningToolKey, string> = {
+    generate_level3_tags: `你是一个专业的题目分析专家。请分析用户提交的题目，但不要回答题目内容。
+
+你的任务是：
+1. 分析题目涉及的表征方法
+2. 判断题目的表征类型
+3. 提炼出最能代表题目特征的标签，最多 3 个
+
+请严格按照以下 JSON 格式返回结果，不要包含 Markdown 标记或其他说明：
+{
+  "representation_method": "题目的表征方法描述",
+  "representation_type": "题目的表征类型",
+  "tags": ["XRD", "结构表征", "晶体分析"]
+}
+
+字段内容如下：
+{{fields_json}}`,
+    biochem_level1_refine: `你是一个专业的生物学科分类专家。请分析用户提交的生物方向题目，根据题目内容和图片判断该题目的学科研究方向。
+
+你的任务是：
+识别题目所属的学科领域，优先从以下学科中选择：
+- 结构生物化学
+- 分子生物学
+- 细胞生物化学
+- 系统生物化学
+- 酶学与生物催化
+
+请严格按照以下 JSON 格式返回结果，不要包含 Markdown 标记或其他说明：
+{
+  "discipline": "学科名称",
+  "confidence": "高/中/低",
+  "reason": "判断依据的简要说明"
+}
+
+字段内容如下：
+{{fields_json}}`,
+};
+const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
+    generate_level3_tags: [
+        "representation_method",
+        "representation_type",
+        "tags",
+    ],
+    biochem_level1_refine: ["discipline", "confidence", "reason"],
+};
 
 function sanitizeBackupLabel(value: string): string {
     const normalized = value.trim().replace(/\s+/g, "_");
@@ -374,18 +426,46 @@ function createFileAIStageConfigTable(): void {
       file_name TEXT PRIMARY KEY,
       stages_json TEXT NOT NULL,
       chat_json TEXT,
+      cleaning_json TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+}
+
+function getAICleaningResultTableName(toolKey: AICleaningToolKey): string {
+    return `ai_cleaning_${toolKey}_results`;
+}
+
+function createAICleaningResultTable(toolKey: AICleaningToolKey): void {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS ${getAICleaningResultTableName(toolKey)} (
+      file_id TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      response_text TEXT NOT NULL,
+      parsed_json_text TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (file_id, row_id)
+    );
+  `);
+    db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${getAICleaningResultTableName(toolKey)}_file_id ON ${getAICleaningResultTableName(toolKey)}(file_id)`,
+    );
 }
 
 function ensureAIRoutingTables(): void {
     createAIProviderEndpointTable();
     createAIModelRouteTable();
     createFileAIStageConfigTable();
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        createAICleaningResultTable(toolKey);
+    });
     const columns = new Set(getTableColumns("file_ai_stage_configs"));
     if (!columns.has("chat_json")) {
         db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN chat_json TEXT");
+    }
+    if (!columns.has("cleaning_json")) {
+        db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN cleaning_json TEXT");
     }
 }
 
@@ -513,6 +593,30 @@ export interface FileAIChatConfig {
     routeName: string;
     prompt: string;
     defaultSubmitFieldKeys: string[];
+}
+
+export interface FileAICleaningOutputMapping {
+    outputKey: string;
+    targetFieldKey: string;
+}
+
+export interface FileAICleaningToolConfig {
+    routeName: string;
+    submitFieldKeys: string[];
+    prompt: string;
+    autoFillEnabled: boolean;
+    outputMappings: FileAICleaningOutputMapping[];
+}
+
+export type FileAICleaningConfigMap = Record<
+    AICleaningToolKey,
+    FileAICleaningToolConfig
+>;
+
+export interface FileAICleaningToolResult {
+    responseText: string;
+    parsedJsonText?: string;
+    updatedAt?: string;
 }
 
 function parseJsonStringArray(value: string | null | undefined): string[] {
@@ -1680,6 +1784,107 @@ function parseFileChatConfig(
     }
 }
 
+function normalizeFileCleaningToolConfig(
+    value: unknown,
+    fallbackRouteName: string,
+    toolKey: AICleaningToolKey,
+): FileAICleaningToolConfig {
+    const fallbackOutputMappings = AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey].map(
+        (outputKey) => ({
+            outputKey,
+            targetFieldKey: "",
+        }),
+    );
+    if (!value || typeof value !== "object") {
+        return {
+            routeName: fallbackRouteName,
+            submitFieldKeys: [],
+            prompt: DEFAULT_AI_CLEANING_PROMPTS[toolKey],
+            autoFillEnabled: false,
+            outputMappings: fallbackOutputMappings,
+        };
+    }
+
+    const candidate = value as Partial<FileAICleaningToolConfig>;
+    const allowedOutputKeys = new Set(AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey]);
+    const outputMappingMap = new Map<string, FileAICleaningOutputMapping>();
+    if (Array.isArray(candidate.outputMappings)) {
+        candidate.outputMappings.forEach((item) => {
+            if (!item || typeof item !== "object") {
+                return;
+            }
+            const outputKey = (item as { outputKey?: unknown }).outputKey;
+            const targetFieldKey = (item as { targetFieldKey?: unknown })
+                .targetFieldKey;
+            if (
+                typeof outputKey !== "string" ||
+                !allowedOutputKeys.has(outputKey.trim())
+            ) {
+                return;
+            }
+            outputMappingMap.set(outputKey.trim(), {
+                outputKey: outputKey.trim(),
+                targetFieldKey:
+                    typeof targetFieldKey === "string" ? targetFieldKey : "",
+            });
+        });
+    }
+
+    return {
+        routeName:
+            typeof candidate.routeName === "string" &&
+            candidate.routeName.trim().length > 0
+                ? candidate.routeName.trim()
+                : fallbackRouteName,
+        submitFieldKeys: Array.isArray(candidate.submitFieldKeys)
+            ? candidate.submitFieldKeys.filter(
+                  (item): item is string => typeof item === "string",
+              )
+            : [],
+        prompt:
+            typeof candidate.prompt === "string" &&
+            candidate.prompt.trim().length > 0
+                ? candidate.prompt
+                : DEFAULT_AI_CLEANING_PROMPTS[toolKey],
+        autoFillEnabled:
+            (candidate as { autoFillEnabled?: unknown }).autoFillEnabled ===
+            true,
+        outputMappings: AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey].map(
+            (outputKey) =>
+                outputMappingMap.get(outputKey) ?? {
+                    outputKey,
+                    targetFieldKey: "",
+                },
+        ),
+    };
+}
+
+function parseFileCleaningConfigMap(
+    value: string | null | undefined,
+    fallbackRouteName: string,
+): FileAICleaningConfigMap {
+    let parsed: Record<string, unknown> = {};
+    if (value) {
+        try {
+            const candidate = JSON.parse(value) as unknown;
+            if (candidate && typeof candidate === "object") {
+                parsed = candidate as Record<string, unknown>;
+            }
+        } catch {
+            parsed = {};
+        }
+    }
+    const cleaning = {} as FileAICleaningConfigMap;
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        cleaning[toolKey] = normalizeFileCleaningToolConfig(
+            parsed[toolKey],
+            fallbackRouteName,
+            toolKey,
+        );
+    });
+    return cleaning;
+}
+
 export function listAIProviderEndpoints(): AIProviderEndpointConfig[] {
     const rows = db
         .prepare(
@@ -1812,6 +2017,21 @@ export function getFileAIChatConfig(fileName: string): FileAIChatConfig {
     return parseFileChatConfig(row?.chat_json, DEFAULT_AI_ROUTE_NAME);
 }
 
+export function getFileAICleaningConfig(fileName: string): FileAICleaningConfigMap {
+    const row = db
+        .prepare(
+            `SELECT cleaning_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as { cleaning_json: string | null } | undefined;
+
+    return parseFileCleaningConfigMap(
+        row?.cleaning_json,
+        DEFAULT_AI_ROUTE_NAME,
+    );
+}
+
 export function saveFileAIStageConfigs(
     fileName: string,
     stages: Record<AIDetectStageKey, FileAIStageConfig>,
@@ -1829,13 +2049,166 @@ export function saveFileAIChatConfig(
     fileName: string,
     chat: FileAIChatConfig,
 ): void {
+    const existingRow = db
+        .prepare(
+            `SELECT stages_json, cleaning_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as
+        | {
+              stages_json: string;
+              cleaning_json: string | null;
+          }
+        | undefined;
     db.prepare(
-        `INSERT INTO file_ai_stage_configs (file_name, stages_json, chat_json, updated_at)
-         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        `INSERT INTO file_ai_stage_configs (
+             file_name,
+             stages_json,
+             chat_json,
+             cleaning_json,
+             updated_at
+         )
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(file_name) DO UPDATE SET
            chat_json = excluded.chat_json,
            updated_at = CURRENT_TIMESTAMP`,
-    ).run(fileName, JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)), JSON.stringify(chat));
+    ).run(
+        fileName,
+        existingRow?.stages_json ??
+            JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
+        JSON.stringify(chat),
+        existingRow?.cleaning_json ?? null,
+    );
+}
+
+export function saveFileAICleaningConfig(
+    fileName: string,
+    cleaning: FileAICleaningConfigMap,
+): void {
+    const existingRow = db
+        .prepare(
+            `SELECT stages_json, chat_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as
+        | {
+              stages_json: string;
+              chat_json: string | null;
+          }
+        | undefined;
+    db.prepare(
+        `INSERT INTO file_ai_stage_configs (
+             file_name,
+             stages_json,
+             chat_json,
+             cleaning_json,
+             updated_at
+         )
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_name) DO UPDATE SET
+           cleaning_json = excluded.cleaning_json,
+           updated_at = CURRENT_TIMESTAMP`,
+    ).run(
+        fileName,
+        existingRow?.stages_json ??
+            JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
+        existingRow?.chat_json ?? null,
+        JSON.stringify(cleaning),
+    );
+}
+
+function normalizeFileAICleaningToolResult(
+    value: {
+        response_text?: unknown;
+        parsed_json_text?: unknown;
+        updated_at?: unknown;
+    },
+): FileAICleaningToolResult | null {
+    if (typeof value.response_text !== "string") {
+        return null;
+    }
+    return {
+        responseText: value.response_text,
+        parsedJsonText:
+            typeof value.parsed_json_text === "string"
+                ? value.parsed_json_text
+                : undefined,
+        updatedAt:
+            typeof value.updated_at === "string" ? value.updated_at : undefined,
+    };
+}
+
+export function listFileAICleaningResults(
+    fileId: string,
+): Partial<Record<AICleaningToolKey, Record<string, FileAICleaningToolResult>>> {
+    const result: Partial<
+        Record<AICleaningToolKey, Record<string, FileAICleaningToolResult>>
+    > = {};
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        const rows = db
+            .prepare(
+                `SELECT row_id, response_text, parsed_json_text, updated_at
+                 FROM ${getAICleaningResultTableName(toolKey)}
+                 WHERE file_id = ?
+                 ORDER BY datetime(updated_at) DESC, row_id ASC`,
+            )
+            .all(fileId) as Array<{
+            row_id: string;
+            response_text: string;
+            parsed_json_text: string | null;
+            updated_at: string;
+        }>;
+        if (rows.length === 0) {
+            return;
+        }
+        const rowMap: Record<string, FileAICleaningToolResult> = {};
+        rows.forEach((row) => {
+            const normalized = normalizeFileAICleaningToolResult(row);
+            if (normalized) {
+                rowMap[row.row_id] = normalized;
+            }
+        });
+        if (Object.keys(rowMap).length > 0) {
+            result[toolKey] = rowMap;
+        }
+    });
+    return result;
+}
+
+export function saveFileAICleaningToolResult(
+    fileId: string,
+    fileName: string,
+    rowId: string,
+    toolKey: AICleaningToolKey,
+    responseText: string,
+    parsedJsonText?: string,
+): void {
+    db.prepare(
+        `INSERT INTO ${getAICleaningResultTableName(toolKey)} (
+             file_id,
+             file_name,
+             row_id,
+             response_text,
+             parsed_json_text,
+             updated_at
+         )
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_id, row_id) DO UPDATE SET
+           file_name = excluded.file_name,
+           response_text = excluded.response_text,
+           parsed_json_text = excluded.parsed_json_text,
+           updated_at = CURRENT_TIMESTAMP`,
+    ).run(fileId, fileName, rowId, responseText, parsedJsonText ?? null);
+}
+
+export function deleteFileAICleaningResults(fileId: string): void {
+    AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+        db.prepare(
+            `DELETE FROM ${getAICleaningResultTableName(toolKey)} WHERE file_id = ?`,
+        ).run(fileId);
+    });
 }
 
 export function findAIProviderEndpointByName(

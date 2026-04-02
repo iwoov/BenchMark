@@ -3,8 +3,11 @@ import type {
     FileViewState,
     NamedAIDetectConfig,
     ParsedColumn,
+    StatisticsChartType,
 } from "../../types";
 import {
+    AI_CLEANING_TOOL_LABELS,
+    AI_CLEANING_TOOL_ORDER,
     AI_PROVIDER_API_TYPE_OPTIONS,
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
@@ -18,10 +21,16 @@ interface SettingsPageProps {
     aiConfigList: NamedAIDetectConfig[];
     aiConfig: AIDetectConfig;
     onOpenActiveFileConfig: () => void;
+    onToggleStatisticsField: (fieldKey: string) => void;
+    onSetStatisticsChartType: (
+        fieldKey: string,
+        chartType: StatisticsChartType,
+    ) => void;
     onOpenAIStageConfigModal: () => void;
     onOpenAIProfileModal: () => void;
     onOpenAIRouteModal: () => void;
     onOpenAIChatConfigModal: () => void;
+    onOpenAICleaningConfigModal: () => void;
 }
 
 export function SettingsPage({
@@ -31,10 +40,13 @@ export function SettingsPage({
     aiConfigList,
     aiConfig,
     onOpenActiveFileConfig,
+    onToggleStatisticsField,
+    onSetStatisticsChartType,
     onOpenAIStageConfigModal,
     onOpenAIProfileModal,
     onOpenAIRouteModal,
     onOpenAIChatConfigModal,
+    onOpenAICleaningConfigModal,
 }: SettingsPageProps) {
     const visibleDisplayColumns = displayColumns;
     const editableColumns = activeFile.columns.filter((column) =>
@@ -44,13 +56,26 @@ export function SettingsPage({
     const providers = activeConfig.providers ?? [];
     const routes = activeConfig.routes ?? [];
     const chatConfig = activeConfig.chat;
+    const cleaningConfig = activeConfig.cleaning;
     const providerMap = new Map(providers.map((item) => [item.name, item]));
     const routeMap = new Map(routes.map((item) => [item.name, item]));
     const chatRoute = routeMap.get(chatConfig.routeName);
+    const statisticsFieldSet = new Set(
+        activeFile.statisticsConfig.selectedFieldKeys,
+    );
 
     const getProviderTypeLabel = (apiType: string) =>
         AI_PROVIDER_API_TYPE_OPTIONS.find((item) => item.value === apiType)
             ?.label ?? "-";
+
+    const getChartTypeLabel = (chartType: StatisticsChartType) =>
+        chartType === "bar"
+            ? "柱状图"
+            : chartType === "pie"
+              ? "饼图"
+              : chartType === "line"
+                ? "折线图"
+                : "表格";
 
     const getPromptPreview = (prompt: string) => {
         const trimmed = prompt.trim();
@@ -136,11 +161,106 @@ export function SettingsPage({
                 </section>
             ) : null}
 
+            {activeSettingsSection === "statistics" ? (
+                <section className="settings-section">
+                    <div className="settings-section-head">
+                        <h3>统计设置</h3>
+                        <p>
+                            为当前数据源选择要展示的统计字段，并指定每个字段的图表类型。
+                        </p>
+                    </div>
+                    <div className="settings-grid">
+                        <div className="settings-subsection">
+                            <div className="settings-subsection-head">
+                                <h4>统计字段</h4>
+                                <span>{`已启用 ${activeFile.statisticsConfig.selectedFieldKeys.length} 个`}</span>
+                            </div>
+                            <div className="settings-stat-grid">
+                                {activeFile.columns.map((column) => {
+                                    const enabled = statisticsFieldSet.has(
+                                        column.key,
+                                    );
+                                    const chartType =
+                                        activeFile.statisticsConfig
+                                            .chartTypeByField[column.key] ??
+                                        "bar";
+                                    return (
+                                        <article
+                                            key={column.key}
+                                            className={`settings-stat-card ${enabled ? "is-enabled" : ""}`}
+                                        >
+                                            <div className="settings-stat-card-head">
+                                                <label className="settings-stat-toggle">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={enabled}
+                                                        onChange={() =>
+                                                            onToggleStatisticsField(
+                                                                column.key,
+                                                            )
+                                                        }
+                                                    />
+                                                    <div>
+                                                        <strong>
+                                                            {column.title}
+                                                        </strong>
+                                                        <span>
+                                                            {enabled
+                                                                ? "已加入统计主页"
+                                                                : "未展示"}
+                                                        </span>
+                                                    </div>
+                                                </label>
+                                                <span className="settings-tag">
+                                                    {getChartTypeLabel(
+                                                        chartType,
+                                                    )}
+                                                </span>
+                                            </div>
+                                            <div className="settings-stat-controls">
+                                                <label className="filter-group">
+                                                    <span>图表类型</span>
+                                                    <select
+                                                        value={chartType}
+                                                        onChange={(event) =>
+                                                            onSetStatisticsChartType(
+                                                                column.key,
+                                                                event.target
+                                                                    .value as StatisticsChartType,
+                                                            )
+                                                        }
+                                                    >
+                                                        <option value="bar">
+                                                            柱状图
+                                                        </option>
+                                                        <option value="pie">
+                                                            饼图
+                                                        </option>
+                                                        <option value="line">
+                                                            折线图
+                                                        </option>
+                                                        <option value="table">
+                                                            表格
+                                                        </option>
+                                                    </select>
+                                                </label>
+                                            </div>
+                                        </article>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            ) : null}
+
             {activeSettingsSection === "ai" ? (
                 <section className="settings-section">
                     <div className="settings-section-head">
                         <h3>AI 设置</h3>
-                        <p>统一维护模型提供商、模型路由，以及当前文件的阶段任务绑定。</p>
+                        <p>
+                            统一维护模型提供商、模型路由，以及当前文件的阶段任务绑定。
+                        </p>
                     </div>
                     <div className="settings-grid">
                         <div className="settings-subsection">
@@ -236,7 +356,9 @@ export function SettingsPage({
                                     <div className="settings-task-group-head">
                                         <div>
                                             <h5>题目详情聊天</h5>
-                                            <span>独立于检测阶段的聊天任务</span>
+                                            <span>
+                                                独立于检测阶段的聊天任务
+                                            </span>
                                         </div>
                                         <button
                                             type="button"
@@ -277,6 +399,99 @@ export function SettingsPage({
                                         </div>
                                     </div>
                                 </div>
+
+                                <div className="settings-task-group">
+                                    <div className="settings-task-group-head">
+                                        <div>
+                                            <h5>数据清洗阶段</h5>
+                                            <span>
+                                                独立于检测与聊天的结构化清洗工具
+                                            </span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={
+                                                onOpenAICleaningConfigModal
+                                            }
+                                        >
+                                            配置清洗工具
+                                        </button>
+                                    </div>
+                                    <div className="settings-stage-list">
+                                        {AI_CLEANING_TOOL_ORDER.map(
+                                            (toolKey) => {
+                                                const toolConfig =
+                                                    cleaningConfig[toolKey];
+                                                const toolLabel =
+                                                    AI_CLEANING_TOOL_LABELS[
+                                                        toolKey
+                                                    ];
+                                                const route = routeMap.get(
+                                                    toolConfig.routeName,
+                                                );
+                                                const providerSummary = route
+                                                    ? route.steps
+                                                          .map((step) => {
+                                                              const provider =
+                                                                  providerMap.get(
+                                                                      step.providerName,
+                                                                  );
+                                                              return (
+                                                                  provider?.name ??
+                                                                  step.providerName
+                                                              );
+                                                          })
+                                                          .join(" -> ")
+                                                    : "未配置提供商";
+                                                const mappedCount =
+                                                    toolConfig.outputMappings.filter(
+                                                        (item) =>
+                                                            item.targetFieldKey.trim()
+                                                                .length > 0,
+                                                    ).length;
+                                                return (
+                                                    <div
+                                                        key={toolKey}
+                                                        className="settings-stage-item"
+                                                    >
+                                                        <div className="settings-stage-title">
+                                                            <strong>
+                                                                {
+                                                                    toolLabel.title
+                                                                }
+                                                            </strong>
+                                                            <span className="settings-tag">
+                                                                {toolConfig.routeName ||
+                                                                    "未绑定路由"}
+                                                            </span>
+                                                            <span className="settings-tag">
+                                                                {
+                                                                    providerSummary
+                                                                }
+                                                            </span>
+                                                        </div>
+                                                        <div className="settings-stage-meta">
+                                                            <span>{`提交字段 ${toolConfig.submitFieldKeys.length} 个`}</span>
+                                                            <span>{`输出映射 ${mappedCount}/${toolLabel.outputKeys.length}`}</span>
+                                                            <span>
+                                                                {toolConfig.autoFillEnabled
+                                                                    ? "自动回填开启"
+                                                                    : "自动回填关闭"}
+                                                            </span>
+                                                            <span>{`模型 ${route?.model || "-"}`}</span>
+                                                        </div>
+                                                        <div className="settings-stage-prompt">
+                                                            {getPromptPreview(
+                                                                toolConfig.prompt,
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            },
+                                        )}
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -296,10 +511,13 @@ export function SettingsPage({
                                             >
                                                 <strong>{provider.name}</strong>
                                                 <span>
-                                                    {getProviderTypeLabel(provider.apiType)}
+                                                    {getProviderTypeLabel(
+                                                        provider.apiType,
+                                                    )}
                                                 </span>
                                                 <span className="settings-config-url">
-                                                    {provider.apiUrl || "未配置 API URL"}
+                                                    {provider.apiUrl ||
+                                                        "未配置 API URL"}
                                                 </span>
                                             </div>
                                         ))
@@ -336,12 +554,18 @@ export function SettingsPage({
                                                 className="settings-config-item"
                                             >
                                                 <strong>{route.name}</strong>
-                                                <span>{route.model || "未配置模型"}</span>
+                                                <span>
+                                                    {route.model ||
+                                                        "未配置模型"}
+                                                </span>
                                                 <span>{`重试 ${route.retryCount} 次`}</span>
                                                 <span className="settings-config-url">
                                                     {route.steps.length > 0
                                                         ? route.steps
-                                                              .map((step) => step.providerName)
+                                                              .map(
+                                                                  (step) =>
+                                                                      step.providerName,
+                                                              )
                                                               .join(" -> ")
                                                         : "未配置回退步骤"}
                                                 </span>
@@ -364,7 +588,6 @@ export function SettingsPage({
                                 </button>
                             </div>
                         </div>
-
                     </div>
                 </section>
             ) : null}

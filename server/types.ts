@@ -18,6 +18,14 @@ export interface ParsedRow {
     rowId: string;
     values: Record<string, ParsedCell>;
     aiResults?: Record<string, string>;
+    cleaningResults?: Record<
+        string,
+        {
+            responseText: string;
+            parsedJsonText?: string;
+            updatedAt?: string;
+        }
+    >;
 }
 
 export interface ParsedWorkbook {

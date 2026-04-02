@@ -7,6 +7,8 @@ import {
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
+    AI_CLEANING_TOOL_LABELS,
+    AI_CLEANING_TOOL_ORDER,
     AI_RUN_ALL_KEY,
     AI_RUN_ALL_LABEL,
     AI_RUN_STAGE_ORDER,
@@ -15,9 +17,13 @@ import {
     MAX_AI_BATCH_CONCURRENCY,
     MIN_AI_BATCH_CONCURRENCY,
 } from "./app/constants";
-import { normalizeAIBatchConcurrency } from "./app/ai-helpers";
+import {
+    normalizeAIBatchConcurrency,
+    parseAIResultJSON,
+} from "./app/ai-helpers";
 import { HeaderBar } from "./app/components/HeaderBar";
 import { WorkspaceSidebar } from "./app/components/WorkspaceSidebar";
+import { DashboardPage } from "./app/components/DashboardPage";
 import { ListPage } from "./app/components/ListPage";
 import { DetailPage } from "./app/components/DetailPage";
 import { SettingsPage } from "./app/components/SettingsPage";
@@ -27,6 +33,7 @@ import { AIRouteModal } from "./app/components/AIRouteModal";
 import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
 import { AIRunModal } from "./app/components/AIRunModal";
 import { AIChatConfigModal } from "./app/components/AIChatConfigModal";
+import { AICleaningConfigModal } from "./app/components/AICleaningConfigModal";
 import { AIChatSidebar } from "./app/components/AIChatSidebar";
 import { ImageLightbox } from "./app/components/ImageLightbox";
 import { FilterConfigModal } from "./app/components/FilterConfigModal";
@@ -89,10 +96,13 @@ function App() {
         flushPendingAIResults,
         latestFileStateRef,
         updateRowAIResult,
+        updateRowCleaningResult,
         onEditCell,
         onToggleDisplayColumn,
         onUpdateFilterConditions,
         onClearFilterConditions,
+        onToggleStatisticsField,
+        onSetStatisticsChartType,
         onOpenActiveFileConfig,
         onTogglePendingDisplayColumn,
         onTogglePendingEditableColumn,
@@ -144,6 +154,7 @@ function App() {
         isAIProfileModalOpen,
         isAIRouteModalOpen,
         isAIChatConfigModalOpen,
+        isAICleaningConfigModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -172,20 +183,31 @@ function App() {
         setActiveChatRouteName,
         isAIChatting,
         aiChatElapsedText,
+        isAICleaning,
+        activeAICleaningToolKey,
+        aiCleaningElapsedText,
+        aiCleaningStreamText,
+        aiCleaningStatusMessage,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
         onOpenAIChatConfigModal,
+        onOpenAICleaningConfigModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
         onCancelAIRouteModal,
         onCancelAIChatConfigModal,
+        onCancelAICleaningConfigModal,
         onToggleDraftAISubmitField,
         onToggleDraftAIChatSubmitField,
+        onToggleDraftAICleaningSubmitField,
+        onUpdateDraftAICleaningOutputMapping,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
         onSaveAIRouteConfig,
         onSaveAIChatConfig,
+        onSaveAICleaningConfig,
+        onRunAICleaning,
         onRunAIDetect,
         onRunAllAIDetect,
         onRunBatchAIAnswer,
@@ -201,6 +223,7 @@ function App() {
         setErrorMessage,
         navigateToSection,
         updateRowAIResult,
+        updateRowCleaningResult,
         persistFileState,
         flushPendingAIResults,
         latestFileStateRef,
@@ -208,7 +231,7 @@ function App() {
 
     useEffect(() => {
         if (initialLoadComplete && !activeFile) {
-            navigateToSection("list", activeSettingsSection, null, {
+            navigateToSection("dashboard", activeSettingsSection, null, {
                 replace: true,
             });
         }
@@ -269,9 +292,79 @@ function App() {
         }));
     };
 
+    const level3TagsFieldKey = useMemo(
+        () =>
+            aiConfig.cleaning.generate_level3_tags.outputMappings.find(
+                (item) => item.outputKey === "tags",
+            )?.targetFieldKey ?? "",
+        [aiConfig.cleaning.generate_level3_tags.outputMappings],
+    );
+    const onRemoveLevel3Tag = async (tag: string) => {
+        if (!selectedRow || !activeFile) {
+            return;
+        }
+        const currentResult =
+            selectedRow.cleaningResults?.generate_level3_tags ?? null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "");
+        if (!parsed || !Array.isArray(parsed.tags)) {
+            return;
+        }
+        const nextTags = parsed.tags
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0 && item !== tag);
+        const nextParsed = {
+            ...parsed,
+            tags: nextTags,
+        };
+        const nextParsedJsonText = JSON.stringify(nextParsed);
+        const nextResponseText = JSON.stringify(nextParsed, null, 2);
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(activeFile.fileId)}/cleaning-results/generate_level3_tags`,
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    rowId: selectedRow.rowId,
+                    fileName: activeFile.fileName,
+                    responseText: nextResponseText,
+                    parsedJsonText: nextParsedJsonText,
+                }),
+            },
+        );
+        if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+                message?: string;
+            };
+            setErrorMessage(payload.message ?? "删除标签失败");
+            return;
+        }
+
+        const mappedFieldValues =
+            level3TagsFieldKey.trim().length > 0
+                ? { [level3TagsFieldKey]: nextTags.join(", ") }
+                : undefined;
+        updateRowCleaningResult(
+            activeFile.fileId,
+            selectedRow.rowId,
+            "generate_level3_tags",
+            {
+                responseText: nextResponseText,
+                parsedJsonText: nextParsedJsonText,
+                updatedAt: new Date().toISOString(),
+            },
+            mappedFieldValues,
+        );
+    };
+
     const { renderDetailField, renderListReadonlyCell, getListCellTitle } =
         useCellRenderers({
             selectedRow,
+            level3TagsFieldKey,
             latexRenderOverrides,
             onToggleLatexRender,
             onToggleDisplayColumn,
@@ -283,6 +376,7 @@ function App() {
     const isDetailView = activeSection === "list" && selectedRowId !== null;
     const isDetailChatSidebarVisible =
         isDetailView && activeFile !== null && !isDetailChatSidebarHidden;
+    const showWorkspaceTopbar = isDetailView || activeSection !== "dashboard";
 
     const startResizeDetailChatSidebar = (
         event: ReactMouseEvent<HTMLButtonElement>,
@@ -351,251 +445,325 @@ function App() {
                         </section>
                     ) : (
                         <>
-                            <section className="workspace-topbar">
-                                <div className="toolbar page-toolbar">
-                                    {activeSection === "list" && !isDetailView ? (
-                                        <div className="list-toolbar">
-                                            <div className="filter-bar">
-                                                <button
-                                                    type="button"
-                                                    className={`btn ${activeFile.filterConditions.length > 0 ? "btn-primary" : ""}`}
-                                                    onClick={() =>
-                                                        setIsFilterModalOpen(
-                                                            true,
-                                                        )
-                                                    }
-                                                >
-                                                    {activeFile.filterConditions
-                                                        .length > 0
-                                                        ? `筛选条件 ${activeFile.filterConditions.length}`
-                                                        : "添加筛选"}
-                                                </button>
-                                                {activeFile.filterConditions
-                                                    .length > 0 ? (
+                            {showWorkspaceTopbar ? (
+                                <section className="workspace-topbar">
+                                    <div className="toolbar page-toolbar">
+                                        {activeSection === "list" &&
+                                        !isDetailView ? (
+                                            <div className="list-toolbar">
+                                                <div className="filter-bar">
                                                     <button
                                                         type="button"
-                                                        className="btn"
-                                                        onClick={
-                                                            onClearFilterConditions
+                                                        className={`btn ${activeFile.filterConditions.length > 0 ? "btn-primary" : ""}`}
+                                                        onClick={() =>
+                                                            setIsFilterModalOpen(
+                                                                true,
+                                                            )
                                                         }
                                                     >
-                                                        清空筛选
+                                                        {activeFile
+                                                            .filterConditions
+                                                            .length > 0
+                                                            ? `筛选条件 ${activeFile.filterConditions.length}`
+                                                            : "添加筛选"}
                                                     </button>
-                                                ) : null}
-                                            </div>
-                                            <div className="batch-bar">
-                                                <div className="batch-bar-controls">
-                                                    <label className="batch-control">
-                                                        <span>运行阶段</span>
-                                                        <select
-                                                            value={
-                                                                activeAIRunKey
+                                                    {activeFile.filterConditions
+                                                        .length > 0 ? (
+                                                        <button
+                                                            type="button"
+                                                            className="btn"
+                                                            onClick={
+                                                                onClearFilterConditions
                                                             }
-                                                            onChange={(event) =>
-                                                                setActiveAIRunKey(
-                                                                    event.target
-                                                                        .value as typeof activeAIRunKey,
-                                                                )
+                                                        >
+                                                            清空筛选
+                                                        </button>
+                                                    ) : null}
+                                                </div>
+                                                <div className="batch-bar">
+                                                    <div className="batch-bar-controls">
+                                                        <label className="batch-control">
+                                                            <span>AI工具</span>
+                                                            <select
+                                                                value={
+                                                                    activeAIRunKey
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setActiveAIRunKey(
+                                                                        event
+                                                                            .target
+                                                                            .value as typeof activeAIRunKey,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    aiConfigLoading ||
+                                                                    isAIDetecting ||
+                                                                    isAICleaning ||
+                                                                    isAIBatchRunning
+                                                                }
+                                                            >
+                                                                <optgroup label="AI检测">
+                                                                    {AI_RUN_STAGE_ORDER.map(
+                                                                        (
+                                                                            stageKey,
+                                                                        ) => (
+                                                                            <option
+                                                                                key={
+                                                                                    stageKey
+                                                                                }
+                                                                                value={
+                                                                                    stageKey
+                                                                                }
+                                                                            >
+                                                                                {stageKey ===
+                                                                                AI_RUN_ALL_KEY
+                                                                                    ? AI_RUN_ALL_LABEL
+                                                                                    : (AI_STAGE_LABELS[
+                                                                                          stageKey
+                                                                                      ]
+                                                                                          ?.shortTitle ??
+                                                                                      stageKey)}
+                                                                            </option>
+                                                                        ),
+                                                                    )}
+                                                                </optgroup>
+                                                                <optgroup label="数据清洗">
+                                                                    {AI_CLEANING_TOOL_ORDER.map(
+                                                                        (
+                                                                            toolKey,
+                                                                        ) => (
+                                                                            <option
+                                                                                key={
+                                                                                    toolKey
+                                                                                }
+                                                                                value={
+                                                                                    toolKey
+                                                                                }
+                                                                            >
+                                                                                {
+                                                                                    AI_CLEANING_TOOL_LABELS[
+                                                                                        toolKey
+                                                                                    ]
+                                                                                        .shortTitle
+                                                                                }
+                                                                            </option>
+                                                                        ),
+                                                                    )}
+                                                                </optgroup>
+                                                            </select>
+                                                        </label>
+                                                        <label className="batch-control">
+                                                            <span>
+                                                                批量并发
+                                                            </span>
+                                                            <input
+                                                                type="number"
+                                                                min={
+                                                                    MIN_AI_BATCH_CONCURRENCY
+                                                                }
+                                                                max={
+                                                                    MAX_AI_BATCH_CONCURRENCY
+                                                                }
+                                                                step={1}
+                                                                value={
+                                                                    aiBatchConcurrency
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setAIBatchConcurrency(
+                                                                        normalizeAIBatchConcurrency(
+                                                                            Number(
+                                                                                event
+                                                                                    .target
+                                                                                    .value,
+                                                                            ),
+                                                                        ),
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    isAIBatchRunning
+                                                                }
+                                                            />
+                                                        </label>
+                                                    </div>
+                                                    <div className="batch-bar-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="btn"
+                                                            onClick={
+                                                                onSelectAllBatchRows
+                                                            }
+                                                            disabled={
+                                                                visibleRows.length ===
+                                                                    0 ||
+                                                                isAIBatchRunning
+                                                            }
+                                                        >
+                                                            {batchSelectedRowIds.length ===
+                                                                visibleRows.length &&
+                                                            visibleRows.length >
+                                                                0
+                                                                ? "取消全选"
+                                                                : "全选可见"}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn"
+                                                            onClick={
+                                                                onClearBatchRows
+                                                            }
+                                                            disabled={
+                                                                batchSelectedRowIds.length ===
+                                                                    0 ||
+                                                                isAIBatchRunning
+                                                            }
+                                                        >
+                                                            清空勾选
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-primary"
+                                                            onClick={
+                                                                onRunSelectedBatchAIAnswer
                                                             }
                                                             disabled={
                                                                 aiConfigLoading ||
                                                                 isAIDetecting ||
-                                                                isAIBatchRunning
+                                                                isAIChatting ||
+                                                                isAICleaning ||
+                                                                isAIBatchRunning ||
+                                                                batchSelectedRowIds.length ===
+                                                                    0
                                                             }
                                                         >
-                                                            {AI_RUN_STAGE_ORDER.map(
-                                                                (stageKey) => (
-                                                                    <option
-                                                                        key={
-                                                                            stageKey
-                                                                        }
-                                                                        value={
-                                                                            stageKey
-                                                                        }
-                                                                    >
-                                                                        {stageKey ===
-                                                                        AI_RUN_ALL_KEY
-                                                                            ? AI_RUN_ALL_LABEL
-                                                                            : (AI_STAGE_LABELS[
-                                                                                  stageKey
-                                                                              ]
-                                                                                  ?.shortTitle ??
-                                                                              stageKey)}
-                                                                    </option>
-                                                                ),
-                                                            )}
-                                                        </select>
-                                                    </label>
-                                                    <label className="batch-control">
-                                                        <span>批量并发</span>
-                                                        <input
-                                                            type="number"
-                                                            min={
-                                                                MIN_AI_BATCH_CONCURRENCY
-                                                            }
-                                                            max={
-                                                                MAX_AI_BATCH_CONCURRENCY
-                                                            }
-                                                            step={1}
-                                                            value={
-                                                                aiBatchConcurrency
-                                                            }
-                                                            onChange={(event) =>
-                                                                setAIBatchConcurrency(
-                                                                    normalizeAIBatchConcurrency(
-                                                                        Number(
-                                                                            event
-                                                                                .target
-                                                                                .value,
-                                                                        ),
-                                                                    ),
-                                                                )
-                                                            }
-                                                            disabled={
-                                                                isAIBatchRunning
-                                                            }
-                                                        />
-                                                    </label>
-                                                </div>
-                                                <div className="batch-bar-actions">
-                                                    <button
-                                                        type="button"
-                                                        className="btn"
-                                                        onClick={
-                                                            onSelectAllBatchRows
-                                                        }
-                                                        disabled={
-                                                            visibleRows.length ===
-                                                                0 ||
-                                                            isAIBatchRunning
-                                                        }
-                                                    >
-                                                        {batchSelectedRowIds.length ===
-                                                            visibleRows.length &&
-                                                        visibleRows.length > 0
-                                                            ? "取消全选"
-                                                            : "全选可见"}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className="btn"
-                                                        onClick={
-                                                            onClearBatchRows
-                                                        }
-                                                        disabled={
-                                                            batchSelectedRowIds.length ===
-                                                                0 ||
-                                                            isAIBatchRunning
-                                                        }
-                                                    >
-                                                        清空勾选
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-primary"
-                                                        onClick={
-                                                            onRunSelectedBatchAIAnswer
-                                                        }
-                                                        disabled={
-                                                            aiConfigLoading ||
-                                                            isAIDetecting ||
-                                                            isAIBatchRunning ||
-                                                            batchSelectedRowIds.length ===
-                                                                0
-                                                        }
-                                                    >
-                                                        {isAIBatchRunning
-                                                            ? "AI批量回答中..."
-                                                            : `批量回答已选 ${batchSelectedRowIds.length} 条`}
-                                                    </button>
+                                                            {isAIBatchRunning
+                                                                ? "AI批量运行中..."
+                                                                : `批量运行已选 ${batchSelectedRowIds.length} 条`}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    ) : null}
-                                    {isDetailView ? (
-                                        <div className="toolbar-actions">
-                                            <button
-                                                type="button"
-                                                className="btn"
-                                                onClick={() =>
-                                                    navigateToSection("list")
-                                                }
-                                            >
-                                                返回列表
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn"
-                                                onClick={() =>
-                                                    previousRow &&
-                                                    openRowDetail(
-                                                        previousRow.rowId,
-                                                    )
-                                                }
-                                                disabled={!previousRow}
-                                            >
-                                                上一题
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn"
-                                                onClick={() =>
-                                                    nextRow &&
-                                                    openRowDetail(nextRow.rowId)
-                                                }
-                                                disabled={!nextRow}
-                                            >
-                                                下一题
-                                            </button>
-                                            {!isDetailChatSidebarVisible ? (
+                                        ) : null}
+                                        {isDetailView ? (
+                                            <div className="toolbar-actions">
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost detail-chat-open-btn detail-chat-open-toolbar"
+                                                    className="btn"
                                                     onClick={() =>
-                                                        setIsDetailChatSidebarHidden(
-                                                            false,
+                                                        navigateToSection(
+                                                            "list",
                                                         )
                                                     }
-                                                    aria-label="显示 AI 聊天"
-                                                    title="显示 AI 聊天"
                                                 >
-                                                    <IconMessageSquare />
+                                                    返回列表
                                                 </button>
-                                            ) : null}
-                                        </div>
-                                    ) : null}
-                                    {activeSection === "settings" ? (
-                                        <div className="settings-tabs">
-                                            <button
-                                                type="button"
-                                                className={`btn ${activeSettingsSection === "fields" ? "btn-primary" : ""}`}
-                                                onClick={() =>
-                                                    navigateToSection(
-                                                        "settings",
-                                                        "fields",
-                                                    )
-                                                }
-                                            >
-                                                字段设置
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className={`btn ${activeSettingsSection === "ai" ? "btn-primary" : ""}`}
-                                                onClick={() =>
-                                                    navigateToSection(
-                                                        "settings",
-                                                        "ai",
-                                                    )
-                                                }
-                                            >
-                                                AI 设置
-                                            </button>
-                                        </div>
-                                    ) : null}
-                                </div>
-                            </section>
+                                                <button
+                                                    type="button"
+                                                    className="btn"
+                                                    onClick={() =>
+                                                        previousRow &&
+                                                        openRowDetail(
+                                                            previousRow.rowId,
+                                                        )
+                                                    }
+                                                    disabled={!previousRow}
+                                                >
+                                                    上一题
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn"
+                                                    onClick={() =>
+                                                        nextRow &&
+                                                        openRowDetail(
+                                                            nextRow.rowId,
+                                                        )
+                                                    }
+                                                    disabled={!nextRow}
+                                                >
+                                                    下一题
+                                                </button>
+                                                {!isDetailChatSidebarVisible ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost detail-chat-open-btn detail-chat-open-toolbar"
+                                                        onClick={() =>
+                                                            setIsDetailChatSidebarHidden(
+                                                                false,
+                                                            )
+                                                        }
+                                                        aria-label="显示 AI 聊天"
+                                                        title="显示 AI 聊天"
+                                                    >
+                                                        <IconMessageSquare />
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
+                                        {activeSection === "settings" ? (
+                                            <div className="settings-tabs">
+                                                <button
+                                                    type="button"
+                                                    className={`btn ${activeSettingsSection === "fields" ? "btn-primary" : ""}`}
+                                                    onClick={() =>
+                                                        navigateToSection(
+                                                            "settings",
+                                                            "fields",
+                                                        )
+                                                    }
+                                                >
+                                                    字段设置
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className={`btn ${activeSettingsSection === "statistics" ? "btn-primary" : ""}`}
+                                                    onClick={() =>
+                                                        navigateToSection(
+                                                            "settings",
+                                                            "statistics",
+                                                        )
+                                                    }
+                                                >
+                                                    统计设置
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className={`btn ${activeSettingsSection === "ai" ? "btn-primary" : ""}`}
+                                                    onClick={() =>
+                                                        navigateToSection(
+                                                            "settings",
+                                                            "ai",
+                                                        )
+                                                    }
+                                                >
+                                                    AI 设置
+                                                </button>
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                </section>
+                            ) : null}
 
                             <section className="workspace-view">
+                                {activeSection === "dashboard" ? (
+                                    <section className="page-panel">
+                                        <DashboardPage
+                                            files={files}
+                                            activeFile={activeFile}
+                                            onSelectFile={setActiveFileId}
+                                            onOpenStatisticsSettings={() =>
+                                                navigateToSection(
+                                                    "settings",
+                                                    "statistics",
+                                                )
+                                            }
+                                        />
+                                    </section>
+                                ) : null}
+
                                 {activeSection === "list" && !isDetailView ? (
                                     <section className="page-panel">
                                         <ListPage
@@ -657,6 +825,26 @@ function App() {
                                                 renderDetailField
                                             }
                                             aiResults={selectedRow?.aiResults}
+                                            cleaningResults={
+                                                selectedRow?.cleaningResults
+                                            }
+                                            isAICleaning={isAICleaning}
+                                            activeAICleaningToolKey={
+                                                activeAICleaningToolKey
+                                            }
+                                            aiCleaningElapsedText={
+                                                aiCleaningElapsedText
+                                            }
+                                            aiCleaningStreamText={
+                                                aiCleaningStreamText
+                                            }
+                                            aiCleaningStatusMessage={
+                                                aiCleaningStatusMessage
+                                            }
+                                            onRemoveLevel3Tag={
+                                                onRemoveLevel3Tag
+                                            }
+                                            onRunAICleaning={onRunAICleaning}
                                         />
                                     </section>
                                 ) : null}
@@ -674,6 +862,12 @@ function App() {
                                             onOpenActiveFileConfig={
                                                 onOpenActiveFileConfig
                                             }
+                                            onToggleStatisticsField={
+                                                onToggleStatisticsField
+                                            }
+                                            onSetStatisticsChartType={
+                                                onSetStatisticsChartType
+                                            }
                                             onOpenAIStageConfigModal={
                                                 onOpenAIStageConfigModal
                                             }
@@ -685,6 +879,9 @@ function App() {
                                             }
                                             onOpenAIChatConfigModal={
                                                 onOpenAIChatConfigModal
+                                            }
+                                            onOpenAICleaningConfigModal={
+                                                onOpenAICleaningConfigModal
                                             }
                                         />
                                     </section>
@@ -788,11 +985,26 @@ function App() {
                 setDraftAIConfig={setDraftAIConfig}
                 aiSubmitFieldColumns={aiSubmitFieldColumns}
                 aiConfigSaving={aiConfigSaving}
-                onToggleDraftAIChatSubmitField={
-                    onToggleDraftAIChatSubmitField
-                }
+                onToggleDraftAIChatSubmitField={onToggleDraftAIChatSubmitField}
                 onCancel={onCancelAIChatConfigModal}
                 onSave={onSaveAIChatConfig}
+            />
+            <AICleaningConfigModal
+                isOpen={isAICleaningConfigModalOpen}
+                activeFile={activeFile}
+                aiConfigFormMessage={aiConfigFormMessage}
+                draftAIConfig={draftAIConfig}
+                setDraftAIConfig={setDraftAIConfig}
+                aiSubmitFieldColumns={aiSubmitFieldColumns}
+                aiConfigSaving={aiConfigSaving}
+                onToggleDraftAICleaningSubmitField={
+                    onToggleDraftAICleaningSubmitField
+                }
+                onUpdateDraftAICleaningOutputMapping={
+                    onUpdateDraftAICleaningOutputMapping
+                }
+                onCancel={onCancelAICleaningConfigModal}
+                onSave={onSaveAICleaningConfig}
             />
             <AIRunModal
                 isOpen={isAIRunModalOpen}

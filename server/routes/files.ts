@@ -4,20 +4,29 @@ import { randomUUID } from "node:crypto";
 import { mergeImportedFileState } from "../importState.js";
 import { parseWorkbook } from "../excelParser.js";
 import {
+    deleteFileAICleaningResults,
     createDatabaseBackup,
     deleteFileState,
+    listFileAICleaningResults,
     getFileState,
     getColumnPrefs,
     listFileStates,
     saveColumnPrefs,
+    saveFileAICleaningToolResult,
     saveFileState,
     updateFileStateAIResults,
+    type AICleaningToolKey,
+    type FileAICleaningToolResult,
 } from "../db.js";
 type AIDetectStageKey =
     | "precheck"
     | "context_audit"
     | "independent_solving"
     | "final_verdict";
+const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
+    "generate_level3_tags",
+    "biochem_level1_refine",
+];
 
 const AI_STAGE_ORDER: AIDetectStageKey[] = [
     "precheck",
@@ -28,6 +37,8 @@ const AI_STAGE_ORDER: AIDetectStageKey[] = [
 
 const isAIDetectStageKey = (value: unknown): value is AIDetectStageKey =>
     AI_STAGE_ORDER.includes(value as AIDetectStageKey);
+const isAICleaningToolKey = (value: unknown): value is AICleaningToolKey =>
+    AI_CLEANING_TOOL_ORDER.includes(value as AICleaningToolKey);
 
 const SHOULD_LOG_AI_RESULTS = process.env.DEBUG_AI_RESULTS === "1";
 
@@ -130,6 +141,62 @@ function summarizeFileStateAIResults(state: unknown): {
     };
 }
 
+function attachCleaningResultsToState(
+    state: unknown,
+    cleaningResultsByTool: Partial<
+        Record<AICleaningToolKey, Record<string, FileAICleaningToolResult>>
+    >,
+): unknown {
+    if (!state || typeof state !== "object") {
+        return state;
+    }
+    const record = state as {
+        rows?: unknown;
+    };
+    if (!Array.isArray(record.rows)) {
+        return state;
+    }
+
+    const rows = record.rows.map((row) => {
+        if (!row || typeof row !== "object") {
+            return row;
+        }
+        const candidate = row as {
+            rowId?: unknown;
+            cleaningResults?: unknown;
+        };
+        if (typeof candidate.rowId !== "string") {
+            return row;
+        }
+        const rowId = candidate.rowId;
+        const mergedCleaningResults: Partial<
+            Record<AICleaningToolKey, FileAICleaningToolResult>
+        > = {};
+        AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+            const toolResults = cleaningResultsByTool[toolKey];
+            const result = toolResults?.[rowId];
+            if (result) {
+                mergedCleaningResults[toolKey] = result;
+            }
+        });
+        if (Object.keys(mergedCleaningResults).length === 0) {
+            return {
+                ...(row as Record<string, unknown>),
+                cleaningResults: undefined,
+            };
+        }
+        return {
+            ...(row as Record<string, unknown>),
+            cleaningResults: mergedCleaningResults,
+        };
+    });
+
+    return {
+        ...(state as Record<string, unknown>),
+        rows,
+    };
+}
+
 export const registerFileRoutes = (app: Express, upload: Multer) => {
     app.post("/api/files/upload", upload.single("file"), async (req, res) => {
         try {
@@ -205,7 +272,12 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
     });
 
     app.get("/api/files", (_req, res) => {
-        const files = listFileStates().map((item) => item.state);
+        const files = listFileStates().map((item) =>
+            attachCleaningResultsToState(
+                item.state,
+                listFileAICleaningResults(item.fileId),
+            ),
+        );
         if (SHOULD_LOG_AI_RESULTS) {
             files.forEach((state) => {
                 const summary = summarizeFileStateAIResults(state);
@@ -344,9 +416,58 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         return res.json({ ok: true, updatedCount });
     });
 
+    app.put("/api/files/:fileId/cleaning-results/:toolKey", (req, res) => {
+        const { fileId, toolKey } = req.params;
+        const {
+            rowId,
+            fileName,
+            responseText,
+            parsedJsonText,
+        } = req.body as {
+            rowId?: unknown;
+            fileName?: unknown;
+            responseText?: unknown;
+            parsedJsonText?: unknown;
+        };
+
+        if (!isAICleaningToolKey(toolKey)) {
+            return res.status(400).json({ message: "toolKey is invalid" });
+        }
+        if (typeof rowId !== "string" || rowId.trim().length === 0) {
+            return res.status(400).json({ message: "rowId must be a non-empty string" });
+        }
+        if (typeof fileName !== "string" || fileName.trim().length === 0) {
+            return res.status(400).json({ message: "fileName must be a non-empty string" });
+        }
+        if (
+            typeof responseText !== "string" ||
+            responseText.trim().length === 0
+        ) {
+            return res.status(400).json({ message: "responseText must be a non-empty string" });
+        }
+        if (
+            parsedJsonText !== undefined &&
+            parsedJsonText !== null &&
+            typeof parsedJsonText !== "string"
+        ) {
+            return res.status(400).json({ message: "parsedJsonText must be a string" });
+        }
+
+        saveFileAICleaningToolResult(
+            fileId,
+            fileName.trim(),
+            rowId.trim(),
+            toolKey,
+            responseText,
+            typeof parsedJsonText === "string" ? parsedJsonText : undefined,
+        );
+        return res.json({ ok: true });
+    });
+
     app.delete("/api/files/:fileId", (req, res) => {
         const { fileId } = req.params;
         deleteFileState(fileId);
+        deleteFileAICleaningResults(fileId);
         return res.json({ ok: true });
     });
 

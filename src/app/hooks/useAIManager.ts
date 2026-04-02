@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+    AIBatchToolKey,
+    AICleaningToolResult,
+    AICleaningToolKey,
     AIDetectConfig,
     AIDetectRunKey,
     AIDetectStageKey,
@@ -10,6 +13,8 @@ import type {
 } from "../../types";
 import type { MainSection, SettingsSection } from "../types";
 import {
+    AI_CLEANING_TOOL_LABELS,
+    AI_CLEANING_TOOL_ORDER,
     AI_RUN_ALL_KEY,
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
@@ -28,6 +33,7 @@ import {
     normalizeAIDetectConfigForColumns,
     normalizeLoadedNamedAIDetectConfigs,
     normalizeNamedAIDetectConfigsForColumns,
+    parseAIResultJSON,
     requestAIChatResult,
     requestAIDetectResult,
 } from "../ai-helpers";
@@ -63,6 +69,7 @@ export const useAIManager = ({
     setErrorMessage,
     navigateToSection,
     updateRowAIResult,
+    updateRowCleaningResult,
     persistFileState,
     flushPendingAIResults,
     latestFileStateRef,
@@ -79,6 +86,13 @@ export const useAIManager = ({
         stageKey: AIDetectStageKey,
         resultText: string,
     ) => void;
+    updateRowCleaningResult: (
+        fileId: string,
+        rowId: string,
+        toolKey: AICleaningToolKey,
+        result: AICleaningToolResult,
+        mappedFieldValues?: Record<string, string>,
+    ) => void;
     persistFileState: (file: FileViewState) => Promise<void>;
     flushPendingAIResults: (fileId: string) => Promise<void>;
     latestFileStateRef: React.MutableRefObject<Record<string, FileViewState>>;
@@ -88,6 +102,8 @@ export const useAIManager = ({
     const [isAIProfileModalOpen, setIsAIProfileModalOpen] = useState(false);
     const [isAIRouteModalOpen, setIsAIRouteModalOpen] = useState(false);
     const [isAIChatConfigModalOpen, setIsAIChatConfigModalOpen] =
+        useState(false);
+    const [isAICleaningConfigModalOpen, setIsAICleaningConfigModalOpen] =
         useState(false);
     const [aiConfigLoading, setAIConfigLoading] = useState(false);
     const [aiConfigSaving, setAIConfigSaving] = useState(false);
@@ -114,7 +130,7 @@ export const useAIManager = ({
     const [aiResultText, setAIResultText] = useState("");
     const [aiResultMessage, setAIResultMessage] = useState("");
     const [activeAIRunKey, setActiveAIRunKey] =
-        useState<AIDetectRunKey>("precheck");
+        useState<AIBatchToolKey>("precheck");
     const [aiModalStageKey, setAiModalStageKey] =
         useState<AIDetectStageKey>("precheck");
     const [aiDetectElapsedMs, setAIDetectElapsedMs] = useState(0);
@@ -127,7 +143,10 @@ export const useAIManager = ({
         DEFAULT_AI_BATCH_CONCURRENCY,
     );
     const [rowStreamProgress, setRowStreamProgress] = useState<
-        Record<string, Partial<Record<AIDetectStageKey, number>>>
+        Record<
+            string,
+            Partial<Record<AIDetectStageKey | AICleaningToolKey, number>>
+        >
     >({});
     const [rowBatchStatuses, setRowBatchStatuses] = useState<
         Record<string, "success" | "failed">
@@ -138,18 +157,33 @@ export const useAIManager = ({
     const [activeChatRouteName, setActiveChatRouteName] = useState("");
     const [isAIChatting, setIsAIChatting] = useState(false);
     const [aiChatElapsedMs, setAIChatElapsedMs] = useState(0);
+    const [isAICleaning, setIsAICleaning] = useState(false);
+    const [activeAICleaningToolKey, setActiveAICleaningToolKey] =
+        useState<AICleaningToolKey | null>(null);
+    const [aiCleaningElapsedMs, setAICleaningElapsedMs] = useState(0);
+    const [aiCleaningStreamText, setAICleaningStreamText] = useState("");
+    const [aiCleaningStatusMessage, setAICleaningStatusMessage] =
+        useState("");
 
     const aiStreamAbortRef = useRef<AbortController | null>(null);
     const aiChatAbortRef = useRef<AbortController | null>(null);
+    const aiCleaningAbortRef = useRef<AbortController | null>(null);
     const aiBatchAbortRef = useRef<AbortController | null>(null);
     const aiDetectStartedAtRef = useRef<number | null>(null);
     const aiChatStartedAtRef = useRef<number | null>(null);
+    const aiCleaningStartedAtRef = useRef<number | null>(null);
     const aiBatchPersistTimerRef = useRef<number | null>(null);
     const rowStreamCharsRef = useRef<
-        Record<string, Partial<Record<AIDetectStageKey, number>>>
+        Record<
+            string,
+            Partial<Record<AIDetectStageKey | AICleaningToolKey, number>>
+        >
     >({});
     const rowStreamProgressRef = useRef<
-        Record<string, Partial<Record<AIDetectStageKey, number>>>
+        Record<
+            string,
+            Partial<Record<AIDetectStageKey | AICleaningToolKey, number>>
+        >
     >({});
     const rowStreamFlushTimerRef = useRef<number | null>(null);
 
@@ -159,6 +193,8 @@ export const useAIManager = ({
             aiStreamAbortRef.current = null;
             aiChatAbortRef.current?.abort();
             aiChatAbortRef.current = null;
+            aiCleaningAbortRef.current?.abort();
+            aiCleaningAbortRef.current = null;
             aiBatchAbortRef.current?.abort();
             aiBatchAbortRef.current = null;
             if (rowStreamFlushTimerRef.current !== null) {
@@ -203,6 +239,20 @@ export const useAIManager = ({
     }, [isAIChatting]);
 
     useEffect(() => {
+        if (!isAICleaning) {
+            return;
+        }
+        const startedAt = aiCleaningStartedAtRef.current ?? Date.now();
+        aiCleaningStartedAtRef.current = startedAt;
+        const timerId = window.setInterval(() => {
+            setAICleaningElapsedMs(Date.now() - startedAt);
+        }, 250);
+        return () => {
+            window.clearInterval(timerId);
+        };
+    }, [isAICleaning]);
+
+    useEffect(() => {
         setAIThinkingText("");
         setAIResultText("");
         setAIResultMessage("");
@@ -216,6 +266,14 @@ export const useAIManager = ({
         aiChatStartedAtRef.current = null;
         setAIChatElapsedMs(0);
         setIsAIChatting(false);
+        aiCleaningAbortRef.current?.abort();
+        aiCleaningAbortRef.current = null;
+        aiCleaningStartedAtRef.current = null;
+        setAICleaningElapsedMs(0);
+        setIsAICleaning(false);
+        setActiveAICleaningToolKey(null);
+        setAICleaningStreamText("");
+        setAICleaningStatusMessage("");
         setChatMessages([]);
         setChatInput("");
         setChatStatusMessage("");
@@ -249,6 +307,7 @@ export const useAIManager = ({
             setIsAIProfileModalOpen(false);
             setIsAIRouteModalOpen(false);
             setIsAIChatConfigModalOpen(false);
+            setIsAICleaningConfigModalOpen(false);
             setActiveChatRouteName(nextConfig.chat.routeName);
             return;
         }
@@ -272,6 +331,7 @@ export const useAIManager = ({
                     routes?: unknown;
                     stages?: unknown;
                     chat?: unknown;
+                    cleaning?: unknown;
                 };
                 let loadedConfigs = normalizeLoadedNamedAIDetectConfigs([
                     {
@@ -281,6 +341,7 @@ export const useAIManager = ({
                             routes: payload.routes,
                             stages: payload.stages,
                             chat: payload.chat,
+                            cleaning: payload.cleaning,
                         },
                     },
                 ]);
@@ -389,6 +450,7 @@ export const useAIManager = ({
             : 0;
     const aiDetectElapsedText = formatDuration(aiDetectElapsedMs);
     const aiChatElapsedText = formatDuration(aiChatElapsedMs);
+    const aiCleaningElapsedText = formatDuration(aiCleaningElapsedMs);
     const aiMergedStreamText = useMemo(
         () => composeAISaveText(aiResultText, aiThinkingText),
         [aiResultText, aiThinkingText],
@@ -398,6 +460,7 @@ export const useAIManager = ({
         Boolean(selectedRow) &&
         !isAIDetecting &&
         !isAIChatting &&
+        !isAICleaning &&
         !aiConfigLoading &&
         !isAIBatchRunning;
     const runAllTimerText =
@@ -546,7 +609,7 @@ export const useAIManager = ({
 
     const setRowStageProgress = (
         rowId: string,
-        stageKey: AIDetectStageKey,
+        stageKey: AIDetectStageKey | AICleaningToolKey,
         nextProgress: number,
     ) => {
         const rowProgress = rowStreamProgressRef.current[rowId] ?? {};
@@ -561,7 +624,7 @@ export const useAIManager = ({
 
     const primeRowStageProgress = (
         rows: ParsedRow[],
-        stageKeys: readonly AIDetectStageKey[],
+        stageKeys: readonly (AIDetectStageKey | AICleaningToolKey)[],
         value: number = 2,
     ) => {
         if (rows.length === 0) {
@@ -574,13 +637,16 @@ export const useAIManager = ({
         });
     };
 
-    const markRowStageRunning = (rowId: string, stageKey: AIDetectStageKey) => {
+    const markRowStageRunning = (
+        rowId: string,
+        stageKey: AIDetectStageKey | AICleaningToolKey,
+    ) => {
         setRowStageProgress(rowId, stageKey, 2);
     };
 
     const updateRowStageProgress = (
         rowId: string,
-        stageKey: AIDetectStageKey,
+        stageKey: AIDetectStageKey | AICleaningToolKey,
         chunkLength: number,
     ) => {
         if (chunkLength <= 0) {
@@ -599,7 +665,7 @@ export const useAIManager = ({
 
     const finalizeRowStageProgress = (
         rowId: string,
-        stageKey: AIDetectStageKey,
+        stageKey: AIDetectStageKey | AICleaningToolKey,
     ) => {
         setRowStageProgress(rowId, stageKey, 100);
     };
@@ -1055,6 +1121,7 @@ export const useAIManager = ({
         setIsAIProfileModalOpen(false);
         setIsAIRouteModalOpen(false);
         setIsAIChatConfigModalOpen(false);
+        setIsAICleaningConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1066,6 +1133,7 @@ export const useAIManager = ({
         setIsAIStageConfigModalOpen(false);
         setIsAIRouteModalOpen(false);
         setIsAIChatConfigModalOpen(false);
+        setIsAICleaningConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1077,6 +1145,7 @@ export const useAIManager = ({
         setIsAIProfileModalOpen(false);
         setIsAIStageConfigModalOpen(false);
         setIsAIChatConfigModalOpen(false);
+        setIsAICleaningConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1085,6 +1154,19 @@ export const useAIManager = ({
             return;
         }
         setIsAIChatConfigModalOpen(true);
+        setIsAIProfileModalOpen(false);
+        setIsAIStageConfigModalOpen(false);
+        setIsAIRouteModalOpen(false);
+        setIsAICleaningConfigModalOpen(false);
+        navigateToSection("settings", "ai");
+    };
+
+    const onOpenAICleaningConfigModal = () => {
+        if (!prepareDraftAIConfig()) {
+            return;
+        }
+        setIsAICleaningConfigModalOpen(true);
+        setIsAIChatConfigModalOpen(false);
         setIsAIProfileModalOpen(false);
         setIsAIStageConfigModalOpen(false);
         setIsAIRouteModalOpen(false);
@@ -1113,6 +1195,12 @@ export const useAIManager = ({
         setDraftAIConfig(cloneAIDetectConfig(aiConfig));
         setAIConfigFormMessage("");
         setIsAIChatConfigModalOpen(false);
+    };
+
+    const onCancelAICleaningConfigModal = () => {
+        setDraftAIConfig(cloneAIDetectConfig(aiConfig));
+        setAIConfigFormMessage("");
+        setIsAICleaningConfigModalOpen(false);
     };
 
     const updateDraftStageConfig = (
@@ -1163,6 +1251,56 @@ export const useAIManager = ({
                 },
             };
         });
+    };
+
+    const onToggleDraftAICleaningSubmitField = (
+        toolKey: AICleaningToolKey,
+        columnKey: string,
+    ) => {
+        setDraftAIConfig((previous) => {
+            const exists =
+                previous.cleaning[toolKey].submitFieldKeys.includes(columnKey);
+            const submitFieldKeys = exists
+                ? previous.cleaning[toolKey].submitFieldKeys.filter(
+                      (key) => key !== columnKey,
+                  )
+                : [...previous.cleaning[toolKey].submitFieldKeys, columnKey];
+            return {
+                ...previous,
+                cleaning: {
+                    ...previous.cleaning,
+                    [toolKey]: {
+                        ...previous.cleaning[toolKey],
+                        submitFieldKeys,
+                    },
+                },
+            };
+        });
+    };
+
+    const onUpdateDraftAICleaningOutputMapping = (
+        toolKey: AICleaningToolKey,
+        outputKey: string,
+        targetFieldKey: string,
+    ) => {
+        setDraftAIConfig((previous) => ({
+            ...previous,
+            cleaning: {
+                ...previous.cleaning,
+                [toolKey]: {
+                    ...previous.cleaning[toolKey],
+                    outputMappings: previous.cleaning[toolKey].outputMappings.map(
+                        (item) =>
+                            item.outputKey === outputKey
+                                ? {
+                                      ...item,
+                                      targetFieldKey,
+                                  }
+                                : item,
+                    ),
+                },
+            },
+        }));
     };
 
     const onSaveAIConfig = async (skipStageValidation = false) => {
@@ -1336,6 +1474,7 @@ export const useAIManager = ({
             setIsAIProfileModalOpen(false);
             setIsAIRouteModalOpen(false);
             setIsAIChatConfigModalOpen(false);
+            setIsAICleaningConfigModalOpen(false);
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : "保存 AI 配置失败";
@@ -1406,6 +1545,313 @@ export const useAIManager = ({
         }
     };
 
+    const onSaveAICleaningConfig = async () => {
+        if (!activeFile) {
+            return;
+        }
+
+        const nextConfig = normalizeAIDetectConfigForColumns(
+            draftAIConfig,
+            activeFile.columns,
+        );
+        const routeNameSet = new Set(nextConfig.routes.map((item) => item.name));
+        for (const toolKey of AI_CLEANING_TOOL_ORDER) {
+            const toolConfig = nextConfig.cleaning[toolKey];
+            const toolLabel = AI_CLEANING_TOOL_LABELS[toolKey].shortTitle;
+            if (!routeNameSet.has(toolConfig.routeName)) {
+                setAIConfigFormMessage(`【${toolLabel}】请选择有效的模型路由`);
+                return;
+            }
+            if (toolConfig.submitFieldKeys.length === 0) {
+                setAIConfigFormMessage(`【${toolLabel}】请至少选择一个提交字段`);
+                return;
+            }
+            if (toolConfig.prompt.trim().length === 0) {
+                setAIConfigFormMessage(`【${toolLabel}】Prompt 不能为空`);
+                return;
+            }
+            const expectedOutputKeys = new Set(
+                AI_CLEANING_TOOL_LABELS[toolKey].outputKeys,
+            );
+            if (toolConfig.outputMappings.length !== expectedOutputKeys.size) {
+                setAIConfigFormMessage(`【${toolLabel}】输出字段映射不完整`);
+                return;
+            }
+            const seenOutputKeys = new Set<string>();
+            for (const mapping of toolConfig.outputMappings) {
+                if (!expectedOutputKeys.has(mapping.outputKey)) {
+                    setAIConfigFormMessage(
+                        `【${toolLabel}】存在无效的输出 key：${mapping.outputKey}`,
+                    );
+                    return;
+                }
+                if (seenOutputKeys.has(mapping.outputKey)) {
+                    setAIConfigFormMessage(
+                        `【${toolLabel}】输出 key 重复：${mapping.outputKey}`,
+                    );
+                    return;
+                }
+                seenOutputKeys.add(mapping.outputKey);
+            }
+        }
+
+        setAIConfigSaving(true);
+        setAIConfigFormMessage("");
+        setErrorMessage("");
+
+        try {
+            const response = await fetch(
+                `/api/ai-config/${encodeURIComponent(activeFile.fileName)}/cleaning`,
+                {
+                    method: "PUT",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        cleaning: nextConfig.cleaning,
+                    }),
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response
+                    .json()
+                    .catch(() => ({}))) as { message?: string };
+                throw new Error(payload.message ?? "保存清洗配置失败");
+            }
+
+            syncActiveAIConfigState(nextConfig);
+            setDraftAIConfig(cloneAIDetectConfig(nextConfig));
+            setAIConfigFormMessage("");
+            setIsAICleaningConfigModalOpen(false);
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "保存清洗配置失败";
+            setAIConfigFormMessage(message);
+        } finally {
+            setAIConfigSaving(false);
+        }
+    };
+
+    const stringifyCleaningOutputValue = (value: unknown): string => {
+        if (value === null || value === undefined) {
+            return "";
+        }
+        if (typeof value === "string") {
+            return value.trim();
+        }
+        if (
+            typeof value === "number" ||
+            typeof value === "boolean" ||
+            typeof value === "bigint"
+        ) {
+            return String(value);
+        }
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => stringifyCleaningOutputValue(item))
+                .filter((item) => item.length > 0)
+                .join(", ");
+        }
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return "";
+        }
+    };
+
+    const buildMappedCleaningFieldValues = (
+        toolKey: AICleaningToolKey,
+        responseText: string,
+        config: AIDetectConfig,
+    ): Record<string, string> => {
+        const parsed = parseAIResultJSON(responseText);
+        if (!parsed) {
+            return {};
+        }
+        const toolConfig = config.cleaning[toolKey];
+        if (!toolConfig.autoFillEnabled) {
+            return {};
+        }
+        const mappedValues: Record<string, string> = {};
+        toolConfig.outputMappings.forEach((mapping) => {
+            if (mapping.targetFieldKey.trim().length === 0) {
+                return;
+            }
+            const value = stringifyCleaningOutputValue(parsed[mapping.outputKey]);
+            if (value.length === 0) {
+                return;
+            }
+            mappedValues[mapping.targetFieldKey] = value;
+        });
+        return mappedValues;
+    };
+
+    const onRunAICleaning = async (toolKey: AICleaningToolKey) => {
+        if (!activeFile || !selectedRow) {
+            return;
+        }
+        if (isAIDetecting) {
+            setAICleaningStatusMessage("AI 检测进行中，暂不可发起数据清洗");
+            return;
+        }
+        if (isAIChatting) {
+            setAICleaningStatusMessage("AI 聊天进行中，暂不可发起数据清洗");
+            return;
+        }
+        if (isAIBatchRunning) {
+            setAICleaningStatusMessage("批量 AI 任务运行中，暂不可发起数据清洗");
+            return;
+        }
+        if (isAICleaning) {
+            setAICleaningStatusMessage("已有数据清洗任务正在运行");
+            return;
+        }
+
+        const normalizedConfig = normalizeAIDetectConfigForColumns(
+            aiConfig,
+            activeFile.columns,
+        );
+        syncActiveAIConfigState(normalizedConfig);
+        const toolConfig = normalizedConfig.cleaning[toolKey];
+        const toolLabel = AI_CLEANING_TOOL_LABELS[toolKey].shortTitle;
+        const route =
+            normalizedConfig.routes.find(
+                (item) => item.name === toolConfig.routeName,
+            ) ?? normalizedConfig.routes[0];
+
+        if (!route) {
+            setAICleaningStatusMessage(`【${toolLabel}】请先配置模型路由`);
+            return;
+        }
+        if (route.model.trim().length === 0) {
+            setAICleaningStatusMessage(`【${toolLabel}】请先配置模型`);
+            return;
+        }
+        if (route.steps.length === 0) {
+            setAICleaningStatusMessage(
+                `【${toolLabel}】请先配置模型提供商回退步骤`,
+            );
+            return;
+        }
+        if (toolConfig.submitFieldKeys.length === 0) {
+            setAICleaningStatusMessage(`【${toolLabel}】请先选择提交字段`);
+            return;
+        }
+        if (toolConfig.prompt.trim().length === 0) {
+            setAICleaningStatusMessage(`【${toolLabel}】请先配置 Prompt`);
+            return;
+        }
+
+        const fields = buildAIDetectFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            toolConfig.submitFieldKeys,
+        );
+        if (fields.length === 0) {
+            setAICleaningStatusMessage(`【${toolLabel}】当前记录没有可提交字段`);
+            return;
+        }
+
+        aiCleaningAbortRef.current?.abort();
+        const controller = new AbortController();
+        aiCleaningAbortRef.current = controller;
+        aiCleaningStartedAtRef.current = Date.now();
+        setAICleaningElapsedMs(0);
+        setIsAICleaning(true);
+        setActiveAICleaningToolKey(toolKey);
+        setAICleaningStreamText("");
+        setAICleaningStatusMessage("");
+        setErrorMessage("");
+
+        try {
+            const streamResult = await requestAIDetectResult(
+                {
+                    routeName: route.name,
+                    prompt: toolConfig.prompt,
+                    fields,
+                },
+                {
+                    signal: controller.signal,
+                    onAnswerChunk: (chunk) => {
+                        setAICleaningStreamText((previous) => previous + chunk);
+                    },
+                },
+            );
+
+            const answerText = streamResult.answerText.trim();
+            setAICleaningStreamText(streamResult.answerText);
+            if (answerText.length === 0) {
+                setAICleaningStatusMessage(`【${toolLabel}】AI 返回为空`);
+                return;
+            }
+
+            const parsed = parseAIResultJSON(answerText);
+            const parsedJsonText = parsed ? JSON.stringify(parsed) : undefined;
+            const response = await fetch(
+                `/api/files/${encodeURIComponent(activeFile.fileId)}/cleaning-results/${toolKey}`,
+                {
+                    method: "PUT",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        rowId: selectedRow.rowId,
+                        fileName: activeFile.fileName,
+                        responseText: answerText,
+                        parsedJsonText,
+                    }),
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response
+                    .json()
+                    .catch(() => ({}))) as { message?: string };
+                throw new Error(payload.message ?? "保存数据清洗结果失败");
+            }
+
+            const mappedFieldValues = buildMappedCleaningFieldValues(
+                toolKey,
+                answerText,
+                normalizedConfig,
+            );
+            updateRowCleaningResult(
+                activeFile.fileId,
+                selectedRow.rowId,
+                toolKey,
+                {
+                    responseText: answerText,
+                    parsedJsonText,
+                    updatedAt: new Date().toISOString(),
+                },
+                mappedFieldValues,
+            );
+            setAICleaningStatusMessage(
+                Object.keys(mappedFieldValues).length > 0
+                    ? `【${toolLabel}】数据清洗完成，已保存响应并回填 ${Object.keys(mappedFieldValues).length} 个字段`
+                    : `【${toolLabel}】数据清洗完成，已保存响应`,
+            );
+        } catch (error) {
+            if (controller.signal.aborted) {
+                setAICleaningStatusMessage("数据清洗已取消");
+            } else {
+                const message =
+                    error instanceof Error ? error.message : "数据清洗失败";
+                setAICleaningStatusMessage(message);
+            }
+        } finally {
+            if (aiCleaningAbortRef.current === controller) {
+                aiCleaningAbortRef.current = null;
+            }
+            if (aiCleaningStartedAtRef.current) {
+                setAICleaningElapsedMs(
+                    Date.now() - aiCleaningStartedAtRef.current,
+                );
+                aiCleaningStartedAtRef.current = null;
+            }
+            setIsAICleaning(false);
+        }
+    };
+
     const onClearAIChatSession = () => {
         if (isAIChatting) {
             return;
@@ -1419,7 +1865,7 @@ export const useAIManager = ({
         if (!activeFile || !selectedRow) {
             return;
         }
-        if (isAIDetecting || isAIBatchRunning || isAIChatting) {
+        if (isAIDetecting || isAIBatchRunning || isAIChatting || isAICleaning) {
             return;
         }
 
@@ -1577,12 +2023,21 @@ export const useAIManager = ({
             setAIResultMessage("AI 聊天进行中，暂不可发起检测");
             return;
         }
+        if (isAICleaning) {
+            setAIResultMessage("数据清洗进行中，暂不可发起检测");
+            return;
+        }
         if (isAIBatchRunning) {
             setAIResultMessage("批量 AI 任务运行中，暂不可发起单条回答");
             return;
         }
 
-        const runKey = runKeyOverride ?? activeAIRunKey;
+        const runKey =
+            runKeyOverride ??
+            (AI_STAGE_ORDER.includes(activeAIRunKey as AIDetectStageKey) ||
+            activeAIRunKey === AI_RUN_ALL_KEY
+                ? (activeAIRunKey as AIDetectRunKey)
+                : "precheck");
         const normalizedConfig = normalizeAIDetectConfigForColumns(
             aiConfig,
             activeFile.columns,
@@ -1954,7 +2409,7 @@ export const useAIManager = ({
         if (!activeFile) {
             return;
         }
-        if (isAIDetecting || isAIBatchRunning || isAIChatting) {
+        if (isAIDetecting || isAIBatchRunning || isAIChatting || isAICleaning) {
             return;
         }
 
@@ -2003,7 +2458,218 @@ export const useAIManager = ({
             return;
         }
 
-        const stageKey = activeAIRunKey;
+        if (AI_CLEANING_TOOL_ORDER.includes(activeAIRunKey as AICleaningToolKey)) {
+            const toolKey = activeAIRunKey as AICleaningToolKey;
+            const toolConfig = normalizedConfig.cleaning[toolKey];
+            const toolLabel = AI_CLEANING_TOOL_LABELS[toolKey].shortTitle;
+            const route =
+                normalizedConfig.routes.find(
+                    (item) => item.name === toolConfig.routeName,
+                ) ?? normalizedConfig.routes[0];
+
+            if (!route) {
+                setErrorMessage("请先配置模型路由");
+                return;
+            }
+            if (route.model.trim().length === 0) {
+                setErrorMessage("请先配置模型");
+                return;
+            }
+            if (route.steps.length === 0) {
+                setErrorMessage("请先配置模型提供商回退步骤");
+                return;
+            }
+            if (toolConfig.submitFieldKeys.length === 0) {
+                setErrorMessage("请先在 AI 配置中选择提交字段");
+                return;
+            }
+            if (toolConfig.prompt.trim().length === 0) {
+                setErrorMessage("请先配置 Prompt");
+                return;
+            }
+
+            let nextCursor = 0;
+            const requestedConcurrency =
+                normalizeAIBatchConcurrency(aiBatchConcurrency);
+            const workerCount = Math.min(requestedConcurrency, targetRows.length);
+
+            aiBatchAbortRef.current?.abort();
+            const controller = new AbortController();
+            aiBatchAbortRef.current = controller;
+            startBatchPersistLoop(targetFileId);
+            resetRowStreamProgress();
+            resetRowBatchStatuses();
+            setAIBatchTask({
+                status: "running",
+                fileId: targetFileId,
+                fileName: targetFileName,
+                total: targetRows.length,
+                completed: 0,
+                success: 0,
+                failed: 0,
+                message:
+                    normalizedTargetRowIds && normalizedTargetRowIds.length > 0
+                        ? `已选择 ${targetRows.length} 条，批量执行 ${toolLabel}，并发 ${workerCount} 线程`
+                        : `批量执行 ${toolLabel}，并发 ${workerCount} 线程`,
+            });
+            setErrorMessage("");
+            setAIResultMessage("");
+            primeRowStageProgress(targetRows, [toolKey]);
+
+            const runWorker = async () => {
+                while (!controller.signal.aborted) {
+                    const currentIndex = nextCursor;
+                    nextCursor += 1;
+                    if (currentIndex >= targetRows.length) {
+                        return;
+                    }
+
+                    const row = targetRows[currentIndex];
+                    let rowFailed = false;
+                    try {
+                        const fields = buildAIDetectFieldsForRow(
+                            targetColumns,
+                            row,
+                            toolConfig.submitFieldKeys,
+                        );
+                        if (fields.length === 0) {
+                            throw new Error("没有可提交的回答字段");
+                        }
+                        markRowStageRunning(row.rowId, toolKey);
+                        const streamResult = await requestAIDetectResult(
+                            {
+                                routeName: route.name,
+                                prompt: toolConfig.prompt,
+                                fields,
+                            },
+                            {
+                                signal: controller.signal,
+                                onAnswerChunk: (chunk) => {
+                                    updateRowStageProgress(
+                                        row.rowId,
+                                        toolKey,
+                                        chunk.length,
+                                    );
+                                },
+                                onThinkingChunk: (chunk) => {
+                                    updateRowStageProgress(
+                                        row.rowId,
+                                        toolKey,
+                                        chunk.length,
+                                    );
+                                },
+                            },
+                        );
+                        const answerText = streamResult.answerText.trim();
+                        if (answerText.length === 0) {
+                            throw new Error("AI 返回为空");
+                        }
+                        const parsed = parseAIResultJSON(answerText);
+                        const parsedJsonText = parsed
+                            ? JSON.stringify(parsed)
+                            : undefined;
+                        const response = await fetch(
+                            `/api/files/${encodeURIComponent(targetFileId)}/cleaning-results/${toolKey}`,
+                            {
+                                method: "PUT",
+                                headers: {
+                                    "Content-Type": "application/json",
+                                },
+                                body: JSON.stringify({
+                                    rowId: row.rowId,
+                                    fileName: targetFileName,
+                                    responseText: answerText,
+                                    parsedJsonText,
+                                }),
+                            },
+                        );
+                        if (!response.ok) {
+                            const payload = (await response
+                                .json()
+                                .catch(() => ({}))) as { message?: string };
+                            throw new Error(
+                                payload.message ?? "保存数据清洗结果失败",
+                            );
+                        }
+                        const mappedFieldValues = buildMappedCleaningFieldValues(
+                            toolKey,
+                            answerText,
+                            normalizedConfig,
+                        );
+                        updateRowCleaningResult(
+                            targetFileId,
+                            row.rowId,
+                            toolKey,
+                            {
+                                responseText: answerText,
+                                parsedJsonText,
+                                updatedAt: new Date().toISOString(),
+                            },
+                            mappedFieldValues,
+                        );
+                        finalizeRowStageProgress(row.rowId, toolKey);
+                    } catch {
+                        rowFailed = true;
+                    }
+
+                    if (controller.signal.aborted) {
+                        return;
+                    }
+                    markRowBatchStatus(row.rowId, rowFailed ? "failed" : "success");
+                    setAIBatchTask((previous) => ({
+                        ...previous,
+                        completed: previous.completed + 1,
+                        success: previous.success + (rowFailed ? 0 : 1),
+                        failed: previous.failed + (rowFailed ? 1 : 0),
+                    }));
+                }
+            };
+
+            try {
+                await Promise.all(
+                    Array.from({ length: workerCount }, () => runWorker()),
+                );
+
+                if (controller.signal.aborted) {
+                    return;
+                }
+
+                const latestFile = latestFileStateRef.current[targetFileId];
+                if (latestFile) {
+                    await persistFileState(latestFile);
+                }
+                setAIBatchTask((previous) => ({
+                    ...previous,
+                    status: "completed",
+                    message: `结果已写入数据清洗结果（${toolLabel}）`,
+                }));
+                setErrorMessage("");
+            } catch (error) {
+                if (controller.signal.aborted) {
+                    return;
+                }
+
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "批量数据清洗任务执行失败";
+                setAIBatchTask((previous) => ({
+                    ...previous,
+                    status: "completed",
+                    message,
+                }));
+                setErrorMessage(message);
+            } finally {
+                if (aiBatchAbortRef.current === controller) {
+                    aiBatchAbortRef.current = null;
+                }
+                stopBatchPersistLoop();
+                resetRowStreamProgress();
+            }
+            return;
+        }
+
+        const stageKey = activeAIRunKey as AIDetectStageKey;
         const stageConfig = normalizedConfig.stages[stageKey];
         const stageLabel = AI_STAGE_LABELS[stageKey]?.shortTitle ?? "";
         const route =
@@ -2190,6 +2856,7 @@ export const useAIManager = ({
         isAIProfileModalOpen,
         isAIRouteModalOpen,
         isAIChatConfigModalOpen,
+        isAICleaningConfigModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -2221,20 +2888,31 @@ export const useAIManager = ({
         setActiveChatRouteName,
         isAIChatting,
         aiChatElapsedText,
+        isAICleaning,
+        activeAICleaningToolKey,
+        aiCleaningElapsedText,
+        aiCleaningStreamText,
+        aiCleaningStatusMessage,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
         onOpenAIChatConfigModal,
+        onOpenAICleaningConfigModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
         onCancelAIRouteModal,
         onCancelAIChatConfigModal,
+        onCancelAICleaningConfigModal,
         onToggleDraftAISubmitField,
         onToggleDraftAIChatSubmitField,
+        onToggleDraftAICleaningSubmitField,
+        onUpdateDraftAICleaningOutputMapping,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
         onSaveAIRouteConfig,
         onSaveAIChatConfig,
+        onSaveAICleaningConfig,
+        onRunAICleaning,
         onRunAIDetect,
         onRunAllAIDetect,
         onRunBatchAIAnswer,

@@ -18,6 +18,7 @@ export interface ParsedRow {
     rowId: string;
     values: Record<string, ParsedCell>;
     aiResults?: Partial<Record<AIDetectStageKey, string>>;
+    cleaningResults?: Partial<Record<AICleaningToolKey, AICleaningToolResult>>;
 }
 
 export interface ParsedFile {
@@ -36,10 +37,18 @@ export interface FilterCondition {
     value: string;
 }
 
+export type StatisticsChartType = "bar" | "pie" | "line" | "table";
+
+export interface StatisticsConfig {
+    selectedFieldKeys: string[];
+    chartTypeByField: Record<string, StatisticsChartType>;
+}
+
 export interface FileViewState extends ParsedFile {
     selectedDisplayColumnKeys: string[];
     selectedEditableColumnKeys: string[];
     filterConditions: FilterCondition[];
+    statisticsConfig: StatisticsConfig;
 }
 
 export type AIDetectStageKey =
@@ -83,6 +92,36 @@ export interface AIChatConfig {
     defaultSubmitFieldKeys: string[];
 }
 
+export type AICleaningToolKey =
+    | "generate_level3_tags"
+    | "biochem_level1_refine";
+
+export interface AICleaningOutputMapping {
+    outputKey: string;
+    targetFieldKey: string;
+}
+
+export interface AICleaningToolResult {
+    responseText: string;
+    parsedJsonText?: string;
+    updatedAt?: string;
+}
+
+export interface AICleaningToolConfig {
+    routeName: string;
+    submitFieldKeys: string[];
+    prompt: string;
+    autoFillEnabled: boolean;
+    outputMappings: AICleaningOutputMapping[];
+}
+
+export type AICleaningConfigMap = Record<
+    AICleaningToolKey,
+    AICleaningToolConfig
+>;
+
+export type AIBatchToolKey = AIDetectRunKey | AICleaningToolKey;
+
 export type AIDetectStageConfigMap = Record<
     AIDetectStageKey,
     AIDetectStageConfig
@@ -93,6 +132,7 @@ export interface AIDetectConfig {
     routes: AIModelRoute[];
     stages: AIDetectStageConfigMap;
     chat: AIChatConfig;
+    cleaning: AICleaningConfigMap;
 }
 
 export interface NamedAIDetectConfig {

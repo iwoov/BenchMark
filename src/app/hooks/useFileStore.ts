@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+    AICleaningToolKey,
+    AICleaningToolResult,
     AIDetectStageKey,
     FileViewState,
     FilterCondition,
@@ -15,8 +17,10 @@ import {
     getFileNameFromDisposition,
     normalizeColumnSelection,
     normalizeLoadedFileState,
+    normalizeStatisticsConfig,
     toViewState,
 } from "../file-helpers";
+import type { StatisticsChartType } from "../../types";
 
 type NavigateToSection = (
     section: MainSection,
@@ -187,8 +191,12 @@ export const useFileStore = ({
         const currentVersion = stateVersionRef.current[file.fileId] ?? 0;
         const nextVersion = Math.max(Date.now(), currentVersion + 1);
         stateVersionRef.current[file.fileId] = nextVersion;
-        return {
+        const sanitizedState: FileViewState = {
             ...file,
+            rows: file.rows.map(({ cleaningResults, ...row }) => row),
+        };
+        return {
+            ...sanitizedState,
             clientStateVersion: nextVersion,
         };
     };
@@ -398,6 +406,70 @@ export const useFileStore = ({
         );
     };
 
+    const updateRowCleaningResult = (
+        fileId: string,
+        rowId: string,
+        toolKey: AICleaningToolKey,
+        result: AICleaningToolResult,
+        mappedFieldValues?: Record<string, string>,
+    ) => {
+        let nextFileForPersist: FileViewState | null = null;
+        const normalizedMappedFieldValues = mappedFieldValues ?? {};
+
+        setFiles((previous) =>
+            previous.map((file) => {
+                if (file.fileId !== fileId) {
+                    return file;
+                }
+                const nextRows = file.rows.map((row) => {
+                    if (row.rowId !== rowId) {
+                        return row;
+                    }
+                    const nextValues = { ...row.values };
+                    Object.entries(normalizedMappedFieldValues).forEach(
+                        ([columnKey, value]) => {
+                            const currentCell = row.values[columnKey];
+                            nextValues[columnKey] =
+                                currentCell?.type === "image" && currentCell.src
+                                    ? {
+                                          type: "image",
+                                          src: currentCell.src,
+                                          srcList: currentCell.srcList,
+                                          value,
+                                      }
+                                    : {
+                                          type: "text",
+                                          value,
+                                      };
+                        },
+                    );
+                    return {
+                        ...row,
+                        values: nextValues,
+                        cleaningResults: {
+                            ...(row.cleaningResults ?? {}),
+                            [toolKey]: result,
+                        },
+                    };
+                });
+                const nextFile: FileViewState = {
+                    ...file,
+                    rows: nextRows,
+                };
+                nextFileForPersist = nextFile;
+                latestFileStateRef.current[fileId] = nextFile;
+                return nextFile;
+            }),
+        );
+
+        if (
+            nextFileForPersist &&
+            Object.keys(normalizedMappedFieldValues).length > 0
+        ) {
+            schedulePersistFileState(nextFileForPersist);
+        }
+    };
+
     const persistColumnPrefs = (file: FileViewState) => {
         const prefsFileName = file.sourceFileName ?? file.fileName;
         fetch(`/api/column-prefs/${encodeURIComponent(prefsFileName)}`, {
@@ -568,6 +640,41 @@ export const useFileStore = ({
                       filterConditions: [],
                   },
         );
+    };
+
+    const onToggleStatisticsField = (fieldKey: string) => {
+        patchActiveFile((file) => {
+            const exists =
+                file.statisticsConfig.selectedFieldKeys.includes(fieldKey);
+            const selectedFieldKeys = exists
+                ? file.statisticsConfig.selectedFieldKeys.filter(
+                      (key) => key !== fieldKey,
+                  )
+                : [...file.statisticsConfig.selectedFieldKeys, fieldKey];
+            return {
+                ...file,
+                statisticsConfig: normalizeStatisticsConfig(file.columns, {
+                    ...file.statisticsConfig,
+                    selectedFieldKeys,
+                }),
+            };
+        });
+    };
+
+    const onSetStatisticsChartType = (
+        fieldKey: string,
+        chartType: StatisticsChartType,
+    ) => {
+        patchActiveFile((file) => ({
+            ...file,
+            statisticsConfig: normalizeStatisticsConfig(file.columns, {
+                ...file.statisticsConfig,
+                chartTypeByField: {
+                    ...file.statisticsConfig.chartTypeByField,
+                    [fieldKey]: chartType,
+                },
+            }),
+        }));
     };
 
     const onExportFile = async () => {
@@ -834,10 +941,13 @@ export const useFileStore = ({
         flushPendingAIResults,
         latestFileStateRef,
         updateRowAIResult,
+        updateRowCleaningResult,
         onEditCell,
         onToggleDisplayColumn,
         onUpdateFilterConditions,
         onClearFilterConditions,
+        onToggleStatisticsField,
+        onSetStatisticsChartType,
         onOpenActiveFileConfig,
         onTogglePendingDisplayColumn,
         onTogglePendingEditableColumn,

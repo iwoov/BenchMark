@@ -8,6 +8,8 @@ import {
     type ReactNode,
 } from "react";
 import type {
+    AICleaningToolKey,
+    AICleaningToolResult,
     AIDetectStageKey,
     ParsedColumn,
     ParsedRow,
@@ -20,6 +22,8 @@ import {
 import { normalizeHeaderTitle } from "../file-helpers";
 import { IconChevron } from "../icons";
 import {
+    AI_CLEANING_TOOL_LABELS,
+    AI_CLEANING_TOOL_ORDER,
     AI_RUN_ALL_LABEL,
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
@@ -63,6 +67,39 @@ function renderInfoBlock(
         <div className={`ai-result-note note-${tone}`}>
             <strong>{label}：</strong>
             <span>{value}</span>
+        </div>
+    );
+}
+
+function renderTagLine(
+    tags: string[],
+    onRemoveTag?: (tag: string) => void,
+) {
+    if (tags.length === 0) {
+        return null;
+    }
+
+    return (
+        <div className="ai-inline-tag-row">
+            <strong>标签：</strong>
+            <div className="ai-inline-tag-list">
+                {tags.map((tag) => (
+                    <span key={tag} className="ai-inline-tag">
+                        <span>{tag}</span>
+                        {onRemoveTag ? (
+                            <button
+                                type="button"
+                                className="ai-inline-tag-remove"
+                                onClick={() => onRemoveTag(tag)}
+                                aria-label={`删除标签 ${tag}`}
+                                title={`删除标签 ${tag}`}
+                            >
+                                ×
+                            </button>
+                        ) : null}
+                    </span>
+                ))}
+            </div>
         </div>
     );
 }
@@ -398,6 +435,77 @@ function renderAIResultContent(stageKey: AIDetectStageKey, content: string) {
     return <pre className="ai-result-raw">{trimmed}</pre>;
 }
 
+function renderAICleaningResultContent(
+    toolKey: AICleaningToolKey,
+    content: string,
+    options?: {
+        onRemoveLevel3Tag?: (tag: string) => void;
+    },
+) {
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+        return <span className="ai-result-empty">暂无结果</span>;
+    }
+
+    const parsed = parseAIResultJSON(trimmed);
+    if (!parsed) {
+        return <pre className="ai-result-raw">{trimmed}</pre>;
+    }
+
+    if (toolKey === "generate_level3_tags") {
+        const representationMethod = readTextValue(
+            parsed.representation_method,
+        );
+        const representationType = readTextValue(parsed.representation_type);
+        const parsedTags = Array.isArray(parsed.tags)
+            ? parsed.tags
+                  .filter((item): item is string => typeof item === "string")
+                  .map((item) => item.trim())
+                  .filter((item) => item.length > 0)
+            : [];
+        return (
+            <div className="ai-result-formatted">
+                <div className="ai-result-status-row">
+                    {hasMeaningfulText(representationType) ? (
+                        <span className="ai-result-badge badge-valid">
+                            {representationType}
+                        </span>
+                    ) : null}
+                </div>
+                {renderTagLine(parsedTags, options?.onRemoveLevel3Tag)}
+                {renderInfoBlock("表征方法", representationMethod, "neutral")}
+            </div>
+        );
+    }
+
+    if (toolKey === "biochem_level1_refine") {
+        const discipline = readTextValue(parsed.discipline);
+        const confidence = readTextValue(parsed.confidence);
+        const reason = readTextValue(parsed.reason);
+        return (
+            <div className="ai-result-formatted">
+                <div className="ai-result-status-row">
+                    {hasMeaningfulText(discipline) ? (
+                        <span className="ai-result-badge badge-valid">
+                            {discipline}
+                        </span>
+                    ) : null}
+                    {hasMeaningfulText(confidence) ? (
+                        <span
+                            className={`ai-result-badge ${getRiskBadgeClass(confidence)}`}
+                        >
+                            {`置信度：${confidence}`}
+                        </span>
+                    ) : null}
+                </div>
+                {renderInfoBlock("判断依据", reason, "neutral")}
+            </div>
+        );
+    }
+
+    return <pre className="ai-result-raw">{trimmed}</pre>;
+}
+
 const QUESTION_FIELD_TITLE_ALIASES = [
     "题目",
     "题干",
@@ -416,11 +524,20 @@ const REASONING_FIELD_TITLE_ALIASES = [
     "解析",
     "解答过程",
     "答案解析",
+    "原因",
+    "判断依据",
     "reasoning",
     "analysis",
+    "reason",
     "solution",
 ] as const;
 const ANSWER_FIELD_TITLE_ALIASES = ["答案", "正确答案", "answer"] as const;
+const LEVEL3_TAG_FIELD_TITLE_ALIASES = [
+    "标签",
+    "level3标签",
+    "level3 标签",
+    "tags",
+] as const;
 
 function matchesDetailFieldAlias(
     title: string,
@@ -451,6 +568,13 @@ function isAnswerColumn(column: ParsedColumn): boolean {
 
 function isReasoningColumn(column: ParsedColumn): boolean {
     return matchesDetailFieldAlias(column.title, REASONING_FIELD_TITLE_ALIASES);
+}
+
+function isLevel3TagColumn(column: ParsedColumn): boolean {
+    return matchesExactDetailFieldAlias(
+        column.title,
+        LEVEL3_TAG_FIELD_TITLE_ALIASES,
+    );
 }
 
 function isSourceColumn(column: ParsedColumn): boolean {
@@ -711,6 +835,14 @@ interface DetailPageProps {
         options?: { labelActions?: ReactNode },
     ) => ReactNode;
     aiResults?: Partial<Record<AIDetectStageKey, string>>;
+    cleaningResults?: Partial<Record<AICleaningToolKey, AICleaningToolResult>>;
+    isAICleaning: boolean;
+    activeAICleaningToolKey: AICleaningToolKey | null;
+    aiCleaningElapsedText: string;
+    aiCleaningStreamText: string;
+    aiCleaningStatusMessage: string;
+    onRemoveLevel3Tag?: (tag: string) => void;
+    onRunAICleaning: (toolKey: AICleaningToolKey) => void;
 }
 
 export function DetailPage({
@@ -726,6 +858,14 @@ export function DetailPage({
     runAllStageTimers,
     renderDetailField,
     aiResults,
+    cleaningResults,
+    isAICleaning,
+    activeAICleaningToolKey,
+    aiCleaningElapsedText,
+    aiCleaningStreamText,
+    aiCleaningStatusMessage,
+    onRemoveLevel3Tag,
+    onRunAICleaning,
 }: DetailPageProps) {
     const [detailImageZoom, setDetailImageZoom] = useState(100);
     const [isAIDetectSectionCollapsed, setIsAIDetectSectionCollapsed] =
@@ -803,18 +943,34 @@ export function DetailPage({
         [problemTextColumns, sourceColumns],
     );
     const regularDisplayColumns = useMemo(() => {
-        if (sourceColumnsBelowHero.length > 0) {
-            return baseRegularDisplayColumns;
+        const orderedColumns = [...baseRegularDisplayColumns];
+        const tagIndex = orderedColumns.findIndex((column) =>
+            isLevel3TagColumn(column),
+        );
+        const reasoningIndex = orderedColumns.findIndex((column) =>
+            isReasoningColumn(column),
+        );
+        if (
+            tagIndex >= 0 &&
+            reasoningIndex >= 0 &&
+            tagIndex > reasoningIndex
+        ) {
+            const [tagColumn] = orderedColumns.splice(tagIndex, 1);
+            orderedColumns.splice(reasoningIndex, 0, tagColumn);
         }
 
-        const answerIndex = baseRegularDisplayColumns.findIndex((column) =>
+        if (sourceColumnsBelowHero.length > 0) {
+            return orderedColumns;
+        }
+
+        const answerIndex = orderedColumns.findIndex((column) =>
             isAnswerColumn(column),
         );
         if (answerIndex < 0 || sourceColumns.length === 0) {
-            return [...baseRegularDisplayColumns, ...sourceColumns];
+            return [...orderedColumns, ...sourceColumns];
         }
 
-        const nextColumns = [...baseRegularDisplayColumns];
+        const nextColumns = [...orderedColumns];
         nextColumns.splice(answerIndex + 1, 0, ...sourceColumns);
         return nextColumns;
     }, [
@@ -974,6 +1130,67 @@ export function DetailPage({
                         </button>
                     </div>
                 ) : null}
+            </div>
+            <div className="record-detail-ai-toolbar">
+                <div className="record-detail-ai-header">
+                    <strong className="record-detail-ai-title">数据清洗</strong>
+                </div>
+                <div className="record-detail-ai-results record-detail-ai-cleaning-results">
+                    <div className="record-detail-ai-results-grid">
+                        {AI_CLEANING_TOOL_ORDER.map((toolKey) => {
+                            const label = AI_CLEANING_TOOL_LABELS[toolKey];
+                            const savedContent =
+                                cleaningResults?.[toolKey]?.responseText ?? "";
+                            const isActiveTool =
+                                activeAICleaningToolKey === toolKey;
+                            const displayContent =
+                                isActiveTool && aiCleaningStreamText.trim().length > 0
+                                    ? aiCleaningStreamText
+                                    : savedContent;
+                            return (
+                                <div
+                                    key={toolKey}
+                                    className="record-detail-ai-result-card"
+                                >
+                                    <div className="record-detail-ai-result-title">
+                                        <div className="record-detail-ai-result-title-text">
+                                            <span>{label.shortTitle}</span>
+                                            <small>{label.title}</small>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost ai-stage-run-btn"
+                                            onClick={() =>
+                                                onRunAICleaning(toolKey)
+                                            }
+                                            disabled={isAICleaning}
+                                        >
+                                            {isActiveTool && isAICleaning
+                                                ? aiCleaningElapsedText
+                                                : "运行"}
+                                        </button>
+                                    </div>
+                                    <div className="record-detail-ai-result-body">
+                                        {renderAICleaningResultContent(
+                                            toolKey,
+                                            displayContent,
+                                            toolKey === "generate_level3_tags"
+                                                ? {
+                                                      onRemoveLevel3Tag,
+                                                  }
+                                                : undefined,
+                                        )}
+                                    </div>
+                                    {isActiveTool && aiCleaningStatusMessage ? (
+                                        <div className="record-detail-ai-cleaning-message">
+                                            {aiCleaningStatusMessage}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
             </div>
             <div className="detail-page-layout">
                 <div className="detail-page-main">

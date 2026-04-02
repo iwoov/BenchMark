@@ -1,12 +1,13 @@
 import type { CSSProperties, ReactNode } from "react";
 import type {
-    AIDetectRunKey,
+    AIBatchToolKey,
+    AICleaningToolKey,
     AIDetectStageKey,
     FileViewState,
     ParsedColumn,
     ParsedRow,
 } from "../../types";
-import { AI_STAGE_ORDER } from "../constants";
+import { AI_CLEANING_TOOL_ORDER, AI_STAGE_ORDER } from "../constants";
 
 interface ListPageProps {
     activeFile: FileViewState;
@@ -20,10 +21,10 @@ interface ListPageProps {
     selectedRowId: string | null;
     rowStreamProgress?: Record<
         string,
-        Partial<Record<AIDetectStageKey, number>>
+        Partial<Record<AIDetectStageKey | AICleaningToolKey, number>>
     >;
     isAIBatchRunning: boolean;
-    activeAIRunKey: AIDetectRunKey;
+    activeAIRunKey: AIBatchToolKey;
     rowBatchStatuses?: Record<string, "success" | "failed">;
     onToggleBatchRowSelection: (rowId: string) => void;
     onOpenRowDetail: (rowId: string) => void;
@@ -89,9 +90,25 @@ export function ListPage({
                                 },
                                 0,
                             );
-                            let progressPercent = Math.round(
-                                (completedStages / AI_STAGE_ORDER.length) * 100,
-                            );
+                            const hasCleaningResult =
+                                AI_CLEANING_TOOL_ORDER.includes(
+                                    activeAIRunKey as AICleaningToolKey,
+                                ) &&
+                                typeof
+                                    row.cleaningResults?.[
+                                        activeAIRunKey as AICleaningToolKey
+                                    ]?.responseText === "string" &&
+                                row.cleaningResults[
+                                    activeAIRunKey as AICleaningToolKey
+                                ]!.responseText
+                                    .trim()
+                                    .length > 0;
+                            let progressPercent = hasCleaningResult
+                                ? 100
+                                : Math.round(
+                                      (completedStages / AI_STAGE_ORDER.length) *
+                                          100,
+                                  );
                             const streamProgress =
                                 rowStreamProgress?.[row.rowId];
                             if (isAIBatchRunning && streamProgress) {
@@ -119,6 +136,18 @@ export function ListPage({
                                     const value =
                                         streamProgress[
                                             activeAIRunKey as AIDetectStageKey
+                                        ];
+                                    if (typeof value === "number") {
+                                        progressPercent = Math.round(value);
+                                    }
+                                } else if (
+                                    AI_CLEANING_TOOL_ORDER.includes(
+                                        activeAIRunKey as AICleaningToolKey,
+                                    )
+                                ) {
+                                    const value =
+                                        streamProgress[
+                                            activeAIRunKey as AICleaningToolKey
                                         ];
                                     if (typeof value === "number") {
                                         progressPercent = Math.round(value);
