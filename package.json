@@ -14,6 +14,7 @@
         "preview": "vite preview",
         "typecheck": "tsc -b",
         "db:backfill-level1": "node ./scripts/db/backfill-level1-from-discipline.mjs",
+        "db:export-level3-tags": "node ./scripts/db/export-level3-tags.mjs",
         "package:zip": "bash ./scripts/package-zip.sh"
     },
     "dependencies": {

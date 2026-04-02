@@ -1283,6 +1283,7 @@ export function DetailPage({
                                 activeAICleaningToolKey === toolKey;
                             const displayContent =
                                 isActiveTool &&
+                                isAICleaning &&
                                 aiCleaningStreamText.trim().length > 0
                                     ? aiCleaningStreamText
                                     : savedContent;
