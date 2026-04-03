@@ -766,6 +766,7 @@ function buildRows(
 
         rows.push({
             rowId: `${fileId}_${rowIndex}`,
+            enabled: true,
             values,
         });
     }

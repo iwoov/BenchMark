@@ -306,11 +306,13 @@ function normalizeFileState(value: unknown): ImportableFileState | null {
             return Object.keys(aiResults).length > 0
                 ? {
                       rowId: row.rowId,
+                      enabled: normalizeRowEnabled(row.enabled),
                       values,
                       aiResults,
                   }
                 : {
                       rowId: row.rowId,
+                      enabled: normalizeRowEnabled(row.enabled),
                       values,
                   };
         })
@@ -474,6 +476,7 @@ function transformRows(
 
         const nextRow: ParsedRow = {
             rowId: row.rowId,
+            enabled: normalizeRowEnabled(row.enabled),
             values,
         };
 
@@ -523,6 +526,10 @@ function getRecordId(row: ParsedRow, idColumnKey: string): string {
     return row.values[idColumnKey]?.value?.trim() ?? "";
 }
 
+function normalizeRowEnabled(value: unknown): boolean {
+    return value !== false;
+}
+
 function normalizeImportedRows(
     rows: ParsedRow[],
     idColumnKey: string,
@@ -539,6 +546,7 @@ function normalizeImportedRows(
         seenIds.add(recordId);
         return {
             rowId: recordId,
+            enabled: normalizeRowEnabled(row.enabled),
             values: row.values,
         };
     });
@@ -630,9 +638,13 @@ export function mergeImportedFileState(
             Object.keys(existingRow.aiResults).length > 0
                 ? {
                       ...row,
+                      enabled: normalizeRowEnabled(existingRow.enabled),
                       aiResults: { ...existingRow.aiResults },
                   }
-                : row;
+                : {
+                      ...row,
+                      enabled: normalizeRowEnabled(existingRow?.enabled),
+                  };
         updatedCount += 1;
     });
 

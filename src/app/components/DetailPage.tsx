@@ -21,7 +21,7 @@ import {
     readBooleanLike,
 } from "../ai-helpers";
 import { normalizeHeaderTitle } from "../file-helpers";
-import { IconChevron, IconEdit } from "../icons";
+import { IconChevron, IconEdit, IconPlus } from "../icons";
 import {
     AI_CLEANING_TOOL_LABELS,
     AI_CLEANING_TOOL_ORDER,
@@ -98,6 +98,157 @@ function renderTagLine(tags: string[], onRemoveTag?: (tag: string) => void) {
                     </span>
                 ))}
             </div>
+        </div>
+    );
+}
+
+function GenerateLevel3TagsResult({
+    rowId,
+    content,
+    onRemoveTag,
+    onAddTag,
+}: {
+    rowId: string;
+    content: string;
+    onRemoveTag?: (tag: string) => void;
+    onAddTag?: (tag: string) => Promise<void>;
+}) {
+    const parsed = parseAIResultJSON(content);
+    const representationMethod = readTextValue(parsed?.representation_method);
+    const representationType = readTextValue(parsed?.representation_type);
+    const parsedTags = Array.isArray(parsed?.tags)
+        ? parsed.tags
+              .filter((item): item is string => typeof item === "string")
+              .map((item) => item.trim())
+              .filter((item) => item.length > 0)
+        : [];
+    const [isAdding, setIsAdding] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const [pendingTag, setPendingTag] = useState("");
+    const [saveMessage, setSaveMessage] = useState("");
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        setIsAdding(false);
+        setIsSaving(false);
+        setPendingTag("");
+        setSaveMessage("");
+    }, [content, rowId]);
+
+    useEffect(() => {
+        if (isAdding) {
+            inputRef.current?.focus();
+        }
+    }, [isAdding]);
+
+    const submitTag = async () => {
+        const nextTag = pendingTag.trim();
+        if (nextTag.length === 0) {
+            return;
+        }
+        if (parsedTags.includes(nextTag)) {
+            setSaveMessage("标签已存在");
+            return;
+        }
+        if (!onAddTag) {
+            return;
+        }
+
+        setIsSaving(true);
+        setSaveMessage("");
+        try {
+            await onAddTag(nextTag);
+            setPendingTag("");
+            setIsAdding(false);
+            setSaveMessage("已添加标签");
+        } catch (error) {
+            setSaveMessage(
+                error instanceof Error ? error.message : "添加标签失败",
+            );
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="ai-result-formatted">
+            <div className="ai-result-status-row">
+                {hasMeaningfulText(representationType) ? (
+                    <span className="ai-result-badge badge-valid">
+                        {representationType}
+                    </span>
+                ) : null}
+            </div>
+            <div className="ai-inline-tag-row">
+                <strong>标签：</strong>
+                <div className="ai-inline-tag-list">
+                    {parsedTags.map((tag) => (
+                        <span key={tag} className="ai-inline-tag">
+                            <span>{tag}</span>
+                            {onRemoveTag ? (
+                                <button
+                                    type="button"
+                                    className="ai-inline-tag-remove"
+                                    onClick={() => onRemoveTag(tag)}
+                                    aria-label={`删除标签 ${tag}`}
+                                    title={`删除标签 ${tag}`}
+                                >
+                                    ×
+                                </button>
+                            ) : null}
+                        </span>
+                    ))}
+                    {isAdding ? (
+                        <span className="ai-inline-tag ai-inline-tag-editor">
+                            <input
+                                ref={inputRef}
+                                type="text"
+                                value={pendingTag}
+                                onChange={(event) =>
+                                    setPendingTag(event.target.value)
+                                }
+                                onBlur={() => {
+                                    setIsAdding(false);
+                                    setPendingTag("");
+                                    setSaveMessage("");
+                                }}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        void submitTag();
+                                    }
+                                    if (event.key === "Escape") {
+                                        setIsAdding(false);
+                                        setPendingTag("");
+                                        setSaveMessage("");
+                                    }
+                                }}
+                                placeholder="新标签"
+                                disabled={isSaving}
+                            />
+                        </span>
+                    ) : null}
+                    <button
+                        type="button"
+                        className="btn btn-ghost ai-inline-tag-add"
+                        onClick={() => {
+                            setSaveMessage("");
+                            setIsAdding((previous) => !previous);
+                        }}
+                        disabled={isSaving}
+                        aria-label="添加标签"
+                        title="添加标签"
+                    >
+                        <IconPlus />
+                    </button>
+                </div>
+            </div>
+            {saveMessage ? (
+                <div className="record-detail-ai-cleaning-message">
+                    {saveMessage}
+                </div>
+            ) : null}
+            {renderInfoBlock("表征方法", representationMethod, "neutral")}
         </div>
     );
 }
@@ -978,9 +1129,11 @@ interface DetailPageProps {
     aiCleaningElapsedText: string;
     aiCleaningStreamText: string;
     aiCleaningStatusMessage: string;
+    onAddLevel3Tag?: (tag: string) => Promise<void>;
     onRemoveLevel3Tag?: (tag: string) => void;
     onUpdateBiochemLevel1Discipline?: (discipline: string) => Promise<void>;
     onRunAICleaning: (toolKey: AICleaningToolKey) => void;
+    onToggleRowEnabled: (rowId: string, enabled: boolean) => void;
 }
 
 export function DetailPage({
@@ -1003,13 +1156,15 @@ export function DetailPage({
     aiCleaningElapsedText,
     aiCleaningStreamText,
     aiCleaningStatusMessage,
+    onAddLevel3Tag,
     onRemoveLevel3Tag,
     onUpdateBiochemLevel1Discipline,
     onRunAICleaning,
+    onToggleRowEnabled,
 }: DetailPageProps) {
     const [detailImageZoom, setDetailImageZoom] = useState(100);
     const [isAIDetectSectionCollapsed, setIsAIDetectSectionCollapsed] =
-        useState(false);
+        useState(true);
     const [aiDetectCardHeight, setAIDetectCardHeight] = useState(220);
     const aiDetectResizeRef = useRef<{
         active: boolean;
@@ -1166,6 +1321,29 @@ export function DetailPage({
 
     return (
         <section className="record-detail standalone-record-detail">
+            <div className="record-detail-status-bar">
+                <div className="record-detail-status-copy">
+                    <strong>题目状态</strong>
+                    <span>
+                        {selectedRow.enabled
+                            ? "当前题目已启用"
+                            : "当前题目已停用"}
+                    </span>
+                </div>
+                <label className="column-config-switch record-detail-enabled-switch">
+                    <input
+                        type="checkbox"
+                        checked={selectedRow.enabled}
+                        onChange={(event) =>
+                            onToggleRowEnabled(
+                                selectedRow.rowId,
+                                event.target.checked,
+                            )
+                        }
+                    />
+                    <span>{selectedRow.enabled ? "启用" : "停用"}</span>
+                </label>
+            </div>
             <div className="record-detail-ai-toolbar">
                 <div className="record-detail-ai-header">
                     <strong className="record-detail-ai-title">
@@ -1311,7 +1489,15 @@ export function DetailPage({
                                         </button>
                                     </div>
                                     <div className="record-detail-ai-result-body">
-                                        {toolKey === "biochem_level1_refine" ? (
+                                        {toolKey === "generate_level3_tags" ? (
+                                            <GenerateLevel3TagsResult
+                                                rowId={selectedRow.rowId}
+                                                content={displayContent}
+                                                onAddTag={onAddLevel3Tag}
+                                                onRemoveTag={onRemoveLevel3Tag}
+                                            />
+                                        ) : toolKey ===
+                                          "biochem_level1_refine" ? (
                                             <BiochemLevel1Result
                                                 rowId={selectedRow.rowId}
                                                 content={displayContent}
@@ -1324,12 +1510,6 @@ export function DetailPage({
                                             renderAICleaningResultContent(
                                                 toolKey,
                                                 displayContent,
-                                                toolKey ===
-                                                    "generate_level3_tags"
-                                                    ? {
-                                                          onRemoveLevel3Tag,
-                                                      }
-                                                    : undefined,
                                             )
                                         )}
                                     </div>

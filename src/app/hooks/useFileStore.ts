@@ -366,6 +366,15 @@ export const useFileStore = ({
         }));
     };
 
+    const onToggleRowEnabled = (rowId: string, enabled: boolean) => {
+        patchActiveFile((file) => ({
+            ...file,
+            rows: file.rows.map((row) =>
+                row.rowId === rowId ? { ...row, enabled } : row,
+            ),
+        }));
+    };
+
     const updateRowAIResult = (
         fileId: string,
         rowId: string,
@@ -943,6 +952,7 @@ export const useFileStore = ({
         updateRowAIResult,
         updateRowCleaningResult,
         onEditCell,
+        onToggleRowEnabled,
         onToggleDisplayColumn,
         onUpdateFilterConditions,
         onClearFilterConditions,

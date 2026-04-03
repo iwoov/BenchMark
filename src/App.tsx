@@ -99,6 +99,7 @@ function App() {
         updateRowAIResult,
         updateRowCleaningResult,
         onEditCell,
+        onToggleRowEnabled,
         onToggleDisplayColumn,
         onUpdateFilterConditions,
         onClearFilterConditions,
@@ -349,6 +350,76 @@ function App() {
         const mappedFieldValues =
             level3TagsFieldKey.trim().length > 0
                 ? { [level3TagsFieldKey]: nextTags.join(", ") }
+                : undefined;
+        updateRowCleaningResult(
+            activeFile.fileId,
+            selectedRow.rowId,
+            "generate_level3_tags",
+            {
+                responseText: nextResponseText,
+                parsedJsonText: nextParsedJsonText,
+                updatedAt: new Date().toISOString(),
+            },
+            mappedFieldValues,
+        );
+    };
+
+    const onAddLevel3Tag = async (tag: string) => {
+        if (!selectedRow || !activeFile) {
+            return;
+        }
+        const nextTag = tag.trim();
+        if (nextTag.length === 0) {
+            return;
+        }
+        const currentResult =
+            selectedRow.cleaningResults?.generate_level3_tags ?? null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const currentTags = Array.isArray(parsed.tags)
+            ? parsed.tags
+                  .filter((item): item is string => typeof item === "string")
+                  .map((item) => item.trim())
+                  .filter((item) => item.length > 0)
+            : [];
+        if (currentTags.includes(nextTag)) {
+            return;
+        }
+        const nextParsed = {
+            ...(parsed && typeof parsed === "object" ? parsed : {}),
+            tags: [...currentTags, nextTag],
+        };
+        const nextParsedJsonText = JSON.stringify(nextParsed);
+        const nextResponseText = JSON.stringify(nextParsed, null, 2);
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(activeFile.fileId)}/cleaning-results/generate_level3_tags`,
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    rowId: selectedRow.rowId,
+                    fileName: activeFile.fileName,
+                    responseText: nextResponseText,
+                    parsedJsonText: nextParsedJsonText,
+                }),
+            },
+        );
+        if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+                message?: string;
+            };
+            const message = payload.message ?? "添加标签失败";
+            setErrorMessage(message);
+            throw new Error(message);
+        }
+
+        const mappedFieldValues =
+            level3TagsFieldKey.trim().length > 0
+                ? { [level3TagsFieldKey]: [...currentTags, nextTag].join(", ") }
                 : undefined;
         updateRowCleaningResult(
             activeFile.fileId,
@@ -958,6 +1029,7 @@ function App() {
                                             aiCleaningStatusMessage={
                                                 aiCleaningStatusMessage
                                             }
+                                            onAddLevel3Tag={onAddLevel3Tag}
                                             onRemoveLevel3Tag={
                                                 onRemoveLevel3Tag
                                             }
@@ -965,6 +1037,9 @@ function App() {
                                                 onUpdateBiochemLevel1Discipline
                                             }
                                             onRunAICleaning={onRunAICleaning}
+                                            onToggleRowEnabled={
+                                                onToggleRowEnabled
+                                            }
                                         />
                                     </section>
                                 ) : null}

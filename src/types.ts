@@ -16,6 +16,7 @@ export interface ParsedColumn {
 
 export interface ParsedRow {
     rowId: string;
+    enabled: boolean;
     values: Record<string, ParsedCell>;
     aiResults?: Partial<Record<AIDetectStageKey, string>>;
     cleaningResults?: Partial<Record<AICleaningToolKey, AICleaningToolResult>>;

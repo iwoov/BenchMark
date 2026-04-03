@@ -593,6 +593,10 @@ function normalizeLoadedCell(value: unknown): ParsedCell {
     return { type: "text", value: cellValue };
 }
 
+function normalizeRowEnabled(value: unknown): boolean {
+    return value !== false;
+}
+
 export function getDistinctOptions(
     rows: ParsedRow[],
     columnKey?: string,
@@ -716,6 +720,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             );
             const nextRow: ParsedRow = {
                 rowId: item.rowId,
+                enabled: normalizeRowEnabled(item.enabled),
                 values,
             };
             if (Object.keys(aiResults).length > 0) {
