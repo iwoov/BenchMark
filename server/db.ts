@@ -74,6 +74,8 @@ const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
 const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
 const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
+const LEGACY_PROJECT_NAME = "专家出题表格.xlsx";
+const MIGRATED_LEGACY_PROJECT_NAME = "化学/生物/材料多模态评测集";
 const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
 
 你会收到两类信息：
@@ -1181,6 +1183,140 @@ export function getFileState(fileId: string): PersistedFileState | null {
     }
 }
 
+function getFileStateByName(fileName: string): PersistedFileState | null {
+    const row = db
+        .prepare(
+            `SELECT file_id, file_name, state_json, updated_at
+             FROM file_states
+             WHERE file_name = ?
+             ORDER BY datetime(updated_at) DESC
+             LIMIT 1`,
+        )
+        .get(fileName) as
+        | {
+              file_id: string;
+              file_name: string;
+              state_json: string;
+              updated_at: string;
+          }
+        | undefined;
+
+    if (!row) {
+        return null;
+    }
+
+    try {
+        return {
+            fileId: row.file_id,
+            fileName: row.file_name,
+            state: JSON.parse(row.state_json) as unknown,
+            updatedAt: row.updated_at,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function readFileStateJson(fileId: string): unknown {
+    const row = db
+        .prepare("SELECT state_json FROM file_states WHERE file_id = ?")
+        .get(fileId) as { state_json: string } | undefined;
+
+    if (!row) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(row.state_json) as unknown;
+    } catch {
+        return null;
+    }
+}
+
+export function isProjectNameInUse(
+    fileName: string,
+    excludeFileId?: string,
+): boolean {
+    const owner = getFileStateByName(fileName);
+    if (owner && owner.fileId !== excludeFileId) {
+        return true;
+    }
+
+    if (!owner) {
+        const hasStageConfig = Boolean(
+            db
+                .prepare(
+                    "SELECT 1 FROM file_ai_stage_configs WHERE file_name = ? LIMIT 1",
+                )
+                .get(fileName),
+        );
+        if (hasStageConfig) {
+            return true;
+        }
+
+        const hasAIConfig = Boolean(
+            db.prepare("SELECT 1 FROM ai_configs WHERE file_name = ? LIMIT 1").get(
+                fileName,
+            ),
+        );
+        if (hasAIConfig) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function renameProjectReferences(
+    fileId: string,
+    previousFileName: string,
+    nextFileName: string,
+): PersistedFileState | null {
+    const existingState = readFileStateJson(fileId);
+    if (!existingState || typeof existingState !== "object") {
+        return null;
+    }
+
+    const nextState = {
+        ...(existingState as Record<string, unknown>),
+        fileName: nextFileName,
+    };
+
+    const tx = db.transaction(() => {
+        db.prepare(
+            `UPDATE file_states
+             SET file_name = ?,
+                 state_json = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE file_id = ?`,
+        ).run(nextFileName, JSON.stringify(nextState), fileId);
+
+        db.prepare("UPDATE ai_configs SET file_name = ? WHERE file_name = ?").run(
+            nextFileName,
+            previousFileName,
+        );
+
+        db.prepare(
+            `UPDATE file_ai_stage_configs
+             SET file_name = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE file_name = ?`,
+        ).run(nextFileName, previousFileName);
+
+        AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+            db.prepare(
+                `UPDATE ${getAICleaningResultTableName(toolKey)}
+                 SET file_name = ?,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE file_id = ?`,
+            ).run(nextFileName, fileId);
+        });
+    });
+
+    tx();
+    return getFileState(fileId);
+}
+
 export function saveFileState(
     fileId: string,
     fileName: string,
@@ -1194,6 +1330,22 @@ export function saveFileState(
        state_json = excluded.state_json,
        updated_at = CURRENT_TIMESTAMP`,
     ).run(fileId, fileName, JSON.stringify(state));
+}
+
+export function renameProject(
+    fileId: string,
+    nextFileName: string,
+): PersistedFileState | null {
+    const existing = getFileState(fileId);
+    if (!existing) {
+        return null;
+    }
+
+    if (existing.fileName === nextFileName) {
+        return existing;
+    }
+
+    return renameProjectReferences(fileId, existing.fileName, nextFileName);
 }
 
 export function updateFileStateAIResults(
@@ -2372,5 +2524,27 @@ function migrateLegacyAIConfigToRoutingTables(): void {
         saveFileAIStageConfigs(fileName, stages);
     });
 }
+
+function migrateLegacyProjectName(): void {
+    const legacyRows = db
+        .prepare("SELECT file_id FROM file_states WHERE file_name = ?")
+        .all(LEGACY_PROJECT_NAME) as Array<{ file_id: string }>;
+
+    if (legacyRows.length !== 1) {
+        return;
+    }
+
+    if (isProjectNameInUse(MIGRATED_LEGACY_PROJECT_NAME)) {
+        return;
+    }
+
+    renameProjectReferences(
+        legacyRows[0].file_id,
+        LEGACY_PROJECT_NAME,
+        MIGRATED_LEGACY_PROJECT_NAME,
+    );
+}
+
+migrateLegacyProjectName();
 
 export default db;

@@ -6,6 +6,14 @@ export function parseHashRoute(hash: string): RouteState {
     const section = segments[0];
     const subPath = segments[1];
 
+    if (section === "projects") {
+        return {
+            section: "project-management",
+            settingsSection: "fields",
+            rowId: null,
+        };
+    }
+
     if (section === "settings") {
         return {
             section: "settings",
@@ -40,6 +48,9 @@ export function buildHashRoute(
     settingsSection: SettingsSection,
     rowId?: string | null,
 ): string {
+    if (section === "project-management") {
+        return "#/projects";
+    }
     if (section === "settings") {
         return `#/settings/${settingsSection}`;
     }

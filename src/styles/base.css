@@ -259,10 +259,11 @@ body::before {
     display: flex;
     align-items: center;
     gap: 16px;
-    height: 60px;
+    min-height: 76px;
     max-width: none;
     margin: 0;
     width: 100%;
+    padding: 10px 0;
 }
 
 .header-brand {
@@ -294,6 +295,36 @@ body::before {
     letter-spacing: -0.01em;
     color: var(--text-primary);
     white-space: nowrap;
+}
+
+.header-brand-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.header-brand-copy span {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.header-project-picker {
+    min-width: min(420px, 32vw);
+}
+
+.header-project-select {
+    width: 100%;
+    min-width: 0;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-glass);
+    color: var(--text-primary);
+    padding: 10px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
 }
 
 .header-actions {
@@ -472,49 +503,3 @@ body::before {
 .hidden-input {
     display: none;
 }
-
-/* ─── File Tabs ─── */
-.file-tabs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex: 1;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-    padding: 0 4px;
-}
-
-.file-tabs::-webkit-scrollbar {
-    display: none;
-}
-
-.file-tab {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 14px;
-    border-radius: var(--radius-sm);
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--text-secondary);
-    font-size: 13px;
-    font-weight: 500;
-    font-family: inherit;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-
-.file-tab:hover {
-    color: var(--text-primary);
-    background: var(--bg-glass);
-}
-
-.file-tab.active {
-    color: var(--text-primary);
-    background: var(--bg-elevated);
-    border-color: var(--border);
-}
-

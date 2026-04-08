@@ -12,7 +12,9 @@ import {
     listFileAICleaningResults,
     getFileState,
     getColumnPrefs,
+    isProjectNameInUse,
     listFileStates,
+    renameProject,
     saveColumnPrefs,
     saveFileAICleaningToolResult,
     saveFileState,
@@ -96,6 +98,10 @@ function normalizeUploadedFileName(fileName: string): string {
 
 function normalizeUploadMode(value: unknown): "create" | "merge" {
     return value === "merge" ? "merge" : "create";
+}
+
+function normalizeProjectName(value: unknown): string {
+    return typeof value === "string" ? value.trim() : "";
 }
 
 function detectUploadFileFormat(
@@ -283,6 +289,19 @@ function attachCleaningResultsToState(
     };
 }
 
+function attachPersistedMetadataToState(
+    state: unknown,
+    updatedAt: string,
+): unknown {
+    if (!state || typeof state !== "object") {
+        return state;
+    }
+    return {
+        ...(state as Record<string, unknown>),
+        updatedAt,
+    };
+}
+
 export const registerFileRoutes = (app: Express, upload: Multer) => {
     app.post("/api/files/upload", upload.single("file"), async (req, res) => {
         try {
@@ -297,6 +316,9 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                 file.originalname,
             );
             const uploadMode = normalizeUploadMode(req.body?.mode);
+            const requestedProjectName = normalizeProjectName(
+                req.body?.projectName,
+            );
             const requestedTargetFileId =
                 typeof req.body?.targetFileId === "string"
                     ? req.body.targetFileId.trim()
@@ -317,10 +339,18 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                         message: "目标项目不存在",
                     });
                 }
+            } else if (!requestedProjectName) {
+                return res.status(400).json({
+                    message: "缺少项目名称",
+                });
+            } else if (isProjectNameInUse(requestedProjectName)) {
+                return res.status(409).json({
+                    message: "项目名称已存在，请使用其他名称",
+                });
             }
 
             const projectId = persistedState?.fileId ?? randomUUID();
-            const projectName = persistedState?.fileName ?? normalizedFileName;
+            const projectName = persistedState?.fileName ?? requestedProjectName;
             const parsed = await parseUploadedFile(
                 file,
                 normalizedFileName,
@@ -345,9 +375,12 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
             const versionedState = attachClientStateVersion(state);
             saveFileState(projectId, projectName, versionedState);
-            const responseState = attachCleaningResultsToState(
-                versionedState,
-                listFileAICleaningResults(projectId),
+            const responseState = attachPersistedMetadataToState(
+                attachCleaningResultsToState(
+                    versionedState,
+                    listFileAICleaningResults(projectId),
+                ),
+                new Date().toISOString(),
             );
             return res.json({
                 file: responseState,
@@ -363,9 +396,12 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
     app.get("/api/files", (_req, res) => {
         const files = listFileStates().map((item) =>
-            attachCleaningResultsToState(
-                item.state,
-                listFileAICleaningResults(item.fileId),
+            attachPersistedMetadataToState(
+                attachCleaningResultsToState(
+                    item.state,
+                    listFileAICleaningResults(item.fileId),
+                ),
+                item.updatedAt,
             ),
         );
         if (SHOULD_LOG_AI_RESULTS) {
@@ -383,6 +419,46 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             });
         }
         return res.json({ files });
+    });
+
+    app.put("/api/files/:fileId/name", (req, res) => {
+        const { fileId } = req.params;
+        const nextFileName = normalizeProjectName(req.body?.fileName);
+
+        if (!nextFileName) {
+            return res.status(400).json({
+                message: "fileName must be a non-empty string",
+            });
+        }
+
+        const current = getFileState(fileId);
+        if (!current) {
+            return res.status(404).json({ message: "file state not found" });
+        }
+
+        if (
+            nextFileName !== current.fileName &&
+            isProjectNameInUse(nextFileName, fileId)
+        ) {
+            return res.status(409).json({
+                message: "项目名称已存在，请使用其他名称",
+            });
+        }
+
+        const renamed = renameProject(fileId, nextFileName);
+        if (!renamed) {
+            return res.status(404).json({ message: "file state not found" });
+        }
+
+        const responseState = attachPersistedMetadataToState(
+            attachCleaningResultsToState(
+                renamed.state,
+                listFileAICleaningResults(fileId),
+            ),
+            renamed.updatedAt,
+        );
+
+        return res.json({ file: responseState });
     });
 
     app.put("/api/files/:fileId/state", (req, res) => {

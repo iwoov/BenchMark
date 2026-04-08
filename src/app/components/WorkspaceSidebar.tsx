@@ -2,6 +2,7 @@ import type { FileViewState } from "../../types";
 import type { MainSection, SettingsSection } from "../types";
 import {
     IconChartPie,
+    IconFolder,
     IconListTree,
     IconPanelLeft,
     IconSliders,
@@ -70,6 +71,19 @@ export function WorkspaceSidebar({
                 </span>
                 <span className="workspace-nav-copy">
                     <strong>题目列表</strong>
+                </span>
+            </button>
+            <button
+                type="button"
+                className={`workspace-nav-item ${activeSection === "project-management" ? "active" : ""}`}
+                onClick={() => onNavigate("project-management")}
+                title="项目管理"
+            >
+                <span className="workspace-nav-icon" aria-hidden="true">
+                    <IconFolder />
+                </span>
+                <span className="workspace-nav-copy">
+                    <strong>项目管理</strong>
                 </span>
             </button>
             <button

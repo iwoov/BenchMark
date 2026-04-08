@@ -5,7 +5,11 @@ export interface ColumnPrefsConfig {
     filterKeys?: string[];
 }
 
-export type MainSection = "dashboard" | "list" | "settings";
+export type MainSection =
+    | "project-management"
+    | "dashboard"
+    | "list"
+    | "settings";
 export type SettingsSection = "fields" | "statistics" | "ai";
 
 export interface RouteState {

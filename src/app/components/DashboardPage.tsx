@@ -6,9 +6,7 @@ import type {
 } from "../../types";
 
 interface DashboardPageProps {
-    files: FileViewState[];
     activeFile: FileViewState;
-    onSelectFile: (fileId: string) => void;
     onOpenStatisticsSettings: () => void;
 }
 
@@ -308,9 +306,7 @@ function getColumnTitle(columns: ParsedColumn[], fieldKey: string): string {
 }
 
 export function DashboardPage({
-    files,
     activeFile,
-    onSelectFile,
     onOpenStatisticsSettings,
 }: DashboardPageProps) {
     const selectedFieldKeys = activeFile.statisticsConfig.selectedFieldKeys;
@@ -347,21 +343,6 @@ export function DashboardPage({
                     </p>
                 </div>
                 <div className="dashboard-hero-actions">
-                    <label className="dashboard-source-picker">
-                        <span>数据源</span>
-                        <select
-                            value={activeFile.fileId}
-                            onChange={(event) =>
-                                onSelectFile(event.target.value)
-                            }
-                        >
-                            {files.map((file) => (
-                                <option key={file.fileId} value={file.fileId}>
-                                    {file.fileName}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
                     <button
                         type="button"
                         className="btn btn-primary"

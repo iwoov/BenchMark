@@ -740,6 +740,10 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             typeof candidate.sourceFileName === "string"
                 ? candidate.sourceFileName
                 : undefined,
+        updatedAt:
+            typeof candidate.updatedAt === "string"
+                ? candidate.updatedAt
+                : undefined,
         columns,
         rows,
         level1Options: toSafeStringArray(candidate.level1Options),

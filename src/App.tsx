@@ -28,7 +28,9 @@ import { DashboardPage } from "./app/components/DashboardPage";
 import { ListPage } from "./app/components/ListPage";
 import { DetailPage } from "./app/components/DetailPage";
 import { SettingsPage } from "./app/components/SettingsPage";
+import { ProjectManagementPage } from "./app/components/ProjectManagementPage";
 import { ColumnConfigModal } from "./app/components/ColumnConfigModal";
+import { ProjectNameDialog } from "./app/components/ProjectNameDialog";
 import { AIProfileModal } from "./app/components/AIProfileModal";
 import { AIRouteModal } from "./app/components/AIRouteModal";
 import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
@@ -93,6 +95,12 @@ function App() {
         pendingConfigNotice,
         pendingConfigMode,
         initialLoadComplete,
+        projectNameDialogMode,
+        projectNameDraft,
+        setProjectNameDraft,
+        projectNameDialogError,
+        projectNameTargetFileId,
+        removingFileId,
         persistFileState,
         flushPendingAIResults,
         latestFileStateRef,
@@ -113,7 +121,11 @@ function App() {
         onPendingClearEditableColumns,
         onCancelPendingFile,
         onConfirmPendingFile,
-        onUploadClick,
+        onOpenCreateProjectDialog,
+        onOpenRenameProjectDialog,
+        onCancelProjectNameDialog,
+        onConfirmProjectNameDialog,
+        onStartMergeUpload,
         onUploadFile,
         onExportFile,
         onRemoveFile,
@@ -234,7 +246,7 @@ function App() {
 
     useEffect(() => {
         if (initialLoadComplete && !activeFile) {
-            navigateToSection("dashboard", activeSettingsSection, null, {
+            navigateToSection("project-management", activeSettingsSection, null, {
                 replace: true,
             });
         }
@@ -547,7 +559,12 @@ function App() {
     const isDetailView = activeSection === "list" && selectedRowId !== null;
     const isDetailChatSidebarVisible =
         isDetailView && activeFile !== null && !isDetailChatSidebarHidden;
-    const showWorkspaceTopbar = isDetailView || activeSection !== "dashboard";
+    const showWorkspaceTopbar =
+        activeSection !== "project-management" &&
+        (isDetailView || activeSection !== "dashboard");
+    const projectNameDialogTargetFile = projectNameTargetFileId
+        ? files.find((file) => file.fileId === projectNameTargetFileId) ?? null
+        : null;
 
     const startResizeDetailChatSidebar = (
         event: ReactMouseEvent<HTMLButtonElement>,
@@ -566,7 +583,6 @@ function App() {
                 files={files}
                 activeFileId={activeFileId}
                 onSelectFile={setActiveFileId}
-                onRemoveFile={onRemoveFile}
                 errorMessage={errorMessage}
                 aiBatchTask={aiBatchTask}
                 aiBatchProgressPercent={aiBatchProgressPercent}
@@ -574,11 +590,9 @@ function App() {
                 theme={theme}
                 onToggleTheme={toggleTheme}
                 onExportFile={onExportFile}
-                onUploadClick={onUploadClick}
                 uploadInputRef={uploadInputRef}
                 onUploadFile={onUploadFile}
                 isExporting={isExporting}
-                isUploading={isUploading}
                 activeFile={activeFile}
             />
 
@@ -611,14 +625,35 @@ function App() {
                             <h2>正在恢复项目</h2>
                             <p>正在加载本地已保存的文件与状态。</p>
                         </section>
+                    ) : activeSection === "project-management" ? (
+                        <section className="workspace-view">
+                            <section className="page-panel">
+                                <ProjectManagementPage
+                                    files={files}
+                                    activeFileId={activeFileId}
+                                    isUploading={isUploading}
+                                    onSelectFile={setActiveFileId}
+                                    onOpenCreateProjectDialog={
+                                        onOpenCreateProjectDialog
+                                    }
+                                    onStartMergeUpload={onStartMergeUpload}
+                                    onOpenRenameProjectDialog={
+                                        onOpenRenameProjectDialog
+                                    }
+                                    onRemoveFile={onRemoveFile}
+                                    removingFileId={removingFileId}
+                                />
+                            </section>
+                        </section>
                     ) : !activeFile ? (
                         <section className="placeholder workspace-placeholder">
                             <div className="placeholder-icon">
                                 <IconFile />
                             </div>
-                            <h2>等待文件导入</h2>
+                            <h2>等待项目创建</h2>
                             <p>
-                                点击右上角导入按钮上传 Excel 或 JSON 文件，导入后可在左侧切换列表、详情与设置。
+                                请前往“项目管理”页创建项目并导入 Excel 或
+                                JSON 文件。
                             </p>
                         </section>
                     ) : (
@@ -943,9 +978,7 @@ function App() {
                                 {activeSection === "dashboard" ? (
                                     <section className="page-panel">
                                         <DashboardPage
-                                            files={files}
                                             activeFile={activeFile}
-                                            onSelectFile={setActiveFileId}
                                             onOpenStatisticsSettings={() =>
                                                 navigateToSection(
                                                     "settings",
@@ -1121,6 +1154,15 @@ function App() {
                     </div>
                 ) : null}
             </main>
+            <ProjectNameDialog
+                mode={projectNameDialogMode}
+                value={projectNameDraft}
+                errorMessage={projectNameDialogError}
+                targetProjectName={projectNameDialogTargetFile?.fileName}
+                onChange={setProjectNameDraft}
+                onCancel={onCancelProjectNameDialog}
+                onConfirm={onConfirmProjectNameDialog}
+            />
             {/* ─── Column Selection Modal ─── */}
             <ColumnConfigModal
                 pendingFile={pendingFile}

@@ -26,6 +26,7 @@ export interface ParsedFile {
     fileId: string;
     fileName: string;
     sourceFileName?: string;
+    updatedAt?: string;
     columns: ParsedColumn[];
     rows: ParsedRow[];
     level1Options: string[];

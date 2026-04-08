@@ -2,13 +2,12 @@ import type { ChangeEvent, RefObject } from "react";
 import type { FileViewState } from "../../types";
 import type { AIBatchTaskState } from "../types";
 import { getAIBatchTaskStatusText } from "../ai-helpers";
-import { IconDownload, IconMoon, IconSun, IconUpload } from "../icons";
+import { IconDownload, IconMoon, IconSun } from "../icons";
 
 interface HeaderBarProps {
     files: FileViewState[];
     activeFileId: string | null;
     onSelectFile: (fileId: string) => void;
-    onRemoveFile: (fileId: string) => void;
     errorMessage: string;
     aiBatchTask: AIBatchTaskState;
     aiBatchProgressPercent: number;
@@ -16,11 +15,9 @@ interface HeaderBarProps {
     theme: "dark" | "light";
     onToggleTheme: () => void;
     onExportFile: () => void;
-    onUploadClick: (mode?: "create" | "merge") => void;
     uploadInputRef: RefObject<HTMLInputElement>;
     onUploadFile: (event: ChangeEvent<HTMLInputElement>) => void;
     isExporting: boolean;
-    isUploading: boolean;
     activeFile: FileViewState | null;
 }
 
@@ -28,7 +25,6 @@ export function HeaderBar({
     files,
     activeFileId,
     onSelectFile,
-    onRemoveFile,
     errorMessage,
     aiBatchTask,
     aiBatchProgressPercent,
@@ -36,11 +32,9 @@ export function HeaderBar({
     theme,
     onToggleTheme,
     onExportFile,
-    onUploadClick,
     uploadInputRef,
     onUploadFile,
     isExporting,
-    isUploading,
     activeFile,
 }: HeaderBarProps) {
     return (
@@ -59,42 +53,28 @@ export function HeaderBar({
                             />
                         </svg>
                     </div>
-                    <h1>质检工作台</h1>
+                    <div className="header-brand-copy">
+                        <h1>质检工作台</h1>
+                        <span>项目驱动的数据质检与评测工作区</span>
+                    </div>
                 </div>
 
-                <div className="file-tabs">
-                    {files.map((file) => (
-                        <div
-                            key={file.fileId}
-                            className={`file-tab ${file.fileId === activeFileId ? "active" : ""}`}
-                        >
-                            <button
-                                type="button"
-                                style={{
-                                    all: "unset",
-                                    cursor: "pointer",
-                                    display: "contents",
-                                }}
-                                onClick={() => onSelectFile(file.fileId)}
-                            >
+                <div className="header-project-picker">
+                    <select
+                        className="header-project-select"
+                        value={activeFileId ?? ""}
+                        onChange={(event) => onSelectFile(event.target.value)}
+                        disabled={files.length === 0}
+                    >
+                        <option value="" disabled>
+                            {files.length === 0 ? "暂无项目" : "请选择项目"}
+                        </option>
+                        {files.map((file) => (
+                            <option key={file.fileId} value={file.fileId}>
                                 {file.fileName}
-                            </button>
-                            <span className="tab-badge">
-                                {file.rows.length}
-                            </span>
-                            <button
-                                type="button"
-                                className="tab-close"
-                                onClick={(event) => {
-                                    event.stopPropagation();
-                                    onRemoveFile(file.fileId);
-                                }}
-                                title="关闭"
-                            >
-                                ×
-                            </button>
-                        </div>
-                    ))}
+                            </option>
+                        ))}
+                    </select>
                 </div>
 
                 <div className="header-actions">
@@ -163,26 +143,6 @@ export function HeaderBar({
                     >
                         <IconDownload />
                         {isExporting ? "导出中..." : "导出 Excel"}
-                    </button>
-                    <button
-                        type="button"
-                        className="btn"
-                        onClick={() => onUploadClick("merge")}
-                        disabled={isUploading || !activeFile}
-                        title="支持导入 Excel 或 JSON 到当前项目"
-                    >
-                        <IconUpload />
-                        {isUploading ? "导入中..." : "导入文件到当前项目"}
-                    </button>
-                    <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={() => onUploadClick("create")}
-                        disabled={isUploading}
-                        title="支持新建导入 Excel 或 JSON 文件"
-                    >
-                        <IconUpload />
-                        {isUploading ? "导入中..." : "新建项目导入文件"}
                     </button>
                     <input
                         ref={uploadInputRef}

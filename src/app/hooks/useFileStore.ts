@@ -31,6 +31,7 @@ type NavigateToSection = (
 
 type PendingConfigMode = "import" | "edit";
 type UploadMode = "create" | "merge";
+type ProjectNameDialogMode = "create" | "rename";
 const LAST_ACTIVE_FILE_ID_STORAGE_KEY = "benchmark:last-active-file-id";
 
 export const useFileStore = ({
@@ -62,6 +63,14 @@ export const useFileStore = ({
     const [pendingConfigMode, setPendingConfigMode] =
         useState<PendingConfigMode>("import");
     const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+    const [projectNameDialogMode, setProjectNameDialogMode] =
+        useState<ProjectNameDialogMode | null>(null);
+    const [projectNameDraft, setProjectNameDraft] = useState("");
+    const [projectNameDialogError, setProjectNameDialogError] = useState("");
+    const [projectNameTargetFileId, setProjectNameTargetFileId] = useState<
+        string | null
+    >(null);
+    const [removingFileId, setRemovingFileId] = useState<string | null>(null);
 
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const persistTimersRef = useRef<Record<string, number>>({});
@@ -70,6 +79,8 @@ export const useFileStore = ({
     const latestFileStateRef = useRef<Record<string, FileViewState>>({});
     const stateVersionRef = useRef<Record<string, number>>({});
     const pendingUploadModeRef = useRef<UploadMode>("create");
+    const pendingCreateProjectNameRef = useRef("");
+    const pendingMergeTargetFileIdRef = useRef<string | null>(null);
 
     const activeFile = useMemo(
         () =>
@@ -345,6 +356,28 @@ export const useFileStore = ({
         persistTimersRef.current[file.fileId] = timerId;
     };
 
+    const upsertFileState = (nextFile: FileViewState) => {
+        latestFileStateRef.current[nextFile.fileId] = nextFile;
+        setFiles((previous) => {
+            const exists = previous.some(
+                (file) => file.fileId === nextFile.fileId,
+            );
+            if (!exists) {
+                return [...previous, nextFile];
+            }
+            return previous.map((file) =>
+                file.fileId === nextFile.fileId ? nextFile : file,
+            );
+        });
+    };
+
+    const resetProjectNameDialog = () => {
+        setProjectNameDialogMode(null);
+        setProjectNameDraft("");
+        setProjectNameDialogError("");
+        setProjectNameTargetFileId(null);
+    };
+
     const patchActiveFile = (
         updater: (file: FileViewState) => FileViewState,
     ) => {
@@ -362,6 +395,7 @@ export const useFileStore = ({
                 file.fileId === nextFile.fileId ? nextFile : file,
             ),
         );
+        latestFileStateRef.current[nextFile.fileId] = nextFile;
         schedulePersistFileState(nextFile);
     };
 
@@ -627,7 +661,7 @@ export const useFileStore = ({
             pendingSelectedDisplayKeys,
             pendingEditableColumnKeys,
         );
-        setFiles((previous) => [...previous, nextFile]);
+        upsertFileState(nextFile);
         setActiveFileId(nextFile.fileId);
         persistColumnPrefs(nextFile);
         persistFileState(nextFile);
@@ -764,9 +798,96 @@ export const useFileStore = ({
         }
     };
 
-    const onUploadClick = (mode: UploadMode = "create") => {
-        pendingUploadModeRef.current = mode;
+    const onOpenCreateProjectDialog = () => {
+        setErrorMessage("");
+        setProjectNameDialogError("");
+        setProjectNameDraft("");
+        setProjectNameTargetFileId(null);
+        setProjectNameDialogMode("create");
+    };
+
+    const onOpenRenameProjectDialog = (fileId: string) => {
+        const targetFile =
+            files.find((file) => file.fileId === fileId) ?? activeFile;
+        if (!targetFile) {
+            return;
+        }
+        setErrorMessage("");
+        setProjectNameDialogError("");
+        setProjectNameDraft(targetFile.fileName);
+        setProjectNameTargetFileId(targetFile.fileId);
+        setProjectNameDialogMode("rename");
+    };
+
+    const onCancelProjectNameDialog = () => {
+        resetProjectNameDialog();
+    };
+
+    const onStartMergeUpload = (fileId: string) => {
+        pendingUploadModeRef.current = "merge";
+        pendingMergeTargetFileIdRef.current = fileId;
         uploadInputRef.current?.click();
+    };
+
+    const onConfirmProjectNameDialog = async () => {
+        const nextProjectName = projectNameDraft.trim();
+        if (!nextProjectName) {
+            const message = "项目名称不能为空";
+            setProjectNameDialogError(message);
+            setErrorMessage(message);
+            return;
+        }
+
+        setProjectNameDialogError("");
+        setErrorMessage("");
+
+        if (projectNameDialogMode === "create") {
+            pendingCreateProjectNameRef.current = nextProjectName;
+            pendingUploadModeRef.current = "create";
+            pendingMergeTargetFileIdRef.current = null;
+            resetProjectNameDialog();
+            uploadInputRef.current?.click();
+            return;
+        }
+
+        if (projectNameDialogMode !== "rename" || !projectNameTargetFileId) {
+            return;
+        }
+
+        try {
+            const response = await fetch(
+                `/api/files/${encodeURIComponent(projectNameTargetFileId)}/name`,
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ fileName: nextProjectName }),
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
+                throw new Error(payload.message ?? "项目重命名失败");
+            }
+
+            const payload = (await response.json()) as { file?: unknown };
+            const renamedFile = normalizeLoadedFileState(payload.file);
+            if (!renamedFile) {
+                throw new Error("项目重命名结果无效");
+            }
+
+            upsertFileState(renamedFile);
+            if (pendingFile?.fileId === renamedFile.fileId) {
+                setPendingFile(renamedFile);
+            }
+            setActiveFileId(renamedFile.fileId);
+            resetProjectNameDialog();
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "项目重命名失败";
+            setProjectNameDialogError(message);
+            setErrorMessage(message);
+        }
     };
 
     const onUploadFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -780,21 +901,36 @@ export const useFileStore = ({
 
         try {
             const uploadMode = pendingUploadModeRef.current;
-            if (uploadMode === "merge" && !activeFile) {
+            const mergeTargetFileId =
+                pendingMergeTargetFileIdRef.current ?? activeFile?.fileId ?? null;
+            const mergeTargetFile =
+                files.find((file) => file.fileId === mergeTargetFileId) ??
+                activeFile;
+
+            if (uploadMode === "merge" && !mergeTargetFile) {
                 throw new Error("请先选择要更新的项目");
             }
+            if (
+                uploadMode === "create" &&
+                pendingCreateProjectNameRef.current.trim().length === 0
+            ) {
+                throw new Error("缺少项目名称");
+            }
 
-            if (uploadMode === "merge" && activeFile) {
-                cancelScheduledPersist(activeFile.fileId);
-                await persistFileState(activeFile);
-                await flushPendingAIResults(activeFile.fileId);
+            if (uploadMode === "merge" && mergeTargetFile) {
+                cancelScheduledPersist(mergeTargetFile.fileId);
+                await persistFileState(mergeTargetFile);
+                await flushPendingAIResults(mergeTargetFile.fileId);
             }
 
             const formData = new FormData();
             formData.append("file", selected);
             formData.append("mode", uploadMode);
-            if (uploadMode === "merge" && activeFile) {
-                formData.append("targetFileId", activeFile.fileId);
+            if (uploadMode === "create") {
+                formData.append("projectName", pendingCreateProjectNameRef.current);
+            }
+            if (uploadMode === "merge" && mergeTargetFile) {
+                formData.append("targetFileId", mergeTargetFile.fileId);
             }
             const response = await fetch("/api/files/upload", {
                 method: "POST",
@@ -822,17 +958,7 @@ export const useFileStore = ({
                 if (!mergedFile) {
                     throw new Error("项目导入结果无效");
                 }
-                setFiles((previous) => {
-                    const exists = previous.some(
-                        (file) => file.fileId === mergedFile.fileId,
-                    );
-                    if (!exists) {
-                        return [...previous, mergedFile];
-                    }
-                    return previous.map((file) =>
-                        file.fileId === mergedFile.fileId ? mergedFile : file,
-                    );
-                });
+                upsertFileState(mergedFile);
                 setActiveFileId(mergedFile.fileId);
                 resetPendingConfigState();
                 return;
@@ -912,7 +1038,7 @@ export const useFileStore = ({
                                 normalizedSaved.displayKeys,
                                 normalizedSaved.editableKeys,
                             );
-                            setFiles((previous) => [...previous, nextFile]);
+                            upsertFileState(nextFile);
                             setActiveFileId(nextFile.fileId);
                             persistFileState(nextFile);
                             shouldShowColumnModal = false;
@@ -939,23 +1065,68 @@ export const useFileStore = ({
             const message = error instanceof Error ? error.message : "上传失败";
             setErrorMessage(message);
         } finally {
+            pendingCreateProjectNameRef.current = "";
+            pendingMergeTargetFileIdRef.current = null;
             setIsUploading(false);
             event.target.value = "";
         }
     };
 
-    const onRemoveFile = (fileId: string) => {
-        cancelScheduledPersist(fileId);
-        fetch(`/api/files/${encodeURIComponent(fileId)}`, {
-            method: "DELETE",
-        }).catch(() => {});
-        setFiles((previous) => {
-            const next = previous.filter((file) => file.fileId !== fileId);
-            if (activeFileId === fileId) {
-                setActiveFileId(next[0]?.fileId ?? null);
+    const onRemoveFile = async (fileId: string) => {
+        const targetFile = files.find((file) => file.fileId === fileId);
+        if (!targetFile) {
+            return;
+        }
+        const confirmed =
+            typeof window === "undefined"
+                ? true
+                : window.confirm(
+                      `确定删除项目“${targetFile.fileName}”吗？此操作会同时删除该项目的本地状态和 AI 清洗结果，且不可撤销。`,
+                  );
+        if (!confirmed) {
+            return;
+        }
+
+        setErrorMessage("");
+        setRemovingFileId(fileId);
+
+        try {
+            const response = await fetch(
+                `/api/files/${encodeURIComponent(fileId)}`,
+                {
+                    method: "DELETE",
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
+                throw new Error(payload.message ?? "删除项目失败");
             }
-            return next;
-        });
+
+            cancelScheduledPersist(fileId);
+            delete pendingPersistRef.current[fileId];
+            delete persistTimersRef.current[fileId];
+            delete latestFileStateRef.current[fileId];
+            delete persistAIResultsQueueRef.current[fileId];
+            delete stateVersionRef.current[fileId];
+
+            setFiles((previous) => {
+                const next = previous.filter((file) => file.fileId !== fileId);
+                if (activeFileId === fileId) {
+                    setActiveFileId(next[0]?.fileId ?? null);
+                }
+                return next;
+            });
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "删除项目失败";
+            setErrorMessage(message);
+        } finally {
+            setRemovingFileId((previous) =>
+                previous === fileId ? null : previous,
+            );
+        }
     };
 
     return {
@@ -973,6 +1144,12 @@ export const useFileStore = ({
         pendingConfigNotice,
         pendingConfigMode,
         initialLoadComplete,
+        projectNameDialogMode,
+        projectNameDraft,
+        setProjectNameDraft,
+        projectNameDialogError,
+        projectNameTargetFileId,
+        removingFileId,
         persistFileState,
         schedulePersistFileState,
         cancelScheduledPersist,
@@ -996,7 +1173,11 @@ export const useFileStore = ({
         onPendingClearEditableColumns,
         onCancelPendingFile,
         onConfirmPendingFile,
-        onUploadClick,
+        onOpenCreateProjectDialog,
+        onOpenRenameProjectDialog,
+        onCancelProjectNameDialog,
+        onConfirmProjectNameDialog,
+        onStartMergeUpload,
         onUploadFile,
         onExportFile,
         onRemoveFile,

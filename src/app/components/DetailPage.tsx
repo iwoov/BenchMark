@@ -30,6 +30,44 @@ import {
     AI_STAGE_ORDER,
 } from "../constants";
 
+type DetailWorkspacePanelKey = "quality" | "cleaning" | "evaluation";
+
+const DETAIL_WORKSPACE_PANEL_STORAGE_KEY =
+    "benchmark:detail-workspace-panel";
+const DETAIL_CLEANING_TOOL_STORAGE_KEY = "benchmark:detail-cleaning-tool";
+
+const DETAIL_WORKSPACE_PANELS: Array<{
+    key: DetailWorkspacePanelKey;
+    title: string;
+    description: string;
+}> = [
+    {
+        key: "quality",
+        title: "数据质检",
+        description: "检查题目质量、逻辑风险和答案一致性。",
+    },
+    {
+        key: "cleaning",
+        title: "数据清洗",
+        description: "在清洗工具之间切换，查看或更新结构化结果。",
+    },
+    {
+        key: "evaluation",
+        title: "数据评测",
+        description: "预留评测区，后续接入评测指标与结果。",
+    },
+];
+
+function isDetailWorkspacePanelKey(
+    value: string,
+): value is DetailWorkspacePanelKey {
+    return DETAIL_WORKSPACE_PANELS.some((panel) => panel.key === value);
+}
+
+function isAICleaningToolKey(value: string): value is AICleaningToolKey {
+    return AI_CLEANING_TOOL_ORDER.some((toolKey) => toolKey === value);
+}
+
 function readTextValue(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
 }
@@ -1163,30 +1201,36 @@ export function DetailPage({
     onToggleRowEnabled,
 }: DetailPageProps) {
     const [detailImageZoom, setDetailImageZoom] = useState(100);
-    const [isAIDetectSectionCollapsed, setIsAIDetectSectionCollapsed] =
-        useState(true);
-    const [aiDetectCardHeight, setAIDetectCardHeight] = useState(220);
-    const aiDetectResizeRef = useRef<{
-        active: boolean;
-        startY: number;
-        startHeight: number;
-    }>({
-        active: false,
-        startY: 0,
-        startHeight: 220,
-    });
-
-    if (!selectedRow) {
-        return (
-            <div className="record-list-empty">
-                请先在题目列表页选择一条记录
-            </div>
-        );
-    }
+    const [activeWorkspacePanel, setActiveWorkspacePanel] =
+        useState<DetailWorkspacePanelKey>(() => {
+            if (typeof window === "undefined") {
+                return "cleaning";
+            }
+            const saved = window.localStorage.getItem(
+                DETAIL_WORKSPACE_PANEL_STORAGE_KEY,
+            );
+            return saved && isDetailWorkspacePanelKey(saved)
+                ? saved
+                : "cleaning";
+        });
+    const [selectedCleaningToolKey, setSelectedCleaningToolKey] =
+        useState<AICleaningToolKey>(() => {
+            if (typeof window === "undefined") {
+                return AI_CLEANING_TOOL_ORDER[0];
+            }
+            const saved = window.localStorage.getItem(
+                DETAIL_CLEANING_TOOL_STORAGE_KEY,
+            );
+            return saved && isAICleaningToolKey(saved)
+                ? saved
+                : AI_CLEANING_TOOL_ORDER[0];
+        });
 
     const problemTextColumns = useMemo(
         () =>
-            [...displayColumns]
+            !selectedRow
+                ? []
+                : [...displayColumns]
                 .filter(
                     (column) =>
                         !isImageColumn(selectedRow, column) &&
@@ -1201,9 +1245,11 @@ export function DetailPage({
     );
     const imageColumns = useMemo(
         () =>
-            displayColumns.filter((column) =>
-                isImageColumn(selectedRow, column),
-            ),
+            !selectedRow
+                ? []
+                : displayColumns.filter((column) =>
+                      isImageColumn(selectedRow, column),
+                  ),
         [displayColumns, selectedRow],
     );
     const sourceColumns = useMemo(
@@ -1271,34 +1317,44 @@ export function DetailPage({
     ]);
     const hasHeroLayout =
         problemTextColumns.length > 0 || imageColumns.length > 0;
+
     useEffect(() => {
         setDetailImageZoom(100);
-    }, [selectedRow.rowId]);
+    }, [selectedRow?.rowId]);
 
     useEffect(() => {
-        const handleMouseMove = (event: MouseEvent) => {
-            if (!aiDetectResizeRef.current.active) {
-                return;
-            }
-            const deltaY = event.clientY - aiDetectResizeRef.current.startY;
-            const nextHeight = Math.min(
-                480,
-                Math.max(140, aiDetectResizeRef.current.startHeight + deltaY),
-            );
-            setAIDetectCardHeight(nextHeight);
-        };
+        if (typeof window === "undefined") {
+            return;
+        }
+        window.localStorage.setItem(
+            DETAIL_WORKSPACE_PANEL_STORAGE_KEY,
+            activeWorkspacePanel,
+        );
+    }, [activeWorkspacePanel]);
 
-        const handleMouseUp = () => {
-            aiDetectResizeRef.current.active = false;
-        };
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        window.localStorage.setItem(
+            DETAIL_CLEANING_TOOL_STORAGE_KEY,
+            selectedCleaningToolKey,
+        );
+    }, [selectedCleaningToolKey]);
 
-        window.addEventListener("mousemove", handleMouseMove);
-        window.addEventListener("mouseup", handleMouseUp);
-        return () => {
-            window.removeEventListener("mousemove", handleMouseMove);
-            window.removeEventListener("mouseup", handleMouseUp);
-        };
-    }, []);
+    useEffect(() => {
+        if (
+            activeAICleaningToolKey &&
+            activeWorkspacePanel === "cleaning" &&
+            activeAICleaningToolKey !== selectedCleaningToolKey
+        ) {
+            setSelectedCleaningToolKey(activeAICleaningToolKey);
+        }
+    }, [
+        activeAICleaningToolKey,
+        activeWorkspacePanel,
+        selectedCleaningToolKey,
+    ]);
 
     const decreaseImageZoom = () => {
         setDetailImageZoom((previous) => Math.max(50, previous - 25));
@@ -1308,16 +1364,28 @@ export function DetailPage({
         setDetailImageZoom((previous) => Math.min(250, previous + 25));
     };
 
-    const startResizeAIDetectSection = (
-        event: ReactMouseEvent<HTMLButtonElement>,
-    ) => {
-        aiDetectResizeRef.current = {
-            active: true,
-            startY: event.clientY,
-            startHeight: aiDetectCardHeight,
-        };
-        event.preventDefault();
-    };
+    const activeWorkspaceMeta =
+        DETAIL_WORKSPACE_PANELS.find(
+            (panel) => panel.key === activeWorkspacePanel,
+        ) ?? DETAIL_WORKSPACE_PANELS[1];
+    const cleaningToolLabel = AI_CLEANING_TOOL_LABELS[selectedCleaningToolKey];
+    const cleaningSavedContent =
+        cleaningResults?.[selectedCleaningToolKey]?.responseText ?? "";
+    const isSelectedCleaningToolRunning =
+        activeAICleaningToolKey === selectedCleaningToolKey && isAICleaning;
+    const selectedCleaningContent =
+        isSelectedCleaningToolRunning &&
+        aiCleaningStreamText.trim().length > 0
+            ? aiCleaningStreamText
+            : cleaningSavedContent;
+
+    if (!selectedRow) {
+        return (
+            <div className="record-list-empty">
+                请先在题目列表页选择一条记录
+            </div>
+        );
+    }
 
     return (
         <section className="record-detail standalone-record-detail">
@@ -1344,191 +1412,13 @@ export function DetailPage({
                     <span>{selectedRow.enabled ? "启用" : "停用"}</span>
                 </label>
             </div>
-            <div className="record-detail-ai-toolbar">
-                <div className="record-detail-ai-header">
-                    <strong className="record-detail-ai-title">
-                        AI自动化检测
-                    </strong>
-                    <div className="record-detail-ai-header-actions">
-                        <button
-                            type="button"
-                            className="btn"
-                            onClick={() =>
-                                setIsAIDetectSectionCollapsed(
-                                    (previous) => !previous,
-                                )
-                            }
-                        >
-                            {isAIDetectSectionCollapsed ? "展开" : "折叠"}
-                        </button>
-                        <button
-                            type="button"
-                            className="btn btn-primary"
-                            onClick={onRunAllAIDetect}
-                            disabled={!canRunAllAIDetect}
-                        >
-                            {runAllTimerText
-                                ? `执行全部中 ${runAllTimerText}`
-                                : AI_RUN_ALL_LABEL}
-                        </button>
-                    </div>
-                </div>
-                {!isAIDetectSectionCollapsed ? (
-                    <div
-                        className="record-detail-ai-results"
-                        style={
-                            {
-                                "--ai-detect-card-height": `${aiDetectCardHeight}px`,
-                            } as CSSProperties
-                        }
-                    >
-                        <div className="record-detail-ai-results-grid">
-                            {AI_STAGE_ORDER.map((stageKey) => {
-                                const label = AI_STAGE_LABELS[stageKey];
-                                const content = aiResults?.[stageKey] ?? "";
-                                const stageTimer =
-                                    runAllStageTimers?.[stageKey];
-                                const hasResult = content.trim().length > 0;
-                                const isRunAllRunning =
-                                    Boolean(runAllTimerText);
-                                const buttonLabel = hasResult
-                                    ? "查看"
-                                    : isRunAllRunning
-                                      ? (stageTimer ?? "00:00")
-                                      : "运行";
-                                const buttonAriaLabel = hasResult
-                                    ? `查看 ${label.shortTitle}`
-                                    : isRunAllRunning
-                                      ? `运行中 ${label.shortTitle}`
-                                      : `运行 ${label.shortTitle}`;
-                                const isButtonDisabled =
-                                    !hasResult && isRunAllRunning;
-                                return (
-                                    <div
-                                        key={stageKey}
-                                        className="record-detail-ai-result-card"
-                                    >
-                                        <div className="record-detail-ai-result-title">
-                                            <div className="record-detail-ai-result-title-text">
-                                                <span>{label.shortTitle}</span>
-                                                <small>{label.title}</small>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                className="btn btn-ghost ai-stage-run-btn"
-                                                aria-label={buttonAriaLabel}
-                                                onClick={() =>
-                                                    onOpenAIRunModal(stageKey)
-                                                }
-                                                disabled={isButtonDisabled}
-                                            >
-                                                {buttonLabel}
-                                            </button>
-                                        </div>
-                                        <div className="record-detail-ai-result-body">
-                                            {renderAIResultContent(
-                                                stageKey,
-                                                content,
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                        <button
-                            type="button"
-                            className="record-detail-ai-resize-handle"
-                            onMouseDown={startResizeAIDetectSection}
-                            aria-label="拖动调整 AI 自动化检测高度"
-                            title="拖动调整 AI 自动化检测高度"
-                        >
-                            <span />
-                        </button>
-                    </div>
-                ) : null}
-            </div>
-            <div className="record-detail-ai-toolbar">
-                <div className="record-detail-ai-header">
-                    <strong className="record-detail-ai-title">数据清洗</strong>
-                </div>
-                <div className="record-detail-ai-results record-detail-ai-cleaning-results">
-                    <div className="record-detail-ai-results-grid">
-                        {AI_CLEANING_TOOL_ORDER.map((toolKey) => {
-                            const label = AI_CLEANING_TOOL_LABELS[toolKey];
-                            const savedContent =
-                                cleaningResults?.[toolKey]?.responseText ?? "";
-                            const isActiveTool =
-                                activeAICleaningToolKey === toolKey;
-                            const displayContent =
-                                isActiveTool &&
-                                isAICleaning &&
-                                aiCleaningStreamText.trim().length > 0
-                                    ? aiCleaningStreamText
-                                    : savedContent;
-                            return (
-                                <div
-                                    key={toolKey}
-                                    className="record-detail-ai-result-card"
-                                >
-                                    <div className="record-detail-ai-result-title">
-                                        <div className="record-detail-ai-result-title-text">
-                                            <span>{label.shortTitle}</span>
-                                            <small>{label.title}</small>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            className="btn btn-ghost ai-stage-run-btn"
-                                            onClick={() =>
-                                                onRunAICleaning(toolKey)
-                                            }
-                                            disabled={isAICleaning}
-                                        >
-                                            {isActiveTool && isAICleaning
-                                                ? aiCleaningElapsedText
-                                                : "运行"}
-                                        </button>
-                                    </div>
-                                    <div className="record-detail-ai-result-body">
-                                        {toolKey === "generate_level3_tags" ? (
-                                            <GenerateLevel3TagsResult
-                                                rowId={selectedRow.rowId}
-                                                content={displayContent}
-                                                onAddTag={onAddLevel3Tag}
-                                                onRemoveTag={onRemoveLevel3Tag}
-                                            />
-                                        ) : toolKey ===
-                                          "biochem_level1_refine" ? (
-                                            <BiochemLevel1Result
-                                                rowId={selectedRow.rowId}
-                                                content={displayContent}
-                                                level1Options={level1Options}
-                                                onSaveDiscipline={
-                                                    onUpdateBiochemLevel1Discipline
-                                                }
-                                            />
-                                        ) : (
-                                            renderAICleaningResultContent(
-                                                toolKey,
-                                                displayContent,
-                                            )
-                                        )}
-                                    </div>
-                                    {isActiveTool && aiCleaningStatusMessage ? (
-                                        <div className="record-detail-ai-cleaning-message">
-                                            {aiCleaningStatusMessage}
-                                        </div>
-                                    ) : null}
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
-            </div>
             <div className="detail-page-layout">
                 <div className="detail-page-main">
                     <div className="record-detail-header">
-                        <h3>字段详情</h3>
-                        <span>点击字段左侧勾选框可控制显示/隐藏</span>
+                        <div>
+                            <h3>原始题目</h3>
+                            <span>题目内容始终固定展示，右侧工作区围绕它展开。</span>
+                        </div>
                     </div>
                     <div className="detail-fields">
                         {hasHeroLayout ? (
@@ -1663,6 +1553,244 @@ export function DetailPage({
                         ) : null}
                     </div>
                 </div>
+                <aside className="detail-page-workspace">
+                    <div className="detail-workspace-shell">
+                        <div className="detail-workspace-header">
+                            <div className="detail-workspace-header-copy">
+                                <span className="detail-workspace-eyebrow">
+                                    处理工作区
+                                </span>
+                                <h3>{activeWorkspaceMeta.title}</h3>
+                                <p>{activeWorkspaceMeta.description}</p>
+                            </div>
+                            {activeWorkspacePanel === "quality" ? (
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    onClick={onRunAllAIDetect}
+                                    disabled={!canRunAllAIDetect}
+                                >
+                                    {runAllTimerText
+                                        ? `执行全部中 ${runAllTimerText}`
+                                        : AI_RUN_ALL_LABEL}
+                                </button>
+                            ) : null}
+                        </div>
+
+                        <div className="detail-workspace-switcher">
+                            {DETAIL_WORKSPACE_PANELS.map((panel) => (
+                                <button
+                                    key={panel.key}
+                                    type="button"
+                                    className={`detail-workspace-tab ${activeWorkspacePanel === panel.key ? "active" : ""}`}
+                                    onClick={() =>
+                                        setActiveWorkspacePanel(panel.key)
+                                    }
+                                >
+                                    {panel.title}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="detail-workspace-body">
+                            {activeWorkspacePanel === "quality" ? (
+                                <div className="detail-workspace-stage-list">
+                                    {AI_STAGE_ORDER.map((stageKey) => {
+                                        const label = AI_STAGE_LABELS[stageKey];
+                                        const content =
+                                            aiResults?.[stageKey] ?? "";
+                                        const hasResult =
+                                            content.trim().length > 0;
+                                        const stageTimer =
+                                            runAllStageTimers?.[stageKey];
+                                        const isRunAllRunning =
+                                            Boolean(runAllTimerText);
+                                        const buttonLabel = hasResult
+                                            ? "查看"
+                                            : isRunAllRunning
+                                              ? (stageTimer ?? "00:00")
+                                              : "运行";
+                                        const isButtonDisabled =
+                                            !hasResult && isRunAllRunning;
+                                        return (
+                                            <section
+                                                key={stageKey}
+                                                className="detail-workspace-card"
+                                            >
+                                                <div className="detail-workspace-card-head">
+                                                    <div className="detail-workspace-card-copy">
+                                                        <strong>
+                                                            {label.shortTitle}
+                                                        </strong>
+                                                        <span>{label.title}</span>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost ai-stage-run-btn"
+                                                        onClick={() =>
+                                                            onOpenAIRunModal(
+                                                                stageKey,
+                                                            )
+                                                        }
+                                                        disabled={
+                                                            isButtonDisabled
+                                                        }
+                                                    >
+                                                        {buttonLabel}
+                                                    </button>
+                                                </div>
+                                                <div className="detail-workspace-card-body">
+                                                    {renderAIResultContent(
+                                                        stageKey,
+                                                        content,
+                                                    )}
+                                                </div>
+                                            </section>
+                                        );
+                                    })}
+                                </div>
+                            ) : null}
+
+                            {activeWorkspacePanel === "cleaning" ? (
+                                <div className="detail-workspace-cleaning">
+                                    <section className="detail-workspace-card detail-workspace-cleaning-card">
+                                        <div className="detail-workspace-card-head detail-workspace-cleaning-head">
+                                            <div className="detail-workspace-card-copy">
+                                                <strong>
+                                                    {cleaningToolLabel.shortTitle}
+                                                </strong>
+                                                <span>
+                                                    {cleaningToolLabel.title}
+                                                </span>
+                                            </div>
+                                            <div className="detail-workspace-cleaning-actions">
+                                                <label className="detail-workspace-select">
+                                                    <span>清洗工具</span>
+                                                    <select
+                                                        value={
+                                                            selectedCleaningToolKey
+                                                        }
+                                                        onChange={(event) =>
+                                                            setSelectedCleaningToolKey(
+                                                                event.target
+                                                                    .value as AICleaningToolKey,
+                                                            )
+                                                        }
+                                                        disabled={isAICleaning}
+                                                    >
+                                                        {AI_CLEANING_TOOL_ORDER.map(
+                                                            (toolKey) => (
+                                                                <option
+                                                                    key={
+                                                                        toolKey
+                                                                    }
+                                                                    value={
+                                                                        toolKey
+                                                                    }
+                                                                >
+                                                                    {
+                                                                        AI_CLEANING_TOOL_LABELS[
+                                                                            toolKey
+                                                                        ]
+                                                                            .title
+                                                                    }
+                                                                </option>
+                                                            ),
+                                                        )}
+                                                    </select>
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-primary"
+                                                    onClick={() =>
+                                                        onRunAICleaning(
+                                                            selectedCleaningToolKey,
+                                                        )
+                                                    }
+                                                    disabled={isAICleaning}
+                                                >
+                                                    {isSelectedCleaningToolRunning
+                                                        ? aiCleaningElapsedText
+                                                        : "运行工具"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div className="detail-workspace-card-body">
+                                            {selectedCleaningToolKey ===
+                                            "generate_level3_tags" ? (
+                                                <GenerateLevel3TagsResult
+                                                    rowId={selectedRow.rowId}
+                                                    content={
+                                                        selectedCleaningContent
+                                                    }
+                                                    onAddTag={onAddLevel3Tag}
+                                                    onRemoveTag={
+                                                        onRemoveLevel3Tag
+                                                    }
+                                                />
+                                            ) : selectedCleaningToolKey ===
+                                              "biochem_level1_refine" ? (
+                                                <BiochemLevel1Result
+                                                    rowId={selectedRow.rowId}
+                                                    content={
+                                                        selectedCleaningContent
+                                                    }
+                                                    level1Options={
+                                                        level1Options
+                                                    }
+                                                    onSaveDiscipline={
+                                                        onUpdateBiochemLevel1Discipline
+                                                    }
+                                                />
+                                            ) : (
+                                                renderAICleaningResultContent(
+                                                    selectedCleaningToolKey,
+                                                    selectedCleaningContent,
+                                                )
+                                            )}
+                                        </div>
+                                        {isSelectedCleaningToolRunning ||
+                                        aiCleaningStatusMessage ? (
+                                            <div className="detail-workspace-cleaning-footer">
+                                                {isSelectedCleaningToolRunning ? (
+                                                    <span className="detail-workspace-status-pill">
+                                                        {`运行中 ${aiCleaningElapsedText}`}
+                                                    </span>
+                                                ) : null}
+                                                {aiCleaningStatusMessage ? (
+                                                    <div className="record-detail-ai-cleaning-message">
+                                                        {
+                                                            aiCleaningStatusMessage
+                                                        }
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
+                                    </section>
+                                </div>
+                            ) : null}
+
+                            {activeWorkspacePanel === "evaluation" ? (
+                                <section className="detail-workspace-card detail-workspace-placeholder-card">
+                                    <div className="detail-workspace-card-head">
+                                        <div className="detail-workspace-card-copy">
+                                            <strong>数据评测</strong>
+                                            <span>评测能力建设中</span>
+                                        </div>
+                                    </div>
+                                    <div className="detail-workspace-card-body detail-workspace-placeholder">
+                                        <p>
+                                            当前详情页已经为数据评测预留独立区域。
+                                        </p>
+                                        <p>
+                                            后续可在这里接入评测结果摘要、运行入口和指标说明。
+                                        </p>
+                                    </div>
+                                </section>
+                            ) : null}
+                        </div>
+                    </div>
+                </aside>
             </div>
         </section>
     );
