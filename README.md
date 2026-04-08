@@ -1,14 +1,69 @@
-# Excel 质检工作台
+# Excel / JSON 质检工作台
 
 React + TypeScript + Express 的前后端项目，满足以下能力：
 
-- 导入 Excel（`.xls` / `.xlsx`）
+- 导入 Excel（`.xls` / `.xlsx`）与 JSON（`.json`）
 - 后端解析表头和行数据
 - 支持选择页面展示列
 - 强制展示并编辑 `是否合格`、`质检员业务反馈意见`
 - 支持 `level1`、`level2` 筛选
 - 识别并展示表格中的图片单元格
 - 支持多文件导入与左侧导航切换
+
+## JSON 导入格式
+
+当前 JSON 导入支持两种格式：
+
+- 工作台规范结构：`{ "columns": [...], "rows": [...] }`
+- 普通对象数组：`[{...}, {...}]`，系统会自动推断列
+
+最小可用示例：
+
+```json
+{
+  "columns": [
+    { "key": "id", "title": "id", "required": true },
+    { "key": "level1", "title": "level1" },
+    { "key": "question", "title": "题目" },
+    { "key": "image", "title": "配图" }
+  ],
+  "rows": [
+    {
+      "values": {
+        "id": "question-1",
+        "level1": "数学",
+        "question": "1 + 1 = ?",
+        "image": {
+          "type": "image",
+          "src": "https://example.com/question-1.png"
+        }
+      }
+    }
+  ]
+}
+```
+
+也支持你现在这种根节点为数组的结构：
+
+```json
+[
+  {
+    "level1": "有机化学",
+    "题目文本": "示例题目",
+    "题目图片": ["image/first.png", "image/second.png"],
+    "uuid": "row-1"
+  }
+]
+```
+
+约束说明：
+
+- 若使用规范结构，`columns` 必须是非空数组，每列都需要唯一的 `key` 和非空的 `title`。
+- 若使用对象数组，系统会按字段首次出现顺序自动生成列，列名默认等于字段名。
+- 单元格可直接写字符串、数字、布尔值，系统会按文本单元格处理。
+- 图片单元格可使用对象结构（至少提供 `src` 或 `srcList`），也可直接写图片 URL/路径字符串，或图片路径数组。
+- 导入合并仍然要求存在 `id` 或 `uuid` 列；缺失时会按现有规则报错。
+- 相对图片路径会优先按导入 JSON 文件所在目录解析；若无法获得源文件目录，再按原值保留。
 
 ## 开发
 
@@ -25,6 +80,7 @@ pnpm dev
 ```bash
 pnpm typecheck
 pnpm build
+pnpm test:server
 ```
 
 ## 打包与自动同步

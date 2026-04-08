@@ -25,7 +25,21 @@ export function getImageExtFromPathLike(pathLike: string): string | null {
     : null;
 }
 
-export function toAbsoluteImagePath(pathLike: string): string | null {
+function convertWindowsPathToWslMount(pathLike: string): string | null {
+  const normalized = pathLike.replace(/\//g, "\\");
+  const driveMatch = /^([a-zA-Z]):\\(.+)$/.exec(normalized);
+  if (!driveMatch) {
+    return null;
+  }
+  const [, driveLetter, rest] = driveMatch;
+  return path.posix.join(
+    "/mnt",
+    driveLetter.toLowerCase(),
+    ...rest.split("\\").filter((segment) => segment.length > 0),
+  );
+}
+
+export function normalizeCrossPlatformAbsolutePath(pathLike: string): string | null {
   const trimmed = pathLike.trim();
   if (!trimmed) {
     return null;
@@ -39,11 +53,56 @@ export function toAbsoluteImagePath(pathLike: string): string | null {
     }
   }
 
-  if (path.isAbsolute(trimmed) || /^[a-zA-Z]:[\\/]/.test(trimmed)) {
+  if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+    if (process.platform === "linux") {
+      return convertWindowsPathToWslMount(trimmed) ?? trimmed;
+    }
+    return trimmed;
+  }
+
+  if (path.isAbsolute(trimmed)) {
     return trimmed;
   }
 
   return null;
+}
+
+export function toAbsoluteImagePath(pathLike: string): string | null {
+  return normalizeCrossPlatformAbsolutePath(pathLike);
+}
+
+export function resolveImagePathLike(
+  pathLike: string,
+  baseDir?: string | null,
+): string | null {
+  const trimmed = pathLike.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const absolute = normalizeCrossPlatformAbsolutePath(trimmed);
+  if (absolute) {
+    return absolute;
+  }
+
+  if (!baseDir) {
+    return null;
+  }
+
+  const normalizedBaseDir = normalizeCrossPlatformAbsolutePath(baseDir);
+  if (!normalizedBaseDir) {
+    return null;
+  }
+
+  if (/^[a-zA-Z]:[\\/]/.test(baseDir.trim())) {
+    const joined = path.win32.resolve(
+      baseDir.trim(),
+      trimmed.replace(/\//g, "\\"),
+    );
+    return normalizeCrossPlatformAbsolutePath(joined);
+  }
+
+  return normalizeCrossPlatformAbsolutePath(path.resolve(normalizedBaseDir, trimmed));
 }
 
 export function toDataUrlFromAbsoluteImagePath(imagePath: string): string | null {

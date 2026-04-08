@@ -169,23 +169,25 @@ export function HeaderBar({
                         className="btn"
                         onClick={() => onUploadClick("merge")}
                         disabled={isUploading || !activeFile}
+                        title="支持导入 Excel 或 JSON 到当前项目"
                     >
                         <IconUpload />
-                        {isUploading ? "导入中..." : "导入到当前项目"}
+                        {isUploading ? "导入中..." : "导入文件到当前项目"}
                     </button>
                     <button
                         type="button"
                         className="btn btn-primary"
                         onClick={() => onUploadClick("create")}
                         disabled={isUploading}
+                        title="支持新建导入 Excel 或 JSON 文件"
                     >
                         <IconUpload />
-                        {isUploading ? "导入中..." : "新建项目导入"}
+                        {isUploading ? "导入中..." : "新建项目导入文件"}
                     </button>
                     <input
                         ref={uploadInputRef}
                         type="file"
-                        accept=".xls,.xlsx"
+                        accept=".xls,.xlsx,.json"
                         className="hidden-input"
                         onChange={onUploadFile}
                     />

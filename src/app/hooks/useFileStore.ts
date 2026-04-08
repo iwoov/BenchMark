@@ -31,6 +31,7 @@ type NavigateToSection = (
 
 type PendingConfigMode = "import" | "edit";
 type UploadMode = "create" | "merge";
+const LAST_ACTIVE_FILE_ID_STORAGE_KEY = "benchmark:last-active-file-id";
 
 export const useFileStore = ({
     navigateToSection,
@@ -40,7 +41,15 @@ export const useFileStore = ({
     setErrorMessage: (value: string) => void;
 }) => {
     const [files, setFiles] = useState<FileViewState[]>([]);
-    const [activeFileId, setActiveFileId] = useState<string | null>(null);
+    const [activeFileId, setActiveFileId] = useState<string | null>(() => {
+        if (typeof window === "undefined") {
+            return null;
+        }
+        const saved = window.localStorage.getItem(
+            LAST_ACTIVE_FILE_ID_STORAGE_KEY,
+        );
+        return saved && saved.trim().length > 0 ? saved : null;
+    });
     const [isUploading, setIsUploading] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [pendingFile, setPendingFile] = useState<ParsedFile | null>(null);
@@ -63,9 +72,26 @@ export const useFileStore = ({
     const pendingUploadModeRef = useRef<UploadMode>("create");
 
     const activeFile = useMemo(
-        () => files.find((item) => item.fileId === activeFileId) ?? null,
+        () =>
+            files.find((item) => item.fileId === activeFileId) ??
+            files[0] ??
+            null,
         [files, activeFileId],
     );
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        if (activeFileId && activeFileId.trim().length > 0) {
+            window.localStorage.setItem(
+                LAST_ACTIVE_FILE_ID_STORAGE_KEY,
+                activeFileId,
+            );
+            return;
+        }
+        window.localStorage.removeItem(LAST_ACTIVE_FILE_ID_STORAGE_KEY);
+    }, [activeFileId]);
 
     useEffect(() => {
         files.forEach((file) => {
@@ -142,6 +168,7 @@ export const useFileStore = ({
                 }
 
                 if (restoredFiles.length === 0) {
+                    setActiveFileId(null);
                     setInitialLoadComplete(true);
                     return;
                 }
@@ -152,14 +179,17 @@ export const useFileStore = ({
                     }
 
                     const merged = new Map<string, FileViewState>();
+                    previous.forEach((file) => merged.set(file.fileId, file));
                     restoredFiles.forEach((file) =>
                         merged.set(file.fileId, file),
                     );
-                    previous.forEach((file) => merged.set(file.fileId, file));
                     return Array.from(merged.values());
                 });
-                setActiveFileId(
-                    (previous) => previous ?? restoredFiles[0].fileId,
+                setActiveFileId((previous) =>
+                    previous &&
+                    restoredFiles.some((file) => file.fileId === previous)
+                        ? previous
+                        : restoredFiles[0].fileId,
                 );
                 setInitialLoadComplete(true);
             } catch {
@@ -775,7 +805,7 @@ export const useFileStore = ({
                 const payload = (await response.json().catch(() => ({}))) as {
                     message?: string;
                 };
-                throw new Error(payload.message ?? "文件解析失败");
+                throw new Error(payload.message ?? "导入文件失败");
             }
 
             const payload = (await response.json()) as {

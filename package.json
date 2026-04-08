@@ -13,6 +13,7 @@
         "start": "PORT=5173 node dist-server/index.js",
         "preview": "vite preview",
         "typecheck": "tsc -b",
+        "test:server": "node --import tsx --test server/jsonParser.test.ts",
         "db:backfill-level1": "node ./scripts/db/backfill-level1-from-discipline.mjs",
         "db:export-level3-tags": "node ./scripts/db/export-level3-tags.mjs",
         "package:zip": "bash ./scripts/package-zip.sh"

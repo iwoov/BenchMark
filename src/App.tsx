@@ -603,15 +603,22 @@ function App() {
                 />
 
                 <section className="workspace-main">
-                    {!activeFile ? (
+                    {!initialLoadComplete ? (
+                        <section className="placeholder workspace-placeholder">
+                            <div className="placeholder-icon">
+                                <IconFile />
+                            </div>
+                            <h2>正在恢复项目</h2>
+                            <p>正在加载本地已保存的文件与状态。</p>
+                        </section>
+                    ) : !activeFile ? (
                         <section className="placeholder workspace-placeholder">
                             <div className="placeholder-icon">
                                 <IconFile />
                             </div>
                             <h2>等待文件导入</h2>
                             <p>
-                                点击右上角「导入
-                                Excel」按钮，导入后可在左侧切换列表、详情与设置。
+                                点击右上角导入按钮上传 Excel 或 JSON 文件，导入后可在左侧切换列表、详情与设置。
                             </p>
                         </section>
                     ) : (

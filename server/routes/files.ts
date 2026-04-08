@@ -1,8 +1,10 @@
 import type { Express } from "express";
 import type { Multer } from "multer";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { mergeImportedFileState } from "../importState.js";
 import { parseWorkbook } from "../excelParser.js";
+import { parseJsonWorkbook } from "../jsonParser.js";
 import {
     deleteFileAICleaningResults,
     createDatabaseBackup,
@@ -41,17 +43,101 @@ const isAICleaningToolKey = (value: unknown): value is AICleaningToolKey =>
     AI_CLEANING_TOOL_ORDER.includes(value as AICleaningToolKey);
 
 const SHOULD_LOG_AI_RESULTS = process.env.DEBUG_AI_RESULTS === "1";
+const EXCEL_EXTENSIONS = new Set([".xls", ".xlsx"]);
+const JSON_EXTENSIONS = new Set([".json"]);
+const EXCEL_MIME_TYPES = new Set([
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/octet-stream",
+]);
+const JSON_MIME_TYPES = new Set([
+    "application/json",
+    "text/json",
+    "application/ld+json",
+]);
+
+type UploadFileFormat = "excel" | "json";
+
+function extractUploadedSourcePath(fileName: string): string | null {
+    const decoded = Buffer.from(fileName, "latin1").toString("utf8");
+    const source = decoded.includes("?") ? fileName : decoded;
+    const matches = source.match(
+        /([a-zA-Z]:[\\/][^"'<>|?*\r\n]+?\.(?:json|xlsx?|xls)|\/[^"'<>|?\r\n]+?\.(?:json|xlsx?|xls))/g,
+    );
+    if (!matches || matches.length === 0) {
+        return null;
+    }
+    const candidate = matches[matches.length - 1]!.trim();
+    if (/^[a-zA-Z]:[\\/]fakepath[\\/]/i.test(candidate)) {
+        return null;
+    }
+    return candidate;
+}
 
 function normalizeUploadedFileName(fileName: string): string {
     const decoded = Buffer.from(fileName, "latin1").toString("utf8");
-    if (decoded.includes("?")) {
-        return fileName;
+    const source = decoded.includes("?") ? fileName : decoded;
+    const trimmed = source.trim().replace(/\0/g, "");
+    const matchedNames = trimmed.match(/[^"'\\/]+\.(?:json|xlsx?|xls)/gi);
+    if (matchedNames && matchedNames.length > 0) {
+        return matchedNames[matchedNames.length - 1]!.trim();
     }
-    return decoded;
+
+    const pathParts = trimmed
+        .split(/[\\/]/)
+        .map((item) => item.replace(/^"+|"+$/g, "").trim())
+        .filter((item) => item.length > 0);
+    if (pathParts.length > 0) {
+        return pathParts[pathParts.length - 1]!;
+    }
+
+    return trimmed.replace(/^"+|"+$/g, "");
 }
 
 function normalizeUploadMode(value: unknown): "create" | "merge" {
     return value === "merge" ? "merge" : "create";
+}
+
+function detectUploadFileFormat(
+    fileName: string,
+    mimeType: string | undefined,
+): UploadFileFormat | null {
+    const extension = path.extname(fileName).toLowerCase();
+    if (JSON_EXTENSIONS.has(extension)) {
+        return "json";
+    }
+    if (EXCEL_EXTENSIONS.has(extension)) {
+        return "excel";
+    }
+
+    const normalizedMimeType = mimeType?.trim().toLowerCase() ?? "";
+    if (JSON_MIME_TYPES.has(normalizedMimeType)) {
+        return "json";
+    }
+    if (EXCEL_MIME_TYPES.has(normalizedMimeType)) {
+        return "excel";
+    }
+
+    return null;
+}
+
+async function parseUploadedFile(
+    file: Express.Multer.File,
+    normalizedFileName: string,
+    projectId: string,
+): Promise<Awaited<ReturnType<typeof parseWorkbook>>> {
+    const format = detectUploadFileFormat(normalizedFileName, file.mimetype);
+    const sourcePath = extractUploadedSourcePath(file.originalname);
+    const sourceDir = sourcePath ? path.dirname(sourcePath) : null;
+    if (format === "json") {
+        return parseJsonWorkbook(file.buffer, normalizedFileName, projectId, {
+            sourceDir,
+        });
+    }
+    if (format === "excel") {
+        return parseWorkbook(file.buffer, normalizedFileName, projectId);
+    }
+    throw new Error("仅支持导入 Excel(.xls/.xlsx) 或 JSON(.json) 文件");
 }
 
 function readClientStateVersion(value: unknown): number | null {
@@ -203,7 +289,7 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             const file = req.file;
             if (!file) {
                 return res.status(400).json({
-                    message: "请先选择 Excel 文件",
+                    message: "请先选择 Excel 或 JSON 文件",
                 });
             }
 
@@ -235,8 +321,8 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
             const projectId = persistedState?.fileId ?? randomUUID();
             const projectName = persistedState?.fileName ?? normalizedFileName;
-            const parsed = await parseWorkbook(
-                file.buffer,
+            const parsed = await parseUploadedFile(
+                file,
                 normalizedFileName,
                 projectId,
             );
@@ -259,14 +345,18 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
             const versionedState = attachClientStateVersion(state);
             saveFileState(projectId, projectName, versionedState);
+            const responseState = attachCleaningResultsToState(
+                versionedState,
+                listFileAICleaningResults(projectId),
+            );
             return res.json({
-                file: versionedState,
+                file: responseState,
                 summary,
                 backupPath,
             });
         } catch (error) {
             const message =
-                error instanceof Error ? error.message : "解析 Excel 失败";
+                error instanceof Error ? error.message : "解析文件失败";
             return res.status(400).json({ message });
         }
     });
