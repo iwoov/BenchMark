@@ -289,6 +289,20 @@ export const useCellRenderers = ({
             );
         }
 
+        if (isCopyableProblemTextColumn(column)) {
+            return (
+                <textarea
+                    className="editable-textarea-input"
+                    value={currentValue}
+                    onChange={(event) =>
+                        onEditCell(row.rowId, column.key, event.target.value)
+                    }
+                    placeholder={`请输入${column.title}`}
+                    rows={4}
+                />
+            );
+        }
+
         if (cell?.type === "image" && cell.src) {
             return (
                 <div className="image-cell">

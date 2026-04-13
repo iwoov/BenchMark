@@ -668,6 +668,76 @@
     color: var(--text-secondary);
 }
 
+.detail-evaluation-attempt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.detail-evaluation-attempt-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-glass);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.detail-evaluation-attempt-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.detail-evaluation-attempt-head strong {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.detail-evaluation-attempt-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.detail-evaluation-attempt-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    padding: 10px;
+}
+
+.detail-evaluation-attempt-item span {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.detail-evaluation-attempt-item strong {
+    font-size: 13px;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.detail-evaluation-json {
+    margin: 0;
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    padding: 12px;
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .record-detail-status-bar {
     padding: 14px 16px 10px;
     border-bottom: 1px solid var(--border);
@@ -2347,6 +2417,36 @@
     color: var(--text-muted);
 }
 
+.editable-textarea-input {
+    width: min(520px, 100%);
+    min-height: 96px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    resize: vertical;
+    transition: border-color var(--transition-fast);
+}
+
+.editable-textarea-input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.editable-textarea-input::placeholder {
+    color: var(--text-muted);
+}
+
+.detail-problem-main-grid .editable-textarea-input {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+
 .feedback-input {
     width: min(500px, 100%);
     min-height: 70px;
@@ -2804,6 +2904,10 @@
 
     .detail-workspace-select {
         width: 100%;
+    }
+
+    .detail-evaluation-attempt-grid {
+        grid-template-columns: 1fr;
     }
 
     .detail-chat-composer-actions,

@@ -7,9 +7,11 @@ import { parseWorkbook } from "../excelParser.js";
 import { parseJsonWorkbook } from "../jsonParser.js";
 import {
     deleteFileAICleaningResults,
+    deleteFileAIEvaluationResults,
     createDatabaseBackup,
     deleteFileState,
     listFileAICleaningResults,
+    listFileAIEvaluationResults,
     getFileState,
     getColumnPrefs,
     isProjectNameInUse,
@@ -17,10 +19,12 @@ import {
     renameProject,
     saveColumnPrefs,
     saveFileAICleaningToolResult,
+    saveFileAIEvaluationAttemptResult,
     saveFileState,
     updateFileStateAIResults,
     type AICleaningToolKey,
     type FileAICleaningToolResult,
+    type FileAIEvaluationAttemptResult,
 } from "../db.js";
 type AIDetectStageKey =
     | "precheck"
@@ -289,6 +293,55 @@ function attachCleaningResultsToState(
     };
 }
 
+function attachEvaluationResultsToState(
+    state: unknown,
+    evaluationResultsByTask: Record<
+        string,
+        Record<string, FileAIEvaluationAttemptResult[]>
+    >,
+): unknown {
+    if (!state || typeof state !== "object") {
+        return state;
+    }
+    const record = state as { rows?: unknown };
+    if (!Array.isArray(record.rows)) {
+        return state;
+    }
+
+    const rows = record.rows.map((row) => {
+        if (!row || typeof row !== "object") {
+            return row;
+        }
+        const candidate = row as { rowId?: unknown };
+        if (typeof candidate.rowId !== "string") {
+            return row;
+        }
+        const rowId = candidate.rowId;
+        const mergedResults: Record<string, FileAIEvaluationAttemptResult[]> = {};
+        Object.entries(evaluationResultsByTask).forEach(([taskId, rowMap]) => {
+            const attempts = rowMap[rowId];
+            if (attempts && attempts.length > 0) {
+                mergedResults[taskId] = attempts;
+            }
+        });
+        if (Object.keys(mergedResults).length === 0) {
+            return {
+                ...(row as Record<string, unknown>),
+                evaluationResults: undefined,
+            };
+        }
+        return {
+            ...(row as Record<string, unknown>),
+            evaluationResults: mergedResults,
+        };
+    });
+
+    return {
+        ...(state as Record<string, unknown>),
+        rows,
+    };
+}
+
 function attachPersistedMetadataToState(
     state: unknown,
     updatedAt: string,
@@ -376,9 +429,12 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             const versionedState = attachClientStateVersion(state);
             saveFileState(projectId, projectName, versionedState);
             const responseState = attachPersistedMetadataToState(
-                attachCleaningResultsToState(
-                    versionedState,
-                    listFileAICleaningResults(projectId),
+                attachEvaluationResultsToState(
+                    attachCleaningResultsToState(
+                        versionedState,
+                        listFileAICleaningResults(projectId),
+                    ),
+                    listFileAIEvaluationResults(projectId),
                 ),
                 new Date().toISOString(),
             );
@@ -397,9 +453,12 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
     app.get("/api/files", (_req, res) => {
         const files = listFileStates().map((item) =>
             attachPersistedMetadataToState(
-                attachCleaningResultsToState(
-                    item.state,
-                    listFileAICleaningResults(item.fileId),
+                attachEvaluationResultsToState(
+                    attachCleaningResultsToState(
+                        item.state,
+                        listFileAICleaningResults(item.fileId),
+                    ),
+                    listFileAIEvaluationResults(item.fileId),
                 ),
                 item.updatedAt,
             ),
@@ -451,9 +510,12 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         }
 
         const responseState = attachPersistedMetadataToState(
-            attachCleaningResultsToState(
-                renamed.state,
-                listFileAICleaningResults(fileId),
+            attachEvaluationResultsToState(
+                attachCleaningResultsToState(
+                    renamed.state,
+                    listFileAICleaningResults(fileId),
+                ),
+                listFileAIEvaluationResults(fileId),
             ),
             renamed.updatedAt,
         );
@@ -630,10 +692,94 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         return res.json({ ok: true });
     });
 
+    app.put("/api/files/:fileId/evaluation-results/:taskId", (req, res) => {
+        const { fileId, taskId } = req.params;
+        const {
+            rowId,
+            fileName,
+            attemptIndex,
+            generationResponseText,
+            generationParsedJsonText,
+            judgmentResponseText,
+            judgmentParsedJsonText,
+            finalVerdict,
+        } = req.body as {
+            rowId?: unknown;
+            fileName?: unknown;
+            attemptIndex?: unknown;
+            generationResponseText?: unknown;
+            generationParsedJsonText?: unknown;
+            judgmentResponseText?: unknown;
+            judgmentParsedJsonText?: unknown;
+            finalVerdict?: unknown;
+        };
+        if (typeof rowId !== "string" || rowId.trim().length === 0) {
+            return res.status(400).json({ message: "rowId must be a non-empty string" });
+        }
+        if (typeof fileName !== "string" || fileName.trim().length === 0) {
+            return res.status(400).json({ message: "fileName must be a non-empty string" });
+        }
+        if (
+            typeof attemptIndex !== "number" ||
+            !Number.isInteger(attemptIndex) ||
+            attemptIndex < 1
+        ) {
+            return res.status(400).json({ message: "attemptIndex must be a positive integer" });
+        }
+        if (
+            typeof generationResponseText !== "string" ||
+            generationResponseText.trim().length === 0
+        ) {
+            return res.status(400).json({ message: "generationResponseText must be a non-empty string" });
+        }
+        if (
+            typeof judgmentResponseText !== "string" ||
+            judgmentResponseText.trim().length === 0
+        ) {
+            return res.status(400).json({ message: "judgmentResponseText must be a non-empty string" });
+        }
+        if (typeof finalVerdict !== "string" || finalVerdict.trim().length === 0) {
+            return res.status(400).json({ message: "finalVerdict must be a non-empty string" });
+        }
+        if (
+            generationParsedJsonText !== undefined &&
+            generationParsedJsonText !== null &&
+            typeof generationParsedJsonText !== "string"
+        ) {
+            return res.status(400).json({ message: "generationParsedJsonText must be a string" });
+        }
+        if (
+            judgmentParsedJsonText !== undefined &&
+            judgmentParsedJsonText !== null &&
+            typeof judgmentParsedJsonText !== "string"
+        ) {
+            return res.status(400).json({ message: "judgmentParsedJsonText must be a string" });
+        }
+
+        saveFileAIEvaluationAttemptResult(
+            fileId,
+            fileName.trim(),
+            rowId.trim(),
+            taskId,
+            attemptIndex,
+            generationResponseText,
+            typeof generationParsedJsonText === "string"
+                ? generationParsedJsonText
+                : undefined,
+            judgmentResponseText,
+            typeof judgmentParsedJsonText === "string"
+                ? judgmentParsedJsonText
+                : undefined,
+            finalVerdict.trim(),
+        );
+        return res.json({ ok: true });
+    });
+
     app.delete("/api/files/:fileId", (req, res) => {
         const { fileId } = req.params;
         deleteFileState(fileId);
         deleteFileAICleaningResults(fileId);
+        deleteFileAIEvaluationResults(fileId);
         return res.json({ ok: true });
     });
 

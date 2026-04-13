@@ -5,6 +5,7 @@ import type {
     AICleaningOutputMapping,
     AICleaningToolConfig,
     AICleaningToolKey,
+    AIEvaluationTaskConfig,
     AIModelRoute,
     AIProviderApiType,
     AIProviderEndpoint,
@@ -20,6 +21,11 @@ import {
     AI_STAGE_ORDER,
     DEFAULT_AI_CHAT_CONFIG,
     DEFAULT_AI_CLEANING_CONFIGS,
+    DEFAULT_AI_EVALUATION_ATTEMPT_COUNT,
+    DEFAULT_AI_EVALUATION_TASK,
+    DEFAULT_AI_EVALUATION_TASK_ID,
+    DEFAULT_AI_EVALUATION_TASK_NAME,
+    DEFAULT_AI_EVALUATION_MAX_CONCURRENCY,
     DEFAULT_AI_PROVIDER,
     DEFAULT_AI_PROVIDER_NAME,
     DEFAULT_AI_ROUTE,
@@ -31,8 +37,12 @@ import {
     DEFAULT_ANTHROPIC_URL,
     DEFAULT_IDEALAB_GEMINI_URL,
     DEFAULT_IDEALAB_OPENAI_URL,
+    MAX_AI_EVALUATION_ATTEMPT_COUNT,
+    MAX_AI_EVALUATION_MAX_CONCURRENCY,
     MAX_AI_BATCH_CONCURRENCY,
     MAX_AI_RETRY_COUNT,
+    MIN_AI_EVALUATION_ATTEMPT_COUNT,
+    MIN_AI_EVALUATION_MAX_CONCURRENCY,
     MIN_AI_BATCH_CONCURRENCY,
     MIN_AI_RETRY_COUNT,
 } from "./constants";
@@ -130,6 +140,32 @@ export function normalizeAIRetryCount(value: unknown): number {
     }
     if (value > MAX_AI_RETRY_COUNT) {
         return MAX_AI_RETRY_COUNT;
+    }
+    return value;
+}
+
+function normalizeAIEvaluationAttemptCount(value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+        return DEFAULT_AI_EVALUATION_ATTEMPT_COUNT;
+    }
+    if (value < MIN_AI_EVALUATION_ATTEMPT_COUNT) {
+        return MIN_AI_EVALUATION_ATTEMPT_COUNT;
+    }
+    if (value > MAX_AI_EVALUATION_ATTEMPT_COUNT) {
+        return MAX_AI_EVALUATION_ATTEMPT_COUNT;
+    }
+    return value;
+}
+
+function normalizeAIEvaluationMaxConcurrency(value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+        return DEFAULT_AI_EVALUATION_MAX_CONCURRENCY;
+    }
+    if (value < MIN_AI_EVALUATION_MAX_CONCURRENCY) {
+        return MIN_AI_EVALUATION_MAX_CONCURRENCY;
+    }
+    if (value > MAX_AI_EVALUATION_MAX_CONCURRENCY) {
+        return MAX_AI_EVALUATION_MAX_CONCURRENCY;
     }
     return value;
 }
@@ -441,6 +477,26 @@ export function cloneAICleaningToolConfig(
     };
 }
 
+export function cloneAIEvaluationTaskConfig(
+    config: AIEvaluationTaskConfig,
+): AIEvaluationTaskConfig {
+    return {
+        id: config.id,
+        name: config.name,
+        enabled: config.enabled,
+        attemptCount: config.attemptCount,
+        maxConcurrency: config.maxConcurrency,
+        answerGeneration: {
+            ...config.answerGeneration,
+            questionFieldKeys: [...config.answerGeneration.questionFieldKeys],
+        },
+        answerJudgment: {
+            ...config.answerJudgment,
+            answerFieldKeys: [...config.answerJudgment.answerFieldKeys],
+        },
+    };
+}
+
 export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
     const providers = config.providers.map(cloneAIProviderEndpoint);
     const routes = config.routes.map(cloneAIModelRoute);
@@ -456,6 +512,7 @@ export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
         providers,
         routes,
         stages,
+        evaluationTasks: config.evaluationTasks.map(cloneAIEvaluationTaskConfig),
         chat: cloneAIChatConfig(config.chat),
         cleaning,
     };
@@ -478,6 +535,7 @@ export function createDefaultAIDetectConfig(): AIDetectConfig {
         providers: [cloneAIProviderEndpoint(DEFAULT_AI_PROVIDER)],
         routes: [cloneAIModelRoute(DEFAULT_AI_ROUTE)],
         stages,
+        evaluationTasks: [cloneAIEvaluationTaskConfig(DEFAULT_AI_EVALUATION_TASK)],
         chat: cloneAIChatConfig(DEFAULT_AI_CHAT_CONFIG),
         cleaning,
     };
@@ -756,6 +814,170 @@ function normalizeLoadedAIChatConfig(
     };
 }
 
+function normalizeLoadedAIEvaluationTaskConfig(
+    value: unknown,
+    fallbackRouteName: string,
+    fallbackId: string,
+    fallbackName: string,
+): AIEvaluationTaskConfig {
+    if (!value || typeof value !== "object") {
+        return {
+            ...cloneAIEvaluationTaskConfig(DEFAULT_AI_EVALUATION_TASK),
+            id: fallbackId,
+            name: fallbackName,
+            answerGeneration: {
+                ...DEFAULT_AI_EVALUATION_TASK.answerGeneration,
+                routeName: fallbackRouteName,
+            },
+            answerJudgment: {
+                ...DEFAULT_AI_EVALUATION_TASK.answerJudgment,
+                routeName: fallbackRouteName,
+            },
+        };
+    }
+
+    const candidate = value as {
+        enabled?: unknown;
+        attemptCount?: unknown;
+        answerGeneration?: unknown;
+        answerJudgment?: unknown;
+    };
+    const legacyStageCandidate = AI_STAGE_ORDER.map(
+        (stageKey) =>
+            (value as Record<string, unknown>)[stageKey] as
+                | {
+                      enabled?: unknown;
+                      routeName?: unknown;
+                      questionFieldKeys?: unknown;
+                      answerFieldKeys?: unknown;
+                  }
+                | undefined,
+    ).find((item) => item && typeof item === "object");
+    const normalizeRouteName = (routeName: unknown) =>
+        typeof routeName === "string" && routeName.trim().length > 0
+            ? routeName.trim()
+            : fallbackRouteName;
+    const answerGeneration =
+        candidate.answerGeneration && typeof candidate.answerGeneration === "object"
+            ? (candidate.answerGeneration as {
+                  routeName?: unknown;
+                  prompt?: unknown;
+                  questionFieldKeys?: unknown;
+              })
+            : null;
+    const answerJudgment =
+        candidate.answerJudgment && typeof candidate.answerJudgment === "object"
+            ? (candidate.answerJudgment as {
+                  routeName?: unknown;
+                  prompt?: unknown;
+                  answerFieldKeys?: unknown;
+              })
+            : null;
+
+    return {
+        id:
+            typeof (value as { id?: unknown }).id === "string" &&
+            (value as { id?: string }).id!.trim().length > 0
+                ? (value as { id: string }).id.trim()
+                : fallbackId,
+        name:
+            typeof (value as { name?: unknown }).name === "string" &&
+            (value as { name: string }).name.trim().length > 0
+                ? (value as { name: string }).name.trim()
+                : fallbackName,
+        enabled:
+            candidate.enabled === true ||
+            (candidate.answerGeneration === undefined &&
+                candidate.answerJudgment === undefined &&
+                legacyStageCandidate?.enabled === true),
+        attemptCount: normalizeAIEvaluationAttemptCount(candidate.attemptCount),
+        maxConcurrency: normalizeAIEvaluationMaxConcurrency(
+            (value as { maxConcurrency?: unknown }).maxConcurrency,
+        ),
+        answerGeneration: {
+            routeName: normalizeRouteName(
+                answerGeneration?.routeName ?? legacyStageCandidate?.routeName,
+            ),
+            prompt:
+                typeof answerGeneration?.prompt === "string" &&
+                answerGeneration.prompt.trim().length > 0
+                    ? answerGeneration.prompt
+                    : DEFAULT_AI_EVALUATION_TASK.answerGeneration.prompt,
+            questionFieldKeys: Array.isArray(answerGeneration?.questionFieldKeys)
+                ? answerGeneration.questionFieldKeys.filter(
+                      (item): item is string => typeof item === "string",
+                  )
+                : Array.isArray(legacyStageCandidate?.questionFieldKeys)
+                  ? legacyStageCandidate.questionFieldKeys.filter(
+                        (item): item is string => typeof item === "string",
+                    )
+                : [],
+        },
+        answerJudgment: {
+            routeName: normalizeRouteName(
+                answerJudgment?.routeName ?? legacyStageCandidate?.routeName,
+            ),
+            prompt:
+                typeof answerJudgment?.prompt === "string" &&
+                answerJudgment.prompt.trim().length > 0
+                    ? answerJudgment.prompt
+                    : DEFAULT_AI_EVALUATION_TASK.answerJudgment.prompt,
+            answerFieldKeys: Array.isArray(answerJudgment?.answerFieldKeys)
+                ? answerJudgment.answerFieldKeys.filter(
+                      (item): item is string => typeof item === "string",
+                  )
+                : Array.isArray(legacyStageCandidate?.answerFieldKeys)
+                  ? legacyStageCandidate.answerFieldKeys.filter(
+                        (item): item is string => typeof item === "string",
+                    )
+                : [],
+        },
+    };
+}
+
+function normalizeLoadedAIEvaluationTaskList(
+    value: unknown,
+    fallbackRouteName: string,
+): AIEvaluationTaskConfig[] {
+    if (Array.isArray(value)) {
+        const result = value
+            .map((item, index) =>
+                normalizeLoadedAIEvaluationTaskConfig(
+                    item,
+                    fallbackRouteName,
+                    `${DEFAULT_AI_EVALUATION_TASK_ID}-${index + 1}`,
+                    index === 0
+                        ? DEFAULT_AI_EVALUATION_TASK_NAME
+                        : `评测配置 ${index + 1}`,
+                ),
+            )
+            .filter(
+                (item, index, items) =>
+                    items.findIndex((candidate) => candidate.id === item.id) ===
+                    index,
+            );
+        return result.length > 0
+            ? result
+            : [
+                  normalizeLoadedAIEvaluationTaskConfig(
+                      null,
+                      fallbackRouteName,
+                      DEFAULT_AI_EVALUATION_TASK_ID,
+                      DEFAULT_AI_EVALUATION_TASK_NAME,
+                  ),
+              ];
+    }
+
+    return [
+        normalizeLoadedAIEvaluationTaskConfig(
+            value,
+            fallbackRouteName,
+            DEFAULT_AI_EVALUATION_TASK_ID,
+            DEFAULT_AI_EVALUATION_TASK_NAME,
+        ),
+    ];
+}
+
 function normalizeLoadedAICleaningToolConfig(
     value: unknown,
     fallback: AICleaningToolConfig,
@@ -836,6 +1058,8 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
 
     const candidate = value as {
         stages?: unknown;
+        evaluation?: unknown;
+        evaluationTasks?: unknown;
         providers?: unknown;
         routes?: unknown;
         profiles?: unknown;
@@ -879,6 +1103,10 @@ export function normalizeLoadedAIDetectConfig(value: unknown): AIDetectConfig {
         providers: resolvedProviders,
         routes: resolvedRoutes,
         stages,
+        evaluationTasks: normalizeLoadedAIEvaluationTaskList(
+            candidate.evaluationTasks ?? candidate.evaluation,
+            resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
+        ),
         chat: normalizeLoadedAIChatConfig(
             (candidate as { chat?: unknown }).chat,
             resolvedRoutes[0]?.name ?? DEFAULT_AI_ROUTE_NAME,
@@ -915,6 +1143,7 @@ export function normalizeAIDetectConfigForColumns(
             : [cloneAIModelRoute(DEFAULT_AI_ROUTE)];
     const fallbackRouteName = routes[0]?.name ?? DEFAULT_AI_ROUTE_NAME;
     const routeNames = new Set(routes.map((item) => item.name));
+    const keySet = new Set(columns.map((column) => column.key));
 
     const stages = {} as AIDetectStageConfigMap;
     const cleaning = {} as AICleaningConfigMap;
@@ -933,9 +1162,64 @@ export function normalizeAIDetectConfigForColumns(
             ...normalizedStage,
             routeName: normalizedRouteName,
         };
+
     });
 
-    const keySet = new Set(columns.map((column) => column.key));
+    const evaluationTasks =
+        (config.evaluationTasks ?? [DEFAULT_AI_EVALUATION_TASK]).map(
+            (task, index) => ({
+                id:
+                    typeof task.id === "string" && task.id.trim().length > 0
+                        ? task.id.trim()
+                        : `${DEFAULT_AI_EVALUATION_TASK_ID}-${index + 1}`,
+                name:
+                    typeof task.name === "string" && task.name.trim().length > 0
+                        ? task.name.trim()
+                        : index === 0
+                          ? DEFAULT_AI_EVALUATION_TASK_NAME
+                          : `评测配置 ${index + 1}`,
+                enabled: task.enabled === true,
+                attemptCount: normalizeAIEvaluationAttemptCount(
+                    task.attemptCount,
+                ),
+                maxConcurrency: normalizeAIEvaluationMaxConcurrency(
+                    task.maxConcurrency,
+                ),
+                answerGeneration: {
+                    routeName:
+                        task.answerGeneration.routeName &&
+                        routeNames.has(task.answerGeneration.routeName)
+                            ? task.answerGeneration.routeName
+                            : fallbackRouteName,
+                    prompt:
+                        typeof task.answerGeneration.prompt === "string" &&
+                        task.answerGeneration.prompt.trim().length > 0
+                            ? task.answerGeneration.prompt
+                            : DEFAULT_AI_EVALUATION_TASK.answerGeneration.prompt,
+                    questionFieldKeys:
+                        task.answerGeneration.questionFieldKeys.filter((key) =>
+                            keySet.has(key),
+                        ),
+                },
+                answerJudgment: {
+                    routeName:
+                        task.answerJudgment.routeName &&
+                        routeNames.has(task.answerJudgment.routeName)
+                            ? task.answerJudgment.routeName
+                            : fallbackRouteName,
+                    prompt:
+                        typeof task.answerJudgment.prompt === "string" &&
+                        task.answerJudgment.prompt.trim().length > 0
+                            ? task.answerJudgment.prompt
+                            : DEFAULT_AI_EVALUATION_TASK.answerJudgment.prompt,
+                    answerFieldKeys:
+                        task.answerJudgment.answerFieldKeys.filter((key) =>
+                            keySet.has(key),
+                        ),
+                },
+            }),
+        );
+
     const chatConfig = config.chat ?? DEFAULT_AI_CHAT_CONFIG;
     const normalizedChatRouteName =
         chatConfig.routeName && routeNames.has(chatConfig.routeName)
@@ -982,6 +1266,7 @@ export function normalizeAIDetectConfigForColumns(
         providers,
         routes,
         stages,
+        evaluationTasks,
         chat: {
             routeName: normalizedChatRouteName,
             prompt:

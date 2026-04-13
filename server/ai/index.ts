@@ -8,15 +8,18 @@ import {
     findAIProviderEndpointByName,
     getFileAICleaningConfig,
     getFileAIChatConfig,
+    getFileAIEvaluationConfig,
     getFileAIStageConfigs,
     listAIModelRoutes,
     listAIProviderEndpoints,
     saveAIModelRoutes,
     saveFileAICleaningConfig,
     saveFileAIChatConfig,
+    saveFileAIEvaluationConfig,
     saveAIProviderEndpoints,
     saveFileAIStageConfigs,
     type AICleaningToolKey,
+    type FileAIEvaluationTaskConfig,
     type AIModelRouteConfig,
     type AIProviderApiType,
     type AIProviderEndpointConfig,
@@ -86,6 +89,22 @@ const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
+const DEFAULT_AI_EVALUATION_ATTEMPT_COUNT = 1;
+const MIN_AI_EVALUATION_ATTEMPT_COUNT = 1;
+const MAX_AI_EVALUATION_ATTEMPT_COUNT = 10;
+const DEFAULT_AI_EVALUATION_MAX_CONCURRENCY = 5;
+const MIN_AI_EVALUATION_MAX_CONCURRENCY = 1;
+const MAX_AI_EVALUATION_MAX_CONCURRENCY = 10;
+const DEFAULT_AI_EVALUATION_GENERATION_PROMPT = `你是答题模型。
+
+你会收到题目相关字段，请仅基于这些字段独立作答，不要参考标准答案。
+
+请输出清晰的作答结论和必要推理。`;
+const DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT = `你是评测裁判模型。
+
+你会收到题目字段、上一步模型的回答，以及标准答案字段。
+
+请判断模型回答是否正确，并返回明确结论与简短依据。`;
 
 function isAIReasoningEffort(value: unknown): value is AIReasoningEffort {
     return value === "low" || value === "medium" || value === "high";
@@ -121,6 +140,38 @@ function normalizeAIRetryCount(value: unknown): number {
         return value;
     }
     return DEFAULT_AI_RETRY_COUNT;
+}
+
+function isValidAIEvaluationAttemptCount(value: unknown): value is number {
+    return (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= MIN_AI_EVALUATION_ATTEMPT_COUNT &&
+        value <= MAX_AI_EVALUATION_ATTEMPT_COUNT
+    );
+}
+
+function normalizeAIEvaluationAttemptCount(value: unknown): number {
+    if (isValidAIEvaluationAttemptCount(value)) {
+        return value;
+    }
+    return DEFAULT_AI_EVALUATION_ATTEMPT_COUNT;
+}
+
+function isValidAIEvaluationMaxConcurrency(value: unknown): value is number {
+    return (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= MIN_AI_EVALUATION_MAX_CONCURRENCY &&
+        value <= MAX_AI_EVALUATION_MAX_CONCURRENCY
+    );
+}
+
+function normalizeAIEvaluationMaxConcurrency(value: unknown): number {
+    if (isValidAIEvaluationMaxConcurrency(value)) {
+        return value;
+    }
+    return DEFAULT_AI_EVALUATION_MAX_CONCURRENCY;
 }
 
 function normalizeOpenAIUrl(rawUrl: string): string {
@@ -1711,6 +1762,182 @@ function validateCleaningPayload(
     return { cleaning };
 }
 
+function validateEvaluationTask(
+    item: unknown,
+    routesByName: Map<string, AIModelRouteConfig>,
+    providersByName: Map<string, AIProviderEndpointConfig>,
+    index: number,
+): { task?: FileAIEvaluationTaskConfig; message?: string } {
+    if (!item || typeof item !== "object") {
+        return { message: `evaluationTasks[${index}] must be an object` };
+    }
+
+    const candidate = item as {
+        id?: unknown;
+        name?: unknown;
+        enabled?: unknown;
+        attemptCount?: unknown;
+        maxConcurrency?: unknown;
+        answerGeneration?: unknown;
+        answerJudgment?: unknown;
+    };
+    if (!isNonEmptyString(candidate.id)) {
+        return { message: `evaluationTasks[${index}].id must be a non-empty string` };
+    }
+    if (!isNonEmptyString(candidate.name)) {
+        return { message: `evaluationTasks[${index}].name must be a non-empty string` };
+    }
+    if (typeof candidate.enabled !== "boolean") {
+        return { message: `evaluationTasks[${index}].enabled must be a boolean` };
+    }
+    if (!isValidAIEvaluationAttemptCount(candidate.attemptCount)) {
+        return {
+            message: `evaluationTasks[${index}].attemptCount must be an integer between ${MIN_AI_EVALUATION_ATTEMPT_COUNT} and ${MAX_AI_EVALUATION_ATTEMPT_COUNT}`,
+        };
+    }
+    if (!isValidAIEvaluationMaxConcurrency(candidate.maxConcurrency)) {
+        return {
+            message: `evaluationTasks[${index}].maxConcurrency must be an integer between ${MIN_AI_EVALUATION_MAX_CONCURRENCY} and ${MAX_AI_EVALUATION_MAX_CONCURRENCY}`,
+        };
+    }
+    if (!candidate.answerGeneration || typeof candidate.answerGeneration !== "object") {
+        return { message: `evaluationTasks[${index}].answerGeneration must be an object` };
+    }
+    if (!candidate.answerJudgment || typeof candidate.answerJudgment !== "object") {
+        return { message: `evaluationTasks[${index}].answerJudgment must be an object` };
+    }
+
+    const validateStepRoute = (label: string, routeName: unknown) => {
+        if (!isNonEmptyString(routeName)) {
+            return { message: `${label} routeName must be a non-empty string` };
+        }
+        const route = routesByName.get(routeName.trim());
+        if (!route) {
+            return {
+                message: `${label} routeName must reference an existing route`,
+            };
+        }
+        const routeApiType = getRouteApiType(route, providersByName);
+        if (!routeApiType) {
+            return {
+                message: `${label} route providers are invalid`,
+            };
+        }
+        if (routeApiType === "anthropic") {
+            return {
+                message: `${label} cannot use an anthropic route yet`,
+            };
+        }
+        return { routeName: routeName.trim() };
+    };
+
+    const answerGeneration = candidate.answerGeneration as {
+        routeName?: unknown;
+        prompt?: unknown;
+        questionFieldKeys?: unknown;
+    };
+    const answerJudgment = candidate.answerJudgment as {
+        routeName?: unknown;
+        prompt?: unknown;
+        answerFieldKeys?: unknown;
+    };
+
+    const generationRoute = validateStepRoute(
+        "evaluation answerGeneration",
+        answerGeneration.routeName,
+    );
+    if (!generationRoute.routeName) {
+        return { message: generationRoute.message };
+    }
+    const judgmentRoute = validateStepRoute(
+        "evaluation answerJudgment",
+        answerJudgment.routeName,
+    );
+    if (!judgmentRoute.routeName) {
+        return { message: judgmentRoute.message };
+    }
+    if (!isNonEmptyString(answerGeneration.prompt)) {
+        return {
+            message: "evaluation answerGeneration prompt must be a non-empty string",
+        };
+    }
+    if (!isNonEmptyString(answerJudgment.prompt)) {
+        return {
+            message: "evaluation answerJudgment prompt must be a non-empty string",
+        };
+    }
+    if (
+        !Array.isArray(answerGeneration.questionFieldKeys) ||
+        !answerGeneration.questionFieldKeys.every((entry) => typeof entry === "string")
+    ) {
+        return {
+            message: "evaluation answerGeneration questionFieldKeys must be a string array",
+        };
+    }
+    if (
+        !Array.isArray(answerJudgment.answerFieldKeys) ||
+        !answerJudgment.answerFieldKeys.every((entry) => typeof entry === "string")
+    ) {
+        return {
+            message: "evaluation answerJudgment answerFieldKeys must be a string array",
+        };
+    }
+
+    return {
+        task: {
+            id: candidate.id.trim(),
+            name: candidate.name.trim(),
+            enabled: candidate.enabled,
+            attemptCount: normalizeAIEvaluationAttemptCount(candidate.attemptCount),
+            maxConcurrency: normalizeAIEvaluationMaxConcurrency(
+                candidate.maxConcurrency,
+            ),
+            answerGeneration: {
+                routeName: generationRoute.routeName,
+                prompt: answerGeneration.prompt ?? DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
+                questionFieldKeys: answerGeneration.questionFieldKeys,
+            },
+            answerJudgment: {
+                routeName: judgmentRoute.routeName,
+                prompt: answerJudgment.prompt ?? DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT,
+                answerFieldKeys: answerJudgment.answerFieldKeys,
+            },
+        },
+    };
+}
+
+function validateEvaluationPayload(
+    item: unknown,
+    routesByName: Map<string, AIModelRouteConfig>,
+    providersByName: Map<string, AIProviderEndpointConfig>,
+): { evaluationTasks?: FileAIEvaluationTaskConfig[]; message?: string } {
+    if (!Array.isArray(item)) {
+        return { message: "evaluationTasks must be an array" };
+    }
+    if (item.length === 0) {
+        return { message: "evaluationTasks must not be empty" };
+    }
+    const tasks: FileAIEvaluationTaskConfig[] = [];
+    const idSet = new Set<string>();
+    for (const [index, taskItem] of item.entries()) {
+        const validation = validateEvaluationTask(
+            taskItem,
+            routesByName,
+            providersByName,
+            index,
+        );
+        if (!validation.task) {
+            return { message: validation.message };
+        }
+        if (idSet.has(validation.task.id)) {
+            return { message: `evaluationTasks[${index}].id duplicated: ${validation.task.id}` };
+        }
+        idSet.add(validation.task.id);
+        tasks.push(validation.task);
+    }
+    return { evaluationTasks: tasks };
+}
+
 function getRouteApiType(
     route: AIModelRouteConfig,
     providersByName: Map<string, AIProviderEndpointConfig>,
@@ -2423,6 +2650,7 @@ export const registerAIRoutes = (app: express.Express) => {
             providers: listAIProviderEndpoints(),
             routes: listAIModelRoutes(),
             stages: getFileAIStageConfigs(fileName),
+            evaluationTasks: getFileAIEvaluationConfig(fileName),
             chat: getFileAIChatConfig(fileName),
             cleaning: getFileAICleaningConfig(fileName),
         });
@@ -2583,6 +2811,27 @@ export const registerAIRoutes = (app: express.Express) => {
         }
 
         saveFileAIChatConfig(fileName, validation.chat);
+        return res.json({ ok: true });
+    });
+
+    app.put("/api/ai-config/:fileName/evaluation", (req, res) => {
+        const fileName = decodeURIComponent(req.params.fileName);
+        const { evaluationTasks } = req.body as { evaluationTasks?: unknown };
+        const routes = listAIModelRoutes();
+        const providersByName = new Map(
+            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+        );
+        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const validation = validateEvaluationPayload(
+            evaluationTasks,
+            routesByName,
+            providersByName,
+        );
+        if (!validation.evaluationTasks) {
+            return res.status(400).json({ message: validation.message });
+        }
+
+        saveFileAIEvaluationConfig(fileName, validation.evaluationTasks);
         return res.json({ ok: true });
     });
 

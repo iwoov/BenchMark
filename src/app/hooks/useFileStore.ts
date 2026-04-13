@@ -3,6 +3,7 @@ import type {
     AICleaningToolKey,
     AICleaningToolResult,
     AIDetectStageKey,
+    AIEvaluationAttemptResult,
     FileViewState,
     FilterCondition,
     ParsedFile,
@@ -234,7 +235,10 @@ export const useFileStore = ({
         stateVersionRef.current[file.fileId] = nextVersion;
         const sanitizedState: FileViewState = {
             ...file,
-            rows: file.rows.map(({ cleaningResults, ...row }) => row),
+            filterConditions: [],
+            rows: file.rows.map(
+                ({ cleaningResults, evaluationResults, ...row }) => row,
+            ),
         };
         return {
             ...sanitizedState,
@@ -541,6 +545,38 @@ export const useFileStore = ({
         ) {
             schedulePersistFileState(nextFileForPersist);
         }
+    };
+
+    const updateRowEvaluationResults = (
+        fileId: string,
+        rowId: string,
+        taskId: string,
+        results: AIEvaluationAttemptResult[],
+    ) => {
+        setFiles((previous) =>
+            previous.map((file) => {
+                if (file.fileId !== fileId) {
+                    return file;
+                }
+                const nextRows = file.rows.map((row) =>
+                    row.rowId === rowId
+                        ? {
+                              ...row,
+                              evaluationResults: {
+                                  ...(row.evaluationResults ?? {}),
+                                  [taskId]: results,
+                              },
+                          }
+                        : row,
+                );
+                const nextFile: FileViewState = {
+                    ...file,
+                    rows: nextRows,
+                };
+                latestFileStateRef.current[fileId] = nextFile;
+                return nextFile;
+            }),
+        );
     };
 
     const persistColumnPrefs = (file: FileViewState) => {
@@ -902,7 +938,9 @@ export const useFileStore = ({
         try {
             const uploadMode = pendingUploadModeRef.current;
             const mergeTargetFileId =
-                pendingMergeTargetFileIdRef.current ?? activeFile?.fileId ?? null;
+                pendingMergeTargetFileIdRef.current ??
+                activeFile?.fileId ??
+                null;
             const mergeTargetFile =
                 files.find((file) => file.fileId === mergeTargetFileId) ??
                 activeFile;
@@ -927,7 +965,10 @@ export const useFileStore = ({
             formData.append("file", selected);
             formData.append("mode", uploadMode);
             if (uploadMode === "create") {
-                formData.append("projectName", pendingCreateProjectNameRef.current);
+                formData.append(
+                    "projectName",
+                    pendingCreateProjectNameRef.current,
+                );
             }
             if (uploadMode === "merge" && mergeTargetFile) {
                 formData.append("targetFileId", mergeTargetFile.fileId);
@@ -1158,6 +1199,7 @@ export const useFileStore = ({
         latestFileStateRef,
         updateRowAIResult,
         updateRowCleaningResult,
+        updateRowEvaluationResults,
         onEditCell,
         onToggleRowEnabled,
         onToggleDisplayColumn,

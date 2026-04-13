@@ -72,8 +72,16 @@ const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
 const MAX_AI_RETRY_COUNT = 10;
+const DEFAULT_AI_EVALUATION_ATTEMPT_COUNT = 1;
+const MIN_AI_EVALUATION_ATTEMPT_COUNT = 1;
+const MAX_AI_EVALUATION_ATTEMPT_COUNT = 10;
+const DEFAULT_AI_EVALUATION_MAX_CONCURRENCY = 5;
+const MIN_AI_EVALUATION_MAX_CONCURRENCY = 1;
+const MAX_AI_EVALUATION_MAX_CONCURRENCY = 10;
 const DEFAULT_AI_PROVIDER_NAME = "默认提供商";
 const DEFAULT_AI_ROUTE_NAME = "gpt-5.4";
+const DEFAULT_AI_EVALUATION_TASK_ID = "evaluation-task-1";
+const DEFAULT_AI_EVALUATION_TASK_NAME = "评测配置 1";
 const LEGACY_PROJECT_NAME = "专家出题表格.xlsx";
 const MIGRATED_LEGACY_PROJECT_NAME = "化学/生物/材料多模态评测集";
 const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
@@ -88,6 +96,16 @@ const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
 - 回答尽量直接、准确、结构清晰。
 - 如果字段中包含参考答案或解析，只有在用户问题确实相关时才引用，并说明依据来源于当前题目字段。
 - 不要输出 JSON，也不要重复粘贴全部字段内容，除非用户明确要求。`;
+const DEFAULT_AI_EVALUATION_GENERATION_PROMPT = `你是答题模型。
+
+你会收到题目相关字段，请仅基于这些字段独立作答，不要参考标准答案。
+
+请输出清晰的作答结论和必要推理。`;
+const DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT = `你是评测裁判模型。
+
+你会收到题目字段、上一步模型的回答，以及标准答案字段。
+
+请判断模型回答是否正确，并返回明确结论与简短依据。`;
 const DEFAULT_AI_CLEANING_PROMPTS: Record<AICleaningToolKey, string> = {
     generate_level3_tags: `你是一个专业的题目分析专家。请分析用户提交的题目，但不要回答题目内容。
 
@@ -428,6 +446,7 @@ function createFileAIStageConfigTable(): void {
       file_name TEXT PRIMARY KEY,
       stages_json TEXT NOT NULL,
       chat_json TEXT,
+      evaluation_json TEXT,
       cleaning_json TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -436,6 +455,10 @@ function createFileAIStageConfigTable(): void {
 
 function getAICleaningResultTableName(toolKey: AICleaningToolKey): string {
     return `ai_cleaning_${toolKey}_results`;
+}
+
+function getAIEvaluationResultTableName(): string {
+    return "ai_evaluation_results";
 }
 
 function createAICleaningResultTable(toolKey: AICleaningToolKey): void {
@@ -455,6 +478,28 @@ function createAICleaningResultTable(toolKey: AICleaningToolKey): void {
     );
 }
 
+function createAIEvaluationResultTable(): void {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS ${getAIEvaluationResultTableName()} (
+      file_id TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      attempt_index INTEGER NOT NULL,
+      generation_response_text TEXT NOT NULL,
+      generation_parsed_json_text TEXT,
+      judgment_response_text TEXT NOT NULL,
+      judgment_parsed_json_text TEXT,
+      final_verdict TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (file_id, row_id, task_id, attempt_index)
+    );
+  `);
+    db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${getAIEvaluationResultTableName()}_file_id ON ${getAIEvaluationResultTableName()}(file_id)`,
+    );
+}
+
 function ensureAIRoutingTables(): void {
     createAIProviderEndpointTable();
     createAIModelRouteTable();
@@ -462,9 +507,15 @@ function ensureAIRoutingTables(): void {
     AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
         createAICleaningResultTable(toolKey);
     });
+    createAIEvaluationResultTable();
     const columns = new Set(getTableColumns("file_ai_stage_configs"));
     if (!columns.has("chat_json")) {
         db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN chat_json TEXT");
+    }
+    if (!columns.has("evaluation_json")) {
+        db.exec(
+            "ALTER TABLE file_ai_stage_configs ADD COLUMN evaluation_json TEXT",
+        );
     }
     if (!columns.has("cleaning_json")) {
         db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN cleaning_json TEXT");
@@ -597,6 +648,28 @@ export interface FileAIChatConfig {
     defaultSubmitFieldKeys: string[];
 }
 
+export interface FileAIEvaluationAnswerGenerationConfig {
+    routeName: string;
+    prompt: string;
+    questionFieldKeys: string[];
+}
+
+export interface FileAIEvaluationAnswerJudgmentConfig {
+    routeName: string;
+    prompt: string;
+    answerFieldKeys: string[];
+}
+
+export interface FileAIEvaluationTaskConfig {
+    id: string;
+    name: string;
+    enabled: boolean;
+    attemptCount: number;
+    maxConcurrency: number;
+    answerGeneration: FileAIEvaluationAnswerGenerationConfig;
+    answerJudgment: FileAIEvaluationAnswerJudgmentConfig;
+}
+
 export interface FileAICleaningOutputMapping {
     outputKey: string;
     targetFieldKey: string;
@@ -618,6 +691,16 @@ export type FileAICleaningConfigMap = Record<
 export interface FileAICleaningToolResult {
     responseText: string;
     parsedJsonText?: string;
+    updatedAt?: string;
+}
+
+export interface FileAIEvaluationAttemptResult {
+    attemptIndex: number;
+    generationResponseText: string;
+    generationParsedJsonText?: string;
+    judgmentResponseText: string;
+    judgmentParsedJsonText?: string;
+    finalVerdict: string;
     updatedAt?: string;
 }
 
@@ -717,6 +800,32 @@ function normalizeRetryCount(value: number | null | undefined): number {
     }
     if (value > MAX_AI_RETRY_COUNT) {
         return MAX_AI_RETRY_COUNT;
+    }
+    return value;
+}
+
+function normalizeEvaluationAttemptCount(value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+        return DEFAULT_AI_EVALUATION_ATTEMPT_COUNT;
+    }
+    if (value < MIN_AI_EVALUATION_ATTEMPT_COUNT) {
+        return MIN_AI_EVALUATION_ATTEMPT_COUNT;
+    }
+    if (value > MAX_AI_EVALUATION_ATTEMPT_COUNT) {
+        return MAX_AI_EVALUATION_ATTEMPT_COUNT;
+    }
+    return value;
+}
+
+function normalizeEvaluationMaxConcurrency(value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+        return DEFAULT_AI_EVALUATION_MAX_CONCURRENCY;
+    }
+    if (value < MIN_AI_EVALUATION_MAX_CONCURRENCY) {
+        return MIN_AI_EVALUATION_MAX_CONCURRENCY;
+    }
+    if (value > MAX_AI_EVALUATION_MAX_CONCURRENCY) {
+        return MAX_AI_EVALUATION_MAX_CONCURRENCY;
     }
     return value;
 }
@@ -1936,6 +2045,191 @@ function parseFileChatConfig(
     }
 }
 
+function normalizeFileEvaluationTaskConfig(
+    value: unknown,
+    fallbackRouteName: string,
+    fallbackId: string,
+    fallbackName: string,
+): FileAIEvaluationTaskConfig {
+    if (!value || typeof value !== "object") {
+        return {
+            id: fallbackId,
+            name: fallbackName,
+            enabled: false,
+            attemptCount: DEFAULT_AI_EVALUATION_ATTEMPT_COUNT,
+            maxConcurrency: DEFAULT_AI_EVALUATION_MAX_CONCURRENCY,
+            answerGeneration: {
+                routeName: fallbackRouteName,
+                prompt: DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
+                questionFieldKeys: [],
+            },
+            answerJudgment: {
+                routeName: fallbackRouteName,
+                prompt: DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT,
+                answerFieldKeys: [],
+            },
+        };
+    }
+    const candidate = value as {
+        enabled?: unknown;
+        attemptCount?: unknown;
+        answerGeneration?: unknown;
+        answerJudgment?: unknown;
+    };
+    const legacyStageCandidate = AI_STAGE_ORDER.map(
+        (stageKey) =>
+            (value as Record<string, unknown>)[stageKey] as
+                | {
+                      enabled?: unknown;
+                      routeName?: unknown;
+                      questionFieldKeys?: unknown;
+                      answerFieldKeys?: unknown;
+                  }
+                | undefined,
+    ).find((item) => item && typeof item === "object");
+    const answerGeneration =
+        candidate.answerGeneration && typeof candidate.answerGeneration === "object"
+            ? (candidate.answerGeneration as {
+                  routeName?: unknown;
+                  prompt?: unknown;
+                  questionFieldKeys?: unknown;
+              })
+            : null;
+    const answerJudgment =
+        candidate.answerJudgment && typeof candidate.answerJudgment === "object"
+            ? (candidate.answerJudgment as {
+                  routeName?: unknown;
+                  prompt?: unknown;
+                  answerFieldKeys?: unknown;
+              })
+            : null;
+    const generationRouteName =
+        answerGeneration?.routeName ?? legacyStageCandidate?.routeName;
+    const judgmentRouteName =
+        answerJudgment?.routeName ?? legacyStageCandidate?.routeName;
+    return {
+        id:
+            typeof (value as { id?: unknown }).id === "string" &&
+            (value as { id: string }).id.trim().length > 0
+                ? (value as { id: string }).id.trim()
+                : fallbackId,
+        name:
+            typeof (value as { name?: unknown }).name === "string" &&
+            (value as { name: string }).name.trim().length > 0
+                ? (value as { name: string }).name.trim()
+                : fallbackName,
+        enabled:
+            candidate.enabled === true ||
+            (candidate.answerGeneration === undefined &&
+                candidate.answerJudgment === undefined &&
+                legacyStageCandidate?.enabled === true),
+        attemptCount: normalizeEvaluationAttemptCount(candidate.attemptCount),
+        maxConcurrency: normalizeEvaluationMaxConcurrency(
+            (value as { maxConcurrency?: unknown }).maxConcurrency,
+        ),
+        answerGeneration: {
+            routeName:
+                typeof generationRouteName === "string" &&
+                generationRouteName.trim().length > 0
+                    ? generationRouteName.trim()
+                    : fallbackRouteName,
+            prompt:
+                typeof answerGeneration?.prompt === "string" &&
+                answerGeneration.prompt.trim().length > 0
+                    ? answerGeneration.prompt
+                    : DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
+            questionFieldKeys: Array.isArray(answerGeneration?.questionFieldKeys)
+                ? answerGeneration.questionFieldKeys.filter(
+                      (item): item is string => typeof item === "string",
+                  )
+                : Array.isArray(legacyStageCandidate?.questionFieldKeys)
+                  ? legacyStageCandidate.questionFieldKeys.filter(
+                        (item): item is string => typeof item === "string",
+                    )
+                : [],
+        },
+        answerJudgment: {
+            routeName:
+                typeof judgmentRouteName === "string" &&
+                judgmentRouteName.trim().length > 0
+                    ? judgmentRouteName.trim()
+                    : fallbackRouteName,
+            prompt:
+                typeof answerJudgment?.prompt === "string" &&
+                answerJudgment.prompt.trim().length > 0
+                    ? answerJudgment.prompt
+                    : DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT,
+            answerFieldKeys: Array.isArray(answerJudgment?.answerFieldKeys)
+                ? answerJudgment.answerFieldKeys.filter(
+                      (item): item is string => typeof item === "string",
+                  )
+                : Array.isArray(legacyStageCandidate?.answerFieldKeys)
+                  ? legacyStageCandidate.answerFieldKeys.filter(
+                        (item): item is string => typeof item === "string",
+                    )
+                : [],
+        },
+    };
+}
+
+function parseFileEvaluationConfigMap(
+    value: string | null | undefined,
+    fallbackRouteName: string,
+): FileAIEvaluationTaskConfig[] {
+    if (!value) {
+        return [
+            normalizeFileEvaluationTaskConfig(
+                null,
+                fallbackRouteName,
+                DEFAULT_AI_EVALUATION_TASK_ID,
+                DEFAULT_AI_EVALUATION_TASK_NAME,
+            ),
+        ];
+    }
+    try {
+        const parsed = JSON.parse(value) as unknown;
+        if (Array.isArray(parsed)) {
+            const tasks = parsed.map((item, index) =>
+                normalizeFileEvaluationTaskConfig(
+                    item,
+                    fallbackRouteName,
+                    `${DEFAULT_AI_EVALUATION_TASK_ID}-${index + 1}`,
+                    index === 0
+                        ? DEFAULT_AI_EVALUATION_TASK_NAME
+                        : `评测配置 ${index + 1}`,
+                ),
+            );
+            return tasks.length > 0
+                ? tasks
+                : [
+                      normalizeFileEvaluationTaskConfig(
+                          null,
+                          fallbackRouteName,
+                          DEFAULT_AI_EVALUATION_TASK_ID,
+                          DEFAULT_AI_EVALUATION_TASK_NAME,
+                      ),
+                  ];
+        }
+        return [
+            normalizeFileEvaluationTaskConfig(
+                parsed,
+                fallbackRouteName,
+                DEFAULT_AI_EVALUATION_TASK_ID,
+                DEFAULT_AI_EVALUATION_TASK_NAME,
+            ),
+        ];
+    } catch {
+        return [
+            normalizeFileEvaluationTaskConfig(
+                null,
+                fallbackRouteName,
+                DEFAULT_AI_EVALUATION_TASK_ID,
+                DEFAULT_AI_EVALUATION_TASK_NAME,
+            ),
+        ];
+    }
+}
+
 function normalizeFileCleaningToolConfig(
     value: unknown,
     fallbackRouteName: string,
@@ -2169,6 +2463,23 @@ export function getFileAIChatConfig(fileName: string): FileAIChatConfig {
     return parseFileChatConfig(row?.chat_json, DEFAULT_AI_ROUTE_NAME);
 }
 
+export function getFileAIEvaluationConfig(
+    fileName: string,
+): FileAIEvaluationTaskConfig[] {
+    const row = db
+        .prepare(
+            `SELECT evaluation_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as { evaluation_json: string | null } | undefined;
+
+    return parseFileEvaluationConfigMap(
+        row?.evaluation_json,
+        DEFAULT_AI_ROUTE_NAME,
+    );
+}
+
 export function getFileAICleaningConfig(fileName: string): FileAICleaningConfigMap {
     const row = db
         .prepare(
@@ -2203,13 +2514,14 @@ export function saveFileAIChatConfig(
 ): void {
     const existingRow = db
         .prepare(
-            `SELECT stages_json, cleaning_json
+            `SELECT stages_json, evaluation_json, cleaning_json
              FROM file_ai_stage_configs
              WHERE file_name = ?`,
         )
         .get(fileName) as
         | {
               stages_json: string;
+              evaluation_json: string | null;
               cleaning_json: string | null;
           }
         | undefined;
@@ -2218,10 +2530,11 @@ export function saveFileAIChatConfig(
              file_name,
              stages_json,
              chat_json,
+             evaluation_json,
              cleaning_json,
              updated_at
          )
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(file_name) DO UPDATE SET
            chat_json = excluded.chat_json,
            updated_at = CURRENT_TIMESTAMP`,
@@ -2230,6 +2543,47 @@ export function saveFileAIChatConfig(
         existingRow?.stages_json ??
             JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
         JSON.stringify(chat),
+        existingRow?.evaluation_json ?? null,
+        existingRow?.cleaning_json ?? null,
+    );
+}
+
+export function saveFileAIEvaluationConfig(
+    fileName: string,
+    evaluation: FileAIEvaluationTaskConfig[],
+): void {
+    const existingRow = db
+        .prepare(
+            `SELECT stages_json, chat_json, cleaning_json
+             FROM file_ai_stage_configs
+             WHERE file_name = ?`,
+        )
+        .get(fileName) as
+        | {
+              stages_json: string;
+              chat_json: string | null;
+              cleaning_json: string | null;
+          }
+        | undefined;
+    db.prepare(
+        `INSERT INTO file_ai_stage_configs (
+             file_name,
+             stages_json,
+             chat_json,
+             evaluation_json,
+             cleaning_json,
+             updated_at
+         )
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_name) DO UPDATE SET
+           evaluation_json = excluded.evaluation_json,
+           updated_at = CURRENT_TIMESTAMP`,
+    ).run(
+        fileName,
+        existingRow?.stages_json ??
+            JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
+        existingRow?.chat_json ?? null,
+        JSON.stringify(evaluation),
         existingRow?.cleaning_json ?? null,
     );
 }
@@ -2240,7 +2594,7 @@ export function saveFileAICleaningConfig(
 ): void {
     const existingRow = db
         .prepare(
-            `SELECT stages_json, chat_json
+            `SELECT stages_json, chat_json, evaluation_json
              FROM file_ai_stage_configs
              WHERE file_name = ?`,
         )
@@ -2248,6 +2602,7 @@ export function saveFileAICleaningConfig(
         | {
               stages_json: string;
               chat_json: string | null;
+              evaluation_json: string | null;
           }
         | undefined;
     db.prepare(
@@ -2255,10 +2610,11 @@ export function saveFileAICleaningConfig(
              file_name,
              stages_json,
              chat_json,
+             evaluation_json,
              cleaning_json,
              updated_at
          )
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(file_name) DO UPDATE SET
            cleaning_json = excluded.cleaning_json,
            updated_at = CURRENT_TIMESTAMP`,
@@ -2267,6 +2623,7 @@ export function saveFileAICleaningConfig(
         existingRow?.stages_json ??
             JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
         existingRow?.chat_json ?? null,
+        existingRow?.evaluation_json ?? null,
         JSON.stringify(cleaning),
     );
 }
@@ -2287,6 +2644,43 @@ function normalizeFileAICleaningToolResult(
             typeof value.parsed_json_text === "string"
                 ? value.parsed_json_text
                 : undefined,
+        updatedAt:
+            typeof value.updated_at === "string" ? value.updated_at : undefined,
+    };
+}
+
+function normalizeFileAIEvaluationAttemptResult(
+    value: {
+        attempt_index?: unknown;
+        generation_response_text?: unknown;
+        generation_parsed_json_text?: unknown;
+        judgment_response_text?: unknown;
+        judgment_parsed_json_text?: unknown;
+        final_verdict?: unknown;
+        updated_at?: unknown;
+    },
+): FileAIEvaluationAttemptResult | null {
+    if (
+        typeof value.attempt_index !== "number" ||
+        typeof value.generation_response_text !== "string" ||
+        typeof value.judgment_response_text !== "string" ||
+        typeof value.final_verdict !== "string"
+    ) {
+        return null;
+    }
+    return {
+        attemptIndex: value.attempt_index,
+        generationResponseText: value.generation_response_text,
+        generationParsedJsonText:
+            typeof value.generation_parsed_json_text === "string"
+                ? value.generation_parsed_json_text
+                : undefined,
+        judgmentResponseText: value.judgment_response_text,
+        judgmentParsedJsonText:
+            typeof value.judgment_parsed_json_text === "string"
+                ? value.judgment_parsed_json_text
+                : undefined,
+        finalVerdict: value.final_verdict,
         updatedAt:
             typeof value.updated_at === "string" ? value.updated_at : undefined,
     };
@@ -2329,6 +2723,41 @@ export function listFileAICleaningResults(
     return result;
 }
 
+export function listFileAIEvaluationResults(
+    fileId: string,
+): Record<string, Record<string, FileAIEvaluationAttemptResult[]>> {
+    const rows = db
+        .prepare(
+            `SELECT row_id, task_id, attempt_index, generation_response_text, generation_parsed_json_text, judgment_response_text, judgment_parsed_json_text, final_verdict, updated_at
+             FROM ${getAIEvaluationResultTableName()}
+             WHERE file_id = ?
+             ORDER BY task_id ASC, row_id ASC, attempt_index ASC`,
+        )
+        .all(fileId) as Array<{
+        row_id: string;
+        task_id: string;
+        attempt_index: number;
+        generation_response_text: string;
+        generation_parsed_json_text: string | null;
+        judgment_response_text: string;
+        judgment_parsed_json_text: string | null;
+        final_verdict: string;
+        updated_at: string;
+    }>;
+    const result: Record<string, Record<string, FileAIEvaluationAttemptResult[]>> =
+        {};
+    rows.forEach((row) => {
+        const normalized = normalizeFileAIEvaluationAttemptResult(row);
+        if (!normalized) {
+            return;
+        }
+        const taskMap = (result[row.task_id] ??= {});
+        const attempts = (taskMap[row.row_id] ??= []);
+        attempts.push(normalized);
+    });
+    return result;
+}
+
 export function saveFileAICleaningToolResult(
     fileId: string,
     fileName: string,
@@ -2355,12 +2784,67 @@ export function saveFileAICleaningToolResult(
     ).run(fileId, fileName, rowId, responseText, parsedJsonText ?? null);
 }
 
+export function saveFileAIEvaluationAttemptResult(
+    fileId: string,
+    fileName: string,
+    rowId: string,
+    taskId: string,
+    attemptIndex: number,
+    generationResponseText: string,
+    generationParsedJsonText: string | undefined,
+    judgmentResponseText: string,
+    judgmentParsedJsonText: string | undefined,
+    finalVerdict: string,
+): void {
+    db.prepare(
+        `INSERT INTO ${getAIEvaluationResultTableName()} (
+             file_id,
+             file_name,
+             row_id,
+             task_id,
+             attempt_index,
+             generation_response_text,
+             generation_parsed_json_text,
+             judgment_response_text,
+             judgment_parsed_json_text,
+             final_verdict,
+             updated_at
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(file_id, row_id, task_id, attempt_index) DO UPDATE SET
+           file_name = excluded.file_name,
+           generation_response_text = excluded.generation_response_text,
+           generation_parsed_json_text = excluded.generation_parsed_json_text,
+           judgment_response_text = excluded.judgment_response_text,
+           judgment_parsed_json_text = excluded.judgment_parsed_json_text,
+           final_verdict = excluded.final_verdict,
+           updated_at = CURRENT_TIMESTAMP`,
+    ).run(
+        fileId,
+        fileName,
+        rowId,
+        taskId,
+        attemptIndex,
+        generationResponseText,
+        generationParsedJsonText ?? null,
+        judgmentResponseText,
+        judgmentParsedJsonText ?? null,
+        finalVerdict,
+    );
+}
+
 export function deleteFileAICleaningResults(fileId: string): void {
     AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
         db.prepare(
             `DELETE FROM ${getAICleaningResultTableName(toolKey)} WHERE file_id = ?`,
         ).run(fileId);
     });
+}
+
+export function deleteFileAIEvaluationResults(fileId: string): void {
+    db.prepare(
+        `DELETE FROM ${getAIEvaluationResultTableName()} WHERE file_id = ?`,
+    ).run(fileId);
 }
 
 export function findAIProviderEndpointByName(

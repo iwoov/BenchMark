@@ -12,6 +12,8 @@ import type {
     AICleaningToolKey,
     AICleaningToolResult,
     AIDetectStageKey,
+    AIEvaluationAttemptResult,
+    AIEvaluationTaskConfig,
     ParsedColumn,
     ParsedRow,
 } from "../../types";
@@ -54,7 +56,7 @@ const DETAIL_WORKSPACE_PANELS: Array<{
     {
         key: "evaluation",
         title: "数据评测",
-        description: "预留评测区，后续接入评测指标与结果。",
+        description: "按评测任务切换查看与运行结果。",
     },
 ];
 
@@ -74,6 +76,31 @@ function readTextValue(value: unknown): string {
 
 function hasMeaningfulText(value: string): boolean {
     return value.length > 0 && value !== "无";
+}
+
+function formatJsonText(value: string | undefined, fallback: string): string {
+    const source = value?.trim() || fallback.trim();
+    if (!source) {
+        return "";
+    }
+    try {
+        return JSON.stringify(JSON.parse(source), null, 2);
+    } catch {
+        return source;
+    }
+}
+
+function getEvaluationVerdictLabel(value: string): string {
+    if (value === "correct") {
+        return "正确";
+    }
+    if (value === "incorrect") {
+        return "错误";
+    }
+    if (value === "undetermined") {
+        return "无法判断";
+    }
+    return value || "-";
 }
 
 function stringifyAnalysis(value: unknown): string {
@@ -1162,15 +1189,22 @@ interface DetailPageProps {
     ) => ReactNode;
     aiResults?: Partial<Record<AIDetectStageKey, string>>;
     cleaningResults?: Partial<Record<AICleaningToolKey, AICleaningToolResult>>;
+    evaluationTasks: AIEvaluationTaskConfig[];
+    evaluationResults?: Record<string, AIEvaluationAttemptResult[]>;
     isAICleaning: boolean;
     activeAICleaningToolKey: AICleaningToolKey | null;
     aiCleaningElapsedText: string;
     aiCleaningStreamText: string;
     aiCleaningStatusMessage: string;
+    isAIEvaluating: boolean;
+    activeAIEvaluationTaskId: string | null;
+    aiEvaluationElapsedText: string;
+    aiEvaluationStatusMessage: string;
     onAddLevel3Tag?: (tag: string) => Promise<void>;
     onRemoveLevel3Tag?: (tag: string) => void;
     onUpdateBiochemLevel1Discipline?: (discipline: string) => Promise<void>;
     onRunAICleaning: (toolKey: AICleaningToolKey) => void;
+    onRunAIEvaluation: (taskId: string) => void;
     onToggleRowEnabled: (rowId: string, enabled: boolean) => void;
 }
 
@@ -1189,15 +1223,22 @@ export function DetailPage({
     renderDetailField,
     aiResults,
     cleaningResults,
+    evaluationTasks,
+    evaluationResults,
     isAICleaning,
     activeAICleaningToolKey,
     aiCleaningElapsedText,
     aiCleaningStreamText,
     aiCleaningStatusMessage,
+    isAIEvaluating,
+    activeAIEvaluationTaskId,
+    aiEvaluationElapsedText,
+    aiEvaluationStatusMessage,
     onAddLevel3Tag,
     onRemoveLevel3Tag,
     onUpdateBiochemLevel1Discipline,
     onRunAICleaning,
+    onRunAIEvaluation,
     onToggleRowEnabled,
 }: DetailPageProps) {
     const [detailImageZoom, setDetailImageZoom] = useState(100);
@@ -1225,6 +1266,11 @@ export function DetailPage({
                 ? saved
                 : AI_CLEANING_TOOL_ORDER[0];
         });
+    const [selectedEvaluationTaskId, setSelectedEvaluationTaskId] = useState(
+        () => evaluationTasks[0]?.id ?? "",
+    );
+    const [selectedEvaluationRawAttempt, setSelectedEvaluationRawAttempt] =
+        useState<AIEvaluationAttemptResult | null>(null);
 
     const problemTextColumns = useMemo(
         () =>
@@ -1356,6 +1402,29 @@ export function DetailPage({
         selectedCleaningToolKey,
     ]);
 
+    useEffect(() => {
+        if (
+            activeAIEvaluationTaskId &&
+            activeWorkspacePanel === "evaluation" &&
+            activeAIEvaluationTaskId !== selectedEvaluationTaskId
+        ) {
+            setSelectedEvaluationTaskId(activeAIEvaluationTaskId);
+            return;
+        }
+        if (
+            selectedEvaluationTaskId &&
+            evaluationTasks.some((task) => task.id === selectedEvaluationTaskId)
+        ) {
+            return;
+        }
+        setSelectedEvaluationTaskId(evaluationTasks[0]?.id ?? "");
+    }, [
+        activeAIEvaluationTaskId,
+        activeWorkspacePanel,
+        evaluationTasks,
+        selectedEvaluationTaskId,
+    ]);
+
     const decreaseImageZoom = () => {
         setDetailImageZoom((previous) => Math.max(50, previous - 25));
     };
@@ -1378,6 +1447,67 @@ export function DetailPage({
         aiCleaningStreamText.trim().length > 0
             ? aiCleaningStreamText
             : cleaningSavedContent;
+    const selectedEvaluationTask =
+        evaluationTasks.find((task) => task.id === selectedEvaluationTaskId) ??
+        evaluationTasks[0] ??
+        null;
+    const selectedEvaluationAttempts = selectedEvaluationTask
+        ? (evaluationResults?.[selectedEvaluationTask.id] ?? [])
+        : [];
+    const isSelectedEvaluationTaskRunning =
+        selectedEvaluationTask !== null &&
+        activeAIEvaluationTaskId === selectedEvaluationTask.id &&
+        isAIEvaluating;
+    const evaluationAttemptMap = new Map(
+        selectedEvaluationAttempts.map((attempt) => [
+            attempt.attemptIndex,
+            attempt,
+        ]),
+    );
+    const evaluationAttemptCards = selectedEvaluationTask
+        ? Array.from(
+              { length: selectedEvaluationTask.attemptCount },
+              (_, index) => index + 1,
+          )
+              .map((attemptIndex) => {
+                  const attempt = evaluationAttemptMap.get(attemptIndex) ?? null;
+                  if (!attempt) {
+                      return {
+                          attemptIndex,
+                          status: isSelectedEvaluationTaskRunning
+                              ? "pending"
+                              : "empty",
+                          finalAnswer: "-",
+                          verdict: isSelectedEvaluationTaskRunning
+                              ? "进行中"
+                              : "未运行",
+                          rawAttempt: null,
+                      };
+                  }
+                  const generationParsed =
+                      parseAIResultJSON(
+                          attempt.generationParsedJsonText ?? "",
+                      ) ?? parseAIResultJSON(attempt.generationResponseText);
+                  const judgmentParsed =
+                      parseAIResultJSON(
+                          attempt.judgmentParsedJsonText ?? "",
+                      ) ?? parseAIResultJSON(attempt.judgmentResponseText);
+                  return {
+                      attemptIndex,
+                      status: "done",
+                      finalAnswer:
+                          readTextValue(generationParsed?.final_answer) ||
+                          readTextValue(generationParsed?.ai_final_answer) ||
+                          "-",
+                      verdict:
+                          readTextValue(judgmentParsed?.verdict) ||
+                          attempt.finalVerdict ||
+                          "-",
+                      rawAttempt: attempt,
+                  };
+              })
+              .sort((left, right) => right.attemptIndex - left.attemptIndex)
+        : [];
 
     if (!selectedRow) {
         return (
@@ -1388,6 +1518,7 @@ export function DetailPage({
     }
 
     return (
+        <>
         <section className="record-detail standalone-record-detail">
             <div className="record-detail-status-bar">
                 <div className="record-detail-status-copy">
@@ -1771,21 +1902,201 @@ export function DetailPage({
                             ) : null}
 
                             {activeWorkspacePanel === "evaluation" ? (
-                                <section className="detail-workspace-card detail-workspace-placeholder-card">
-                                    <div className="detail-workspace-card-head">
+                                <section className="detail-workspace-card">
+                                    <div className="detail-workspace-card-head detail-workspace-cleaning-head">
                                         <div className="detail-workspace-card-copy">
                                             <strong>数据评测</strong>
-                                            <span>评测能力建设中</span>
+                                            <span>按评测任务切换查看与运行结果</span>
+                                        </div>
+                                        <div className="detail-workspace-cleaning-actions">
+                                            <label className="detail-workspace-select">
+                                                <span>评测任务</span>
+                                                <select
+                                                    value={
+                                                        selectedEvaluationTask?.id ??
+                                                        ""
+                                                    }
+                                                    onChange={(event) =>
+                                                        setSelectedEvaluationTaskId(
+                                                            event.target.value,
+                                                        )
+                                                    }
+                                                >
+                                                    {evaluationTasks.map((task) => (
+                                                        <option
+                                                            key={task.id}
+                                                            value={task.id}
+                                                        >
+                                                            {task.name}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </label>
+                                            <button
+                                                type="button"
+                                                className="btn btn-primary"
+                                                onClick={() =>
+                                                    selectedEvaluationTask &&
+                                                    onRunAIEvaluation(
+                                                        selectedEvaluationTask.id,
+                                                    )
+                                                }
+                                                disabled={
+                                                    !selectedEvaluationTask ||
+                                                    isAIEvaluating
+                                                }
+                                            >
+                                                {isSelectedEvaluationTaskRunning
+                                                    ? aiEvaluationElapsedText
+                                                    : "运行评测"}
+                                            </button>
                                         </div>
                                     </div>
-                                    <div className="detail-workspace-card-body detail-workspace-placeholder">
-                                        <p>
-                                            当前详情页已经为数据评测预留独立区域。
-                                        </p>
-                                        <p>
-                                            后续可在这里接入评测结果摘要、运行入口和指标说明。
-                                        </p>
+                                    <div className="detail-workspace-card-body detail-workspace-cleaning-layout">
+                                        {selectedEvaluationTask ? (
+                                            <>
+                                                <div className="detail-workspace-cleaning-tools">
+                                                    <div className="detail-workspace-cleaning-tool-summary">
+                                                        <strong>
+                                                            {
+                                                                selectedEvaluationTask.name
+                                                            }
+                                                        </strong>
+                                                        <span>{`评测次数 ${selectedEvaluationTask.attemptCount} 次`}</span>
+                                                        <span>
+                                                            {selectedEvaluationTask.enabled
+                                                                ? "已启用"
+                                                                : "未启用"}
+                                                        </span>
+                                                    </div>
+                                                    <div className="detail-workspace-cleaning-tool-summary">
+                                                        <strong>
+                                                            第一步：题目作答
+                                                        </strong>
+                                                        <span>
+                                                            {
+                                                                selectedEvaluationTask
+                                                                    .answerGeneration
+                                                                    .routeName
+                                                            }
+                                                        </span>
+                                                    </div>
+                                                    <div className="detail-workspace-cleaning-tool-summary">
+                                                        <strong>
+                                                            第二步：答案判定
+                                                        </strong>
+                                                        <span>
+                                                            {
+                                                                selectedEvaluationTask
+                                                                    .answerJudgment
+                                                                    .routeName
+                                                            }
+                                                        </span>
+                                                    </div>
+                                                    <div className="detail-workspace-cleaning-tool-summary">
+                                                        <strong>已保存尝试</strong>
+                                                        <span>{`${selectedEvaluationAttempts.length} 次`}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="detail-workspace-cleaning-content">
+                                                    {evaluationAttemptCards.length > 0 ? (
+                                                        <div className="detail-evaluation-attempt-list">
+                                                            {evaluationAttemptCards.map(
+                                                                ({
+                                                                    attemptIndex,
+                                                                    finalAnswer,
+                                                                    verdict,
+                                                                    rawAttempt,
+                                                                    status,
+                                                                }) => (
+                                                                    <article
+                                                                        key={
+                                                                            attemptIndex
+                                                                        }
+                                                                        className="detail-evaluation-attempt-card"
+                                                                    >
+                                                                        <div className="detail-evaluation-attempt-head">
+                                                                            <strong>{`第 ${attemptIndex} 次`}</strong>
+                                                                            {rawAttempt ? (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    className="btn btn-ghost"
+                                                                                    onClick={() =>
+                                                                                        setSelectedEvaluationRawAttempt(
+                                                                                            rawAttempt,
+                                                                                        )
+                                                                                    }
+                                                                                >
+                                                                                    查看 JSON
+                                                                                </button>
+                                                                            ) : null}
+                                                                        </div>
+                                                                        <div className="detail-evaluation-attempt-grid">
+                                                                            <div className="detail-evaluation-attempt-item">
+                                                                                <span>
+                                                                                    最终答案
+                                                                                </span>
+                                                                                <strong>
+                                                                                    {
+                                                                                        finalAnswer
+                                                                                    }
+                                                                                </strong>
+                                                                            </div>
+                                                                            <div className="detail-evaluation-attempt-item">
+                                                                                <span>
+                                                                                    判定结果
+                                                                                </span>
+                                                                                <strong>
+                                                                                    {
+                                                                                        status ===
+                                                                                        "done"
+                                                                                            ? getEvaluationVerdictLabel(
+                                                                                                  verdict,
+                                                                                              )
+                                                                                            : verdict
+                                                                                    }
+                                                                                </strong>
+                                                                            </div>
+                                                                        </div>
+                                                                    </article>
+                                                                ),
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <div className="detail-workspace-placeholder">
+                                                            <p>
+                                                                当前任务还没有评测结果。
+                                                            </p>
+                                                            <p>
+                                                                选择任务后点击“运行评测”即可写入数据库并在这里查看多次结果。
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="detail-workspace-placeholder">
+                                                <p>当前还没有配置任何评测任务。</p>
+                                            </div>
+                                        )}
                                     </div>
+                                    {isSelectedEvaluationTaskRunning ||
+                                    aiEvaluationStatusMessage ? (
+                                        <div className="detail-workspace-cleaning-footer">
+                                            {isSelectedEvaluationTaskRunning ? (
+                                                <span className="detail-workspace-status-pill">
+                                                    {`运行中 ${aiEvaluationElapsedText}`}
+                                                </span>
+                                            ) : null}
+                                            {aiEvaluationStatusMessage ? (
+                                                <div className="record-detail-ai-cleaning-message">
+                                                    {
+                                                        aiEvaluationStatusMessage
+                                                    }
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
                                 </section>
                             ) : null}
                         </div>
@@ -1793,5 +2104,49 @@ export function DetailPage({
                 </aside>
             </div>
         </section>
+        {selectedEvaluationRawAttempt ? (
+            <div className="column-modal-mask">
+                <div className="column-modal ai-config-modal">
+                    <h3>{`第 ${selectedEvaluationRawAttempt.attemptIndex} 次评测原始 JSON`}</h3>
+                    <p>
+                        {selectedEvaluationTask?.name ?? "评测任务"}
+                    </p>
+                    <div className="ai-config-form">
+                        <div className="ai-config-section">
+                            <div className="ai-config-section-title">
+                                第一步：题目作答 JSON
+                            </div>
+                            <pre className="detail-evaluation-json">
+                                {formatJsonText(
+                                    selectedEvaluationRawAttempt.generationParsedJsonText,
+                                    selectedEvaluationRawAttempt.generationResponseText,
+                                )}
+                            </pre>
+                        </div>
+                        <div className="ai-config-section">
+                            <div className="ai-config-section-title">
+                                第二步：答案判定 JSON
+                            </div>
+                            <pre className="detail-evaluation-json">
+                                {formatJsonText(
+                                    selectedEvaluationRawAttempt.judgmentParsedJsonText,
+                                    selectedEvaluationRawAttempt.judgmentResponseText,
+                                )}
+                            </pre>
+                        </div>
+                    </div>
+                    <div className="column-modal-footer">
+                        <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => setSelectedEvaluationRawAttempt(null)}
+                        >
+                            关闭
+                        </button>
+                    </div>
+                </div>
+            </div>
+        ) : null}
+        </>
     );
 }

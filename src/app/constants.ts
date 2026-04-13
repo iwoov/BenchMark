@@ -4,6 +4,7 @@ import type {
     AICleaningConfigMap,
     AICleaningToolConfig,
     AICleaningToolKey,
+    AIEvaluationTaskConfig,
     AIModelRoute,
     AIProviderEndpoint,
     AIDetectStageConfig,
@@ -306,6 +307,70 @@ const DEFAULT_AI_STAGE_BASE: Omit<AIDetectStageConfig, "prompt"> = {
     submitFieldKeys: [],
 };
 
+export const DEFAULT_AI_EVALUATION_GENERATION_PROMPT = `你是题目评测流程中的第一步答题模型。
+
+你会收到题目相关字段 JSON。你的任务是：
+1. 仅基于题目字段作答，不要参考标准答案。
+2. 提炼关键解题依据。
+3. 给出最终答案。
+4. 如果信息不足，也要明确指出无法作答的原因。
+
+请严格返回 JSON，不要输出 Markdown，不要输出额外说明文字，格式如下：
+{
+  "status": "answered" | "insufficient_information",
+  "reasoning": "简明扼要的解题依据或无法作答原因",
+  "final_answer": "最终答案；若无法作答则为空字符串",
+  "confidence": "high" | "medium" | "low"
+}
+
+要求：
+- "final_answer" 必须是可直接比较的最终作答结果，不要混入解释。
+- 若为单选题，使用单个选项值，如 "A"。
+- 若为多选题，使用统一格式如 "A,B"。
+- 若为填空题，直接返回填空内容；若有多个空，使用稳定顺序返回，如 "空1: xxx；空2: yyy" 或字符串形式的 JSON 数组 "[\"xxx\",\"yyy\"]"，但同一任务内格式必须保持一致。
+- 若题型无法明确识别，也要给出你认为最可比较的最终答案表达。
+- 若无法根据题目字段完成作答，"status" 返回 "insufficient_information"。
+- 不要补充任何 JSON 之外的内容。`;
+
+export const DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT = `你是题目评测流程中的第二步判定模型。
+
+你会收到三类信息：
+1. 题目字段 JSON
+2. 第一步模型的结构化回答结果
+3. 标准答案字段 JSON
+
+你的任务是判断“第一步模型的最终答案是否正确”，并返回结构化判定结果。
+
+请严格返回 JSON，不要输出 Markdown，不要输出额外说明文字，格式如下：
+{
+  "verdict": "correct" | "incorrect" | "undetermined",
+  "score": 1,
+  "reason": "简要说明判定依据；若无法判定也要说明原因",
+  "reference_answer": "从标准答案字段中提取出的参考答案；若无法提取则为空字符串",
+  "model_answer": "从第一步结果中提取出的模型答案；若无法提取则为空字符串"
+}
+
+要求：
+- "verdict" 为 "correct" 时，"score" 必须为 1。
+- "verdict" 为 "incorrect" 时，"score" 必须为 0。
+- "verdict" 为 "undetermined" 时，"score" 也必须为 0，并在 "reason" 中说明无法判定的原因。
+- 判定时优先比较最终答案，不要只比较推理过程是否相似。
+- 不要补充任何 JSON 之外的内容。`;
+
+export const AI_EVALUATION_STEP_LABELS = {
+    answer_generation: {
+        title: "第一步：题目作答",
+        description: "基于题目字段独立生成模型回答。",
+    },
+    answer_judgment: {
+        title: "第二步：答案判定",
+        description: "结合模型回答与标准答案判断是否正确。",
+    },
+} as const;
+
+export const DEFAULT_AI_EVALUATION_TASK_ID = "evaluation-task-1";
+export const DEFAULT_AI_EVALUATION_TASK_NAME = "评测配置 1";
+
 export const DEFAULT_AI_CHAT_CONFIG: AIChatConfig = {
     routeName: DEFAULT_AI_ROUTE_NAME,
     prompt: DEFAULT_AI_CHAT_PROMPT,
@@ -363,10 +428,29 @@ export const DEFAULT_AI_STAGE_CONFIGS: AIDetectStageConfigMap = {
     },
 };
 
+export const DEFAULT_AI_EVALUATION_TASK: AIEvaluationTaskConfig = {
+    id: DEFAULT_AI_EVALUATION_TASK_ID,
+    name: DEFAULT_AI_EVALUATION_TASK_NAME,
+    enabled: false,
+    attemptCount: 1,
+    maxConcurrency: 5,
+    answerGeneration: {
+        routeName: DEFAULT_AI_ROUTE_NAME,
+        prompt: DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
+        questionFieldKeys: [],
+    },
+    answerJudgment: {
+        routeName: DEFAULT_AI_ROUTE_NAME,
+        prompt: DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT,
+        answerFieldKeys: [],
+    },
+};
+
 export const DEFAULT_AI_CONFIG: AIDetectConfig = {
     providers: [DEFAULT_AI_PROVIDER],
     routes: [DEFAULT_AI_ROUTE],
     stages: DEFAULT_AI_STAGE_CONFIGS,
+    evaluationTasks: [DEFAULT_AI_EVALUATION_TASK],
     chat: DEFAULT_AI_CHAT_CONFIG,
     cleaning: DEFAULT_AI_CLEANING_CONFIGS,
 };
@@ -380,6 +464,12 @@ export const AI_PROVIDER_API_TYPE_OPTIONS = [
 export const DEFAULT_AI_RETRY_COUNT = 5;
 export const MIN_AI_RETRY_COUNT = 0;
 export const MAX_AI_RETRY_COUNT = 10;
+export const DEFAULT_AI_EVALUATION_ATTEMPT_COUNT = 1;
+export const MIN_AI_EVALUATION_ATTEMPT_COUNT = 1;
+export const MAX_AI_EVALUATION_ATTEMPT_COUNT = 10;
+export const DEFAULT_AI_EVALUATION_MAX_CONCURRENCY = 5;
+export const MIN_AI_EVALUATION_MAX_CONCURRENCY = 1;
+export const MAX_AI_EVALUATION_MAX_CONCURRENCY = 10;
 export const DEFAULT_AI_BATCH_CONCURRENCY = 4;
 export const MIN_AI_BATCH_CONCURRENCY = 1;
 export const MAX_AI_BATCH_CONCURRENCY = 32;

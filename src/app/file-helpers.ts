@@ -1,6 +1,7 @@
 import type {
     AICleaningToolKey,
     AICleaningToolResult,
+    AIEvaluationAttemptResult,
     FileViewState,
     FilterCondition,
     ParsedCell,
@@ -410,49 +411,6 @@ function toSafeStringArray(value: unknown): string[] {
     return value.filter((item): item is string => typeof item === "string");
 }
 
-function toSafeStringRecord(value: unknown): Record<string, string> {
-    if (!value || typeof value !== "object") {
-        return {};
-    }
-    const entries = Object.entries(value as Record<string, unknown>);
-    const result: Record<string, string> = {};
-    entries.forEach(([key, item]) => {
-        if (typeof item === "string") {
-            result[key] = item;
-        }
-    });
-    return result;
-}
-
-function toSafeFilterConditions(value: unknown): FilterCondition[] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-    return value
-        .map((item, index): FilterCondition | null => {
-            if (!item || typeof item !== "object") {
-                return null;
-            }
-            const candidate = item as Partial<FilterCondition>;
-            if (
-                typeof candidate.columnKey !== "string" ||
-                typeof candidate.value !== "string"
-            ) {
-                return null;
-            }
-            return {
-                id:
-                    typeof candidate.id === "string" &&
-                    candidate.id.trim().length > 0
-                        ? candidate.id
-                        : `${candidate.columnKey}-${index + 1}`,
-                columnKey: candidate.columnKey,
-                value: candidate.value,
-            };
-        })
-        .filter((item): item is FilterCondition => item !== null);
-}
-
 function normalizeRowAIResults(
     value: unknown,
 ): Partial<Record<AIDetectStageKey, string>> {
@@ -552,6 +510,61 @@ function normalizeRowCleaningResults(
                     ? candidate.updatedAt
                     : undefined,
         };
+    });
+    return result;
+}
+
+function normalizeRowEvaluationResults(
+    value: unknown,
+): Record<string, AIEvaluationAttemptResult[]> {
+    if (!value || typeof value !== "object") {
+        return {};
+    }
+
+    const raw = value as Record<string, unknown>;
+    const result: Record<string, AIEvaluationAttemptResult[]> = {};
+    Object.entries(raw).forEach(([taskId, attempts]) => {
+        if (!Array.isArray(attempts)) {
+            return;
+        }
+        const normalizedAttempts = attempts
+            .map((item) => {
+                if (!item || typeof item !== "object") {
+                    return null;
+                }
+                const candidate = item as Partial<AIEvaluationAttemptResult>;
+                if (
+                    typeof candidate.attemptIndex !== "number" ||
+                    typeof candidate.generationResponseText !== "string" ||
+                    typeof candidate.judgmentResponseText !== "string" ||
+                    typeof candidate.finalVerdict !== "string"
+                ) {
+                    return null;
+                }
+                return {
+                    attemptIndex: candidate.attemptIndex,
+                    generationResponseText: candidate.generationResponseText,
+                    generationParsedJsonText:
+                        typeof candidate.generationParsedJsonText === "string"
+                            ? candidate.generationParsedJsonText
+                            : undefined,
+                    judgmentResponseText: candidate.judgmentResponseText,
+                    judgmentParsedJsonText:
+                        typeof candidate.judgmentParsedJsonText === "string"
+                            ? candidate.judgmentParsedJsonText
+                            : undefined,
+                    finalVerdict: candidate.finalVerdict,
+                    updatedAt:
+                        typeof candidate.updatedAt === "string"
+                            ? candidate.updatedAt
+                            : undefined,
+                } as AIEvaluationAttemptResult;
+            })
+            .filter((item) => item !== null)
+            .sort((left, right) => left.attemptIndex - right.attemptIndex);
+        if (normalizedAttempts.length > 0) {
+            result[taskId] = normalizedAttempts;
+        }
     });
     return result;
 }
@@ -718,6 +731,9 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             const cleaningResults = normalizeRowCleaningResults(
                 (item as Record<string, unknown>).cleaningResults,
             );
+            const evaluationResults = normalizeRowEvaluationResults(
+                (item as Record<string, unknown>).evaluationResults,
+            );
             const nextRow: ParsedRow = {
                 rowId: item.rowId,
                 enabled: normalizeRowEnabled(item.enabled),
@@ -728,6 +744,9 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             }
             if (Object.keys(cleaningResults).length > 0) {
                 nextRow.cleaningResults = cleaningResults;
+            }
+            if (Object.keys(evaluationResults).length > 0) {
+                nextRow.evaluationResults = evaluationResults;
             }
             return nextRow;
         })
@@ -776,69 +795,15 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         : cleanedParsed.columns
               .filter((column) => column.editable)
               .map((column) => column.key);
-    const filterConditionsFromState = toSafeFilterConditions(
-        (candidate as { filterConditions?: unknown }).filterConditions,
-    );
 
     const normalized = toViewState(
         cleanedParsed,
         displayKeysFromState,
         editableKeysFromState,
-        filterConditionsFromState,
     );
-    const legacyFilterValues: Record<string, string> = {};
-    const legacyLevel1Key = getLevelColumnKey(cleanedParsed.columns, "level1");
-    const legacyLevel2Key = getLevelColumnKey(cleanedParsed.columns, "level2");
-    const legacyTimeKey = cleanedParsed.columns.find((column) =>
-        isTimeColumnTitle(column.title),
-    )?.key;
-    if (typeof candidate.level1Filter === "string" && legacyLevel1Key) {
-        legacyFilterValues[legacyLevel1Key] = candidate.level1Filter;
-    }
-    if (typeof candidate.level2Filter === "string" && legacyLevel2Key) {
-        legacyFilterValues[legacyLevel2Key] = candidate.level2Filter;
-    }
-    if (typeof candidate.timeFilter === "string" && legacyTimeKey) {
-        legacyFilterValues[legacyTimeKey] = candidate.timeFilter;
-    }
-    const legacyFilterConditions = Object.entries(legacyFilterValues).map(
-        ([columnKey, value], index): FilterCondition => ({
-            id: `legacy-${columnKey}-${index + 1}`,
-            columnKey,
-            value,
-        }),
-    );
-    const selectedFilterColumnKeys = Array.isArray(
-        candidate.selectedFilterColumnKeys,
-    )
-        ? toSafeStringArray(candidate.selectedFilterColumnKeys)
-        : [];
-    const rawFilterValues = toSafeStringRecord(candidate.columnFilterValues);
-    const legacySelectedFilterConditions = selectedFilterColumnKeys
-        .map((key, index): FilterCondition | null => {
-            const value = rawFilterValues[key];
-            if (typeof value !== "string" || value.trim().length === 0) {
-                return null;
-            }
-            return {
-                id: `legacy-selected-${key}-${index + 1}`,
-                columnKey: key,
-                value,
-            };
-        })
-        .filter((item): item is FilterCondition => item !== null);
-    const mergedFilterConditions =
-        normalized.filterConditions.length > 0
-            ? normalized.filterConditions
-            : legacyFilterConditions.length > 0
-              ? legacyFilterConditions
-              : legacySelectedFilterConditions;
     return {
         ...normalized,
-        filterConditions: normalizeFilterConditions(
-            cleanedParsed.columns,
-            mergedFilterConditions,
-        ),
+        filterConditions: [],
         statisticsConfig: normalizeStatisticsConfig(
             cleanedParsed.columns,
             candidate.statisticsConfig,

@@ -27,6 +27,18 @@ export interface ParsedRow {
             updatedAt?: string;
         }
     >;
+    evaluationResults?: Record<
+        string,
+        Array<{
+            attemptIndex: number;
+            generationResponseText: string;
+            generationParsedJsonText?: string;
+            judgmentResponseText: string;
+            judgmentParsedJsonText?: string;
+            finalVerdict: string;
+            updatedAt?: string;
+        }>
+    >;
 }
 
 export interface ParsedWorkbook {

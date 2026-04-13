@@ -6,6 +6,7 @@ import type {
     AIDetectConfig,
     AIDetectRunKey,
     AIDetectStageKey,
+    AIEvaluationAttemptResult,
     FileViewState,
     NamedAIDetectConfig,
     ParsedColumn,
@@ -19,6 +20,7 @@ import {
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
     DEFAULT_AI_BATCH_CONCURRENCY,
+    DEFAULT_AI_EVALUATION_TASK,
     DEFAULT_AI_CONFIG_NAME,
     INITIAL_AI_BATCH_TASK,
 } from "../constants";
@@ -70,6 +72,7 @@ export const useAIManager = ({
     navigateToSection,
     updateRowAIResult,
     updateRowCleaningResult,
+    updateRowEvaluationResults,
     persistFileState,
     flushPendingAIResults,
     latestFileStateRef,
@@ -93,6 +96,12 @@ export const useAIManager = ({
         result: AICleaningToolResult,
         mappedFieldValues?: Record<string, string>,
     ) => void;
+    updateRowEvaluationResults: (
+        fileId: string,
+        rowId: string,
+        taskId: string,
+        results: AIEvaluationAttemptResult[],
+    ) => void;
     persistFileState: (file: FileViewState) => Promise<void>;
     flushPendingAIResults: (fileId: string) => Promise<void>;
     latestFileStateRef: React.MutableRefObject<Record<string, FileViewState>>;
@@ -104,6 +113,8 @@ export const useAIManager = ({
     const [isAIChatConfigModalOpen, setIsAIChatConfigModalOpen] =
         useState(false);
     const [isAICleaningConfigModalOpen, setIsAICleaningConfigModalOpen] =
+        useState(false);
+    const [isAIEvaluationConfigModalOpen, setIsAIEvaluationConfigModalOpen] =
         useState(false);
     const [aiConfigLoading, setAIConfigLoading] = useState(false);
     const [aiConfigSaving, setAIConfigSaving] = useState(false);
@@ -164,14 +175,23 @@ export const useAIManager = ({
     const [aiCleaningStreamText, setAICleaningStreamText] = useState("");
     const [aiCleaningStatusMessage, setAICleaningStatusMessage] =
         useState("");
+    const [isAIEvaluating, setIsAIEvaluating] = useState(false);
+    const [activeAIEvaluationTaskId, setActiveAIEvaluationTaskId] = useState<
+        string | null
+    >(null);
+    const [aiEvaluationElapsedMs, setAIEvaluationElapsedMs] = useState(0);
+    const [aiEvaluationStatusMessage, setAIEvaluationStatusMessage] =
+        useState("");
 
     const aiStreamAbortRef = useRef<AbortController | null>(null);
     const aiChatAbortRef = useRef<AbortController | null>(null);
     const aiCleaningAbortRef = useRef<AbortController | null>(null);
+    const aiEvaluationAbortRef = useRef<AbortController | null>(null);
     const aiBatchAbortRef = useRef<AbortController | null>(null);
     const aiDetectStartedAtRef = useRef<number | null>(null);
     const aiChatStartedAtRef = useRef<number | null>(null);
     const aiCleaningStartedAtRef = useRef<number | null>(null);
+    const aiEvaluationStartedAtRef = useRef<number | null>(null);
     const aiBatchPersistTimerRef = useRef<number | null>(null);
     const rowStreamCharsRef = useRef<
         Record<
@@ -253,6 +273,20 @@ export const useAIManager = ({
     }, [isAICleaning]);
 
     useEffect(() => {
+        if (!isAIEvaluating) {
+            return;
+        }
+        const startedAt = aiEvaluationStartedAtRef.current ?? Date.now();
+        aiEvaluationStartedAtRef.current = startedAt;
+        const timerId = window.setInterval(() => {
+            setAIEvaluationElapsedMs(Date.now() - startedAt);
+        }, 250);
+        return () => {
+            window.clearInterval(timerId);
+        };
+    }, [isAIEvaluating]);
+
+    useEffect(() => {
         setAIThinkingText("");
         setAIResultText("");
         setAIResultMessage("");
@@ -274,6 +308,13 @@ export const useAIManager = ({
         setActiveAICleaningToolKey(null);
         setAICleaningStreamText("");
         setAICleaningStatusMessage("");
+        aiEvaluationAbortRef.current?.abort();
+        aiEvaluationAbortRef.current = null;
+        aiEvaluationStartedAtRef.current = null;
+        setAIEvaluationElapsedMs(0);
+        setIsAIEvaluating(false);
+        setActiveAIEvaluationTaskId(null);
+        setAIEvaluationStatusMessage("");
         setChatMessages([]);
         setChatInput("");
         setChatStatusMessage("");
@@ -308,6 +349,7 @@ export const useAIManager = ({
             setIsAIRouteModalOpen(false);
             setIsAIChatConfigModalOpen(false);
             setIsAICleaningConfigModalOpen(false);
+            setIsAIEvaluationConfigModalOpen(false);
             setActiveChatRouteName(nextConfig.chat.routeName);
             return;
         }
@@ -330,6 +372,7 @@ export const useAIManager = ({
                     providers?: unknown;
                     routes?: unknown;
                     stages?: unknown;
+                    evaluationTasks?: unknown;
                     chat?: unknown;
                     cleaning?: unknown;
                 };
@@ -340,6 +383,7 @@ export const useAIManager = ({
                             providers: payload.providers,
                             routes: payload.routes,
                             stages: payload.stages,
+                            evaluationTasks: payload.evaluationTasks,
                             chat: payload.chat,
                             cleaning: payload.cleaning,
                         },
@@ -451,6 +495,7 @@ export const useAIManager = ({
     const aiDetectElapsedText = formatDuration(aiDetectElapsedMs);
     const aiChatElapsedText = formatDuration(aiChatElapsedMs);
     const aiCleaningElapsedText = formatDuration(aiCleaningElapsedMs);
+    const aiEvaluationElapsedText = formatDuration(aiEvaluationElapsedMs);
     const aiMergedStreamText = useMemo(
         () => composeAISaveText(aiResultText, aiThinkingText),
         [aiResultText, aiThinkingText],
@@ -1122,6 +1167,7 @@ export const useAIManager = ({
         setIsAIRouteModalOpen(false);
         setIsAIChatConfigModalOpen(false);
         setIsAICleaningConfigModalOpen(false);
+        setIsAIEvaluationConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1134,6 +1180,7 @@ export const useAIManager = ({
         setIsAIRouteModalOpen(false);
         setIsAIChatConfigModalOpen(false);
         setIsAICleaningConfigModalOpen(false);
+        setIsAIEvaluationConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1146,6 +1193,7 @@ export const useAIManager = ({
         setIsAIStageConfigModalOpen(false);
         setIsAIChatConfigModalOpen(false);
         setIsAICleaningConfigModalOpen(false);
+        setIsAIEvaluationConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1158,6 +1206,7 @@ export const useAIManager = ({
         setIsAIStageConfigModalOpen(false);
         setIsAIRouteModalOpen(false);
         setIsAICleaningConfigModalOpen(false);
+        setIsAIEvaluationConfigModalOpen(false);
         navigateToSection("settings", "ai");
     };
 
@@ -1166,6 +1215,20 @@ export const useAIManager = ({
             return;
         }
         setIsAICleaningConfigModalOpen(true);
+        setIsAIChatConfigModalOpen(false);
+        setIsAIProfileModalOpen(false);
+        setIsAIStageConfigModalOpen(false);
+        setIsAIRouteModalOpen(false);
+        setIsAIEvaluationConfigModalOpen(false);
+        navigateToSection("settings", "ai");
+    };
+
+    const onOpenAIEvaluationConfigModal = () => {
+        if (!prepareDraftAIConfig()) {
+            return;
+        }
+        setIsAIEvaluationConfigModalOpen(true);
+        setIsAICleaningConfigModalOpen(false);
         setIsAIChatConfigModalOpen(false);
         setIsAIProfileModalOpen(false);
         setIsAIStageConfigModalOpen(false);
@@ -1201,6 +1264,12 @@ export const useAIManager = ({
         setDraftAIConfig(cloneAIDetectConfig(aiConfig));
         setAIConfigFormMessage("");
         setIsAICleaningConfigModalOpen(false);
+    };
+
+    const onCancelAIEvaluationConfigModal = () => {
+        setDraftAIConfig(cloneAIDetectConfig(aiConfig));
+        setAIConfigFormMessage("");
+        setIsAIEvaluationConfigModalOpen(false);
     };
 
     const updateDraftStageConfig = (
@@ -1301,6 +1370,110 @@ export const useAIManager = ({
                 },
             },
         }));
+    };
+
+    const onToggleDraftAIEvaluationQuestionField = (
+        taskId: string,
+        columnKey: string,
+    ) => {
+        setDraftAIConfig((previous) => {
+            const task = previous.evaluationTasks.find(
+                (item) => item.id === taskId,
+            );
+            if (!task) {
+                return previous;
+            }
+            const exists = task.answerGeneration.questionFieldKeys.includes(
+                columnKey,
+            );
+            const questionFieldKeys = exists
+                ? task.answerGeneration.questionFieldKeys.filter(
+                      (key) => key !== columnKey,
+                  )
+                : [...task.answerGeneration.questionFieldKeys, columnKey];
+            return {
+                ...previous,
+                evaluationTasks: previous.evaluationTasks.map((item) =>
+                    item.id === taskId
+                        ? {
+                              ...item,
+                              answerGeneration: {
+                                  ...item.answerGeneration,
+                                  questionFieldKeys,
+                              },
+                          }
+                        : item,
+                ),
+            };
+        });
+    };
+
+    const onToggleDraftAIEvaluationAnswerField = (
+        taskId: string,
+        columnKey: string,
+    ) => {
+        setDraftAIConfig((previous) => {
+            const task = previous.evaluationTasks.find(
+                (item) => item.id === taskId,
+            );
+            if (!task) {
+                return previous;
+            }
+            const exists = task.answerJudgment.answerFieldKeys.includes(
+                columnKey,
+            );
+            const answerFieldKeys = exists
+                ? task.answerJudgment.answerFieldKeys.filter(
+                      (key) => key !== columnKey,
+                  )
+                : [...task.answerJudgment.answerFieldKeys, columnKey];
+            return {
+                ...previous,
+                evaluationTasks: previous.evaluationTasks.map((item) =>
+                    item.id === taskId
+                        ? {
+                              ...item,
+                              answerJudgment: {
+                                  ...item.answerJudgment,
+                                  answerFieldKeys,
+                              },
+                          }
+                        : item,
+                ),
+            };
+        });
+    };
+
+    const onAddDraftAIEvaluationTask = () => {
+        setDraftAIConfig((previous) => {
+            const nextIndex = previous.evaluationTasks.length + 1;
+            const nextId = `evaluation-task-${nextIndex}-${Date.now()}`;
+            return {
+                ...previous,
+                evaluationTasks: [
+                    ...previous.evaluationTasks,
+                    {
+                        ...DEFAULT_AI_EVALUATION_TASK,
+                        id: nextId,
+                        name: `评测配置 ${nextIndex}`,
+                    },
+                ],
+            };
+        });
+    };
+
+    const onRemoveDraftAIEvaluationTask = (taskId: string) => {
+        setDraftAIConfig((previous) => {
+            if (previous.evaluationTasks.length <= 1) {
+                return previous;
+            }
+            return {
+                ...previous,
+                evaluationTasks: previous.evaluationTasks.filter(
+                    (item) => item.id !== taskId,
+                ),
+            };
+        });
     };
 
     const onSaveAIConfig = async (skipStageValidation = false) => {
@@ -1475,6 +1648,7 @@ export const useAIManager = ({
             setIsAIRouteModalOpen(false);
             setIsAIChatConfigModalOpen(false);
             setIsAICleaningConfigModalOpen(false);
+            setIsAIEvaluationConfigModalOpen(false);
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : "保存 AI 配置失败";
@@ -1632,6 +1806,111 @@ export const useAIManager = ({
         }
     };
 
+    const onSaveAIEvaluationConfig = async () => {
+        if (!activeFile) {
+            return;
+        }
+
+        const nextConfig = normalizeAIDetectConfigForColumns(
+            draftAIConfig,
+            activeFile.columns,
+        );
+        const routeNameSet = new Set(nextConfig.routes.map((item) => item.name));
+        if (nextConfig.evaluationTasks.length === 0) {
+            setAIConfigFormMessage("请至少保留一个评测配置");
+            return;
+        }
+        const taskIdSet = new Set<string>();
+        for (const task of nextConfig.evaluationTasks) {
+            const taskName = task.name.trim();
+            if (taskName.length === 0) {
+                setAIConfigFormMessage("评测配置名称不能为空");
+                return;
+            }
+            if (taskIdSet.has(task.id)) {
+                setAIConfigFormMessage(`评测配置 ID 重复：${task.id}`);
+                return;
+            }
+            taskIdSet.add(task.id);
+            if (
+                !Number.isInteger(task.attemptCount) ||
+                task.attemptCount < 1 ||
+                task.attemptCount > 10
+            ) {
+                setAIConfigFormMessage(`【${taskName}】评测次数必须是 1 到 10 的整数`);
+                return;
+            }
+            if (
+                !Number.isInteger(task.maxConcurrency) ||
+                task.maxConcurrency < 1 ||
+                task.maxConcurrency > 10
+            ) {
+                setAIConfigFormMessage(`【${taskName}】最大并发数必须是 1 到 10 的整数`);
+                return;
+            }
+            if (!routeNameSet.has(task.answerGeneration.routeName)) {
+                setAIConfigFormMessage(`【${taskName}】请为第一步题目作答选择有效的模型路由`);
+                return;
+            }
+            if (!routeNameSet.has(task.answerJudgment.routeName)) {
+                setAIConfigFormMessage(`【${taskName}】请为第二步答案判定选择有效的模型路由`);
+                return;
+            }
+            if (task.answerGeneration.prompt.trim().length === 0) {
+                setAIConfigFormMessage(`【${taskName}】第一步题目作答 Prompt 不能为空`);
+                return;
+            }
+            if (task.answerJudgment.prompt.trim().length === 0) {
+                setAIConfigFormMessage(`【${taskName}】第二步答案判定 Prompt 不能为空`);
+                return;
+            }
+            if (task.enabled && task.answerGeneration.questionFieldKeys.length === 0) {
+                setAIConfigFormMessage(`【${taskName}】请至少选择一个题目字段`);
+                return;
+            }
+            if (task.enabled && task.answerJudgment.answerFieldKeys.length === 0) {
+                setAIConfigFormMessage(`【${taskName}】请至少选择一个答案字段`);
+                return;
+            }
+        }
+
+        setAIConfigSaving(true);
+        setAIConfigFormMessage("");
+        setErrorMessage("");
+
+        try {
+            const response = await fetch(
+                `/api/ai-config/${encodeURIComponent(activeFile.fileName)}/evaluation`,
+                {
+                    method: "PUT",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        evaluationTasks: nextConfig.evaluationTasks,
+                    }),
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response
+                    .json()
+                    .catch(() => ({}))) as { message?: string };
+                throw new Error(payload.message ?? "保存数据评测配置失败");
+            }
+
+            syncActiveAIConfigState(nextConfig);
+            setDraftAIConfig(cloneAIDetectConfig(nextConfig));
+            setAIConfigFormMessage("");
+            setIsAIEvaluationConfigModalOpen(false);
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "保存数据评测配置失败";
+            setAIConfigFormMessage(message);
+        } finally {
+            setAIConfigSaving(false);
+        }
+    };
+
     const stringifyCleaningOutputValue = (value: unknown): string => {
         if (value === null || value === undefined) {
             return "";
@@ -1684,6 +1963,261 @@ export const useAIManager = ({
             mappedValues[mapping.targetFieldKey] = value;
         });
         return mappedValues;
+    };
+
+    const extractEvaluationVerdict = (judgmentText: string): string => {
+        const parsed = parseAIResultJSON(judgmentText);
+        if (!parsed) {
+            return "undetermined";
+        }
+        const verdict =
+            typeof parsed.verdict === "string"
+                ? parsed.verdict.trim()
+                : typeof parsed.final_verdict === "string"
+                  ? parsed.final_verdict.trim()
+                  : "";
+        return verdict || "undetermined";
+    };
+
+    const onRunAIEvaluation = async (taskId: string) => {
+        if (!activeFile || !selectedRow) {
+            return;
+        }
+        if (isAIDetecting || isAIChatting || isAICleaning || isAIBatchRunning) {
+            setAIEvaluationStatusMessage("当前有其他 AI 任务在运行，暂不可发起数据评测");
+            return;
+        }
+        if (isAIEvaluating) {
+            setAIEvaluationStatusMessage("已有数据评测任务正在运行");
+            return;
+        }
+
+        const normalizedConfig = normalizeAIDetectConfigForColumns(
+            aiConfig,
+            activeFile.columns,
+        );
+        syncActiveAIConfigState(normalizedConfig);
+        const task = normalizedConfig.evaluationTasks.find(
+            (item) => item.id === taskId,
+        );
+        if (!task) {
+            setAIEvaluationStatusMessage("未找到对应的评测任务");
+            return;
+        }
+        const generationRoute =
+            normalizedConfig.routes.find(
+                (item) => item.name === task.answerGeneration.routeName,
+            ) ?? null;
+        const judgmentRoute =
+            normalizedConfig.routes.find(
+                (item) => item.name === task.answerJudgment.routeName,
+            ) ?? null;
+        if (!generationRoute || !judgmentRoute) {
+            setAIEvaluationStatusMessage(`【${task.name}】模型路由未配置完整`);
+            return;
+        }
+        if (!task.enabled) {
+            setAIEvaluationStatusMessage(`【${task.name}】当前任务未启用`);
+            return;
+        }
+
+        const questionFields = buildAIDetectFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            task.answerGeneration.questionFieldKeys,
+        );
+        const answerFields = buildAIDetectFieldsForRow(
+            activeFile.columns,
+            selectedRow,
+            task.answerJudgment.answerFieldKeys,
+        );
+        if (questionFields.length === 0 || answerFields.length === 0) {
+            setAIEvaluationStatusMessage(`【${task.name}】请先配置题目字段和答案字段`);
+            return;
+        }
+
+        aiEvaluationAbortRef.current?.abort();
+        const controller = new AbortController();
+        aiEvaluationAbortRef.current = controller;
+        aiEvaluationStartedAtRef.current = Date.now();
+        setAIEvaluationElapsedMs(0);
+        setIsAIEvaluating(true);
+        setActiveAIEvaluationTaskId(taskId);
+        setAIEvaluationStatusMessage("");
+        setErrorMessage("");
+
+        const previousResults = selectedRow.evaluationResults?.[taskId] ?? [];
+        const resultMap = new Map(
+            previousResults.map((item) => [item.attemptIndex, item]),
+        );
+        let completedCount = 0;
+
+        try {
+            setAIEvaluationStatusMessage(
+                `【${task.name}】已启动 ${task.attemptCount} 次评测，并发上限 ${task.maxConcurrency}`,
+            );
+
+            const runAttempt = async (attemptIndex: number) => {
+                const generationStream = await requestAIDetectResult(
+                    {
+                        routeName: generationRoute.name,
+                        prompt: task.answerGeneration.prompt,
+                        fields: questionFields,
+                    },
+                    {
+                        signal: controller.signal,
+                    },
+                );
+                const generationText = generationStream.answerText.trim();
+                if (generationText.length === 0) {
+                    throw new Error(`【${task.name}】第 ${attemptIndex} 次作答返回为空`);
+                }
+                const generationParsed = parseAIResultJSON(generationText);
+                const generationParsedJsonText = generationParsed
+                    ? JSON.stringify(generationParsed)
+                    : undefined;
+
+                const judgmentStream = await requestAIDetectResult(
+                    {
+                        routeName: judgmentRoute.name,
+                        prompt: task.answerJudgment.prompt,
+                        fields: [
+                            ...questionFields,
+                            {
+                                title: "第一步模型结果",
+                                type: "text",
+                                value: generationText,
+                            },
+                            ...answerFields,
+                        ],
+                    },
+                    {
+                        signal: controller.signal,
+                    },
+                );
+                const judgmentText = judgmentStream.answerText.trim();
+                if (judgmentText.length === 0) {
+                    throw new Error(`【${task.name}】第 ${attemptIndex} 次判定返回为空`);
+                }
+                const judgmentParsed = parseAIResultJSON(judgmentText);
+                const judgmentParsedJsonText = judgmentParsed
+                    ? JSON.stringify(judgmentParsed)
+                    : undefined;
+                const finalVerdict = extractEvaluationVerdict(judgmentText);
+
+                const response = await fetch(
+                    `/api/files/${encodeURIComponent(activeFile.fileId)}/evaluation-results/${encodeURIComponent(taskId)}`,
+                    {
+                        method: "PUT",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            rowId: selectedRow.rowId,
+                            fileName: activeFile.fileName,
+                            attemptIndex,
+                            generationResponseText: generationText,
+                            generationParsedJsonText,
+                            judgmentResponseText: judgmentText,
+                            judgmentParsedJsonText,
+                            finalVerdict,
+                        }),
+                    },
+                );
+                if (!response.ok) {
+                    const payload = (await response
+                        .json()
+                        .catch(() => ({}))) as { message?: string };
+                    throw new Error(payload.message ?? "保存数据评测结果失败");
+                }
+
+                const nextResult: AIEvaluationAttemptResult = {
+                    attemptIndex,
+                    generationResponseText: generationText,
+                    generationParsedJsonText,
+                    judgmentResponseText: judgmentText,
+                    judgmentParsedJsonText,
+                    finalVerdict,
+                    updatedAt: new Date().toISOString(),
+                };
+                resultMap.set(attemptIndex, nextResult);
+                completedCount += 1;
+                const nextResults = Array.from(resultMap.values()).sort(
+                    (left, right) => left.attemptIndex - right.attemptIndex,
+                );
+                updateRowEvaluationResults(
+                    activeFile.fileId,
+                    selectedRow.rowId,
+                    taskId,
+                    nextResults,
+                );
+                setAIEvaluationStatusMessage(
+                    `【${task.name}】第 ${attemptIndex} 次已完成，已返回 ${completedCount}/${task.attemptCount} 次结果`,
+                );
+            };
+            const attemptIndexes = Array.from(
+                { length: task.attemptCount },
+                (_, index) => index + 1,
+            );
+            let nextAttemptCursor = 0;
+            const runWorker = async () => {
+                while (nextAttemptCursor < attemptIndexes.length) {
+                    const currentCursor = nextAttemptCursor;
+                    nextAttemptCursor += 1;
+                    const attemptIndex = attemptIndexes[currentCursor];
+                    if (attemptIndex === undefined) {
+                        return;
+                    }
+                    await runAttempt(attemptIndex);
+                }
+            };
+            const workerCount = Math.min(task.maxConcurrency, task.attemptCount);
+            const settledResults = await Promise.allSettled(
+                Array.from({ length: workerCount }, () => runWorker()),
+            );
+
+            if (controller.signal.aborted) {
+                setAIEvaluationStatusMessage("数据评测已取消");
+            } else {
+                const failedResults = settledResults.filter(
+                    (item): item is PromiseRejectedResult =>
+                        item.status === "rejected",
+                );
+                if (failedResults.length > 0) {
+                    const firstReason = failedResults[0].reason;
+                    const reasonText =
+                        firstReason instanceof Error
+                            ? firstReason.message
+                            : "部分并发评测失败";
+                    setAIEvaluationStatusMessage(
+                        `【${task.name}】已完成 ${completedCount}/${task.attemptCount} 次，失败 ${failedResults.length} 次：${reasonText}`,
+                    );
+                } else {
+                    setAIEvaluationStatusMessage(
+                        `【${task.name}】数据评测完成，共返回 ${completedCount} 次结果`,
+                    );
+                }
+            }
+        } catch (error) {
+            if (controller.signal.aborted) {
+                setAIEvaluationStatusMessage("数据评测已取消");
+            } else {
+                const message =
+                    error instanceof Error ? error.message : "数据评测失败";
+                setAIEvaluationStatusMessage(message);
+            }
+        } finally {
+            if (aiEvaluationAbortRef.current === controller) {
+                aiEvaluationAbortRef.current = null;
+            }
+            if (aiEvaluationStartedAtRef.current) {
+                setAIEvaluationElapsedMs(
+                    Date.now() - aiEvaluationStartedAtRef.current,
+                );
+                aiEvaluationStartedAtRef.current = null;
+            }
+            setIsAIEvaluating(false);
+        }
     };
 
     const onRunAICleaning = async (toolKey: AICleaningToolKey) => {
@@ -2857,6 +3391,7 @@ export const useAIManager = ({
         isAIRouteModalOpen,
         isAIChatConfigModalOpen,
         isAICleaningConfigModalOpen,
+        isAIEvaluationConfigModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -2893,25 +3428,37 @@ export const useAIManager = ({
         aiCleaningElapsedText,
         aiCleaningStreamText,
         aiCleaningStatusMessage,
+        isAIEvaluating,
+        activeAIEvaluationTaskId,
+        aiEvaluationElapsedText,
+        aiEvaluationStatusMessage,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
         onOpenAIChatConfigModal,
         onOpenAICleaningConfigModal,
+        onOpenAIEvaluationConfigModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
         onCancelAIRouteModal,
         onCancelAIChatConfigModal,
         onCancelAICleaningConfigModal,
+        onCancelAIEvaluationConfigModal,
         onToggleDraftAISubmitField,
         onToggleDraftAIChatSubmitField,
         onToggleDraftAICleaningSubmitField,
         onUpdateDraftAICleaningOutputMapping,
+        onToggleDraftAIEvaluationQuestionField,
+        onToggleDraftAIEvaluationAnswerField,
+        onAddDraftAIEvaluationTask,
+        onRemoveDraftAIEvaluationTask,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
         onSaveAIRouteConfig,
         onSaveAIChatConfig,
         onSaveAICleaningConfig,
+        onSaveAIEvaluationConfig,
+        onRunAIEvaluation,
         onRunAICleaning,
         onRunAIDetect,
         onRunAllAIDetect,

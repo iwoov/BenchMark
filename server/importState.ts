@@ -655,17 +655,6 @@ export function mergeImportedFileState(
     const selectedEditableColumnKeys = toSafeStringArray(
         existingStateRecord.selectedEditableColumnKeys,
     ).filter((key) => validColumnKeys.has(key));
-    const selectedFilterColumnKeys = toSafeStringArray(
-        existingStateRecord.selectedFilterColumnKeys,
-    ).filter((key) => validColumnKeys.has(key));
-    const columnFilterValues = Object.fromEntries(
-        Object.entries(
-            toSafeStringRecord(existingStateRecord.columnFilterValues),
-        ).filter(([key]) => validColumnKeys.has(key)),
-    );
-    const rawFilterConditions = toSafeFilterConditions(
-        existingStateRecord.filterConditions,
-    ).filter((condition) => validColumnKeys.has(condition.columnKey));
     const statisticsConfig = normalizeStatisticsConfig(
         existingStateRecord.statisticsConfig,
         validColumnKeys,
@@ -697,29 +686,7 @@ export function mergeImportedFileState(
     ) {
         nextState.selectedEditableColumnKeys = selectedEditableColumnKeys;
     }
-    if (
-        Array.isArray(existingStateRecord.filterConditions) ||
-        rawFilterConditions.length > 0
-    ) {
-        nextState.filterConditions = rawFilterConditions;
-    } else {
-        const legacyFilterConditions = selectedFilterColumnKeys
-            .map((key, index) => {
-                const value = columnFilterValues[key];
-                if (typeof value !== "string" || value.trim().length === 0) {
-                    return null;
-                }
-                return {
-                    id: `legacy-${key}-${index + 1}`,
-                    columnKey: key,
-                    value,
-                };
-            })
-            .filter((item) => item !== null);
-        if (legacyFilterConditions.length > 0) {
-            nextState.filterConditions = legacyFilterConditions;
-        }
-    }
+    // filterConditions is client-only state; not persisted to server
     if (
         isRecord(existingStateRecord.statisticsConfig) ||
         statisticsConfig.selectedFieldKeys.length > 0 ||

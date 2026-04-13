@@ -2,7 +2,7 @@ import type { ChangeEvent, RefObject } from "react";
 import type { FileViewState } from "../../types";
 import type { AIBatchTaskState } from "../types";
 import { getAIBatchTaskStatusText } from "../ai-helpers";
-import { IconDownload, IconMoon, IconSun } from "../icons";
+import { IconBrand, IconDownload, IconMoon, IconSun } from "../icons";
 
 interface HeaderBarProps {
     files: FileViewState[];
@@ -42,16 +42,7 @@ export function HeaderBar({
             <div className="header-inner">
                 <div className="header-brand">
                     <div className="brand-icon">
-                        <svg viewBox="0 0 24 24">
-                            <path
-                                d="M9 2L4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H9zm0 0v5H4m4 4h8m-8 4h8m-8 4h4"
-                                fill="none"
-                                stroke="white"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            />
-                        </svg>
+                        <IconBrand />
                     </div>
                     <div className="header-brand-copy">
                         <h1>质检工作台</h1>

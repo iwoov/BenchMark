@@ -20,6 +20,7 @@ export interface ParsedRow {
     values: Record<string, ParsedCell>;
     aiResults?: Partial<Record<AIDetectStageKey, string>>;
     cleaningResults?: Partial<Record<AICleaningToolKey, AICleaningToolResult>>;
+    evaluationResults?: Record<string, AIEvaluationAttemptResult[]>;
 }
 
 export interface ParsedFile {
@@ -88,6 +89,38 @@ export interface AIDetectStageConfig {
     prompt: string;
 }
 
+export interface AIEvaluationAnswerGenerationConfig {
+    routeName: string;
+    prompt: string;
+    questionFieldKeys: string[];
+}
+
+export interface AIEvaluationAnswerJudgmentConfig {
+    routeName: string;
+    prompt: string;
+    answerFieldKeys: string[];
+}
+
+export interface AIEvaluationTaskConfig {
+    id: string;
+    name: string;
+    enabled: boolean;
+    attemptCount: number;
+    maxConcurrency: number;
+    answerGeneration: AIEvaluationAnswerGenerationConfig;
+    answerJudgment: AIEvaluationAnswerJudgmentConfig;
+}
+
+export interface AIEvaluationAttemptResult {
+    attemptIndex: number;
+    generationResponseText: string;
+    generationParsedJsonText?: string;
+    judgmentResponseText: string;
+    judgmentParsedJsonText?: string;
+    finalVerdict: string;
+    updatedAt?: string;
+}
+
 export interface AIChatConfig {
     routeName: string;
     prompt: string;
@@ -133,6 +166,7 @@ export interface AIDetectConfig {
     providers: AIProviderEndpoint[];
     routes: AIModelRoute[];
     stages: AIDetectStageConfigMap;
+    evaluationTasks: AIEvaluationTaskConfig[];
     chat: AIChatConfig;
     cleaning: AICleaningConfigMap;
 }

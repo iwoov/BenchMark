@@ -37,6 +37,7 @@ import { AIStageConfigModal } from "./app/components/AIStageConfigModal";
 import { AIRunModal } from "./app/components/AIRunModal";
 import { AIChatConfigModal } from "./app/components/AIChatConfigModal";
 import { AICleaningConfigModal } from "./app/components/AICleaningConfigModal";
+import { AIEvaluationConfigModal } from "./app/components/AIEvaluationConfigModal";
 import { AIChatSidebar } from "./app/components/AIChatSidebar";
 import { ImageLightbox } from "./app/components/ImageLightbox";
 import { FilterConfigModal } from "./app/components/FilterConfigModal";
@@ -106,6 +107,7 @@ function App() {
         latestFileStateRef,
         updateRowAIResult,
         updateRowCleaningResult,
+        updateRowEvaluationResults,
         onEditCell,
         onToggleRowEnabled,
         onToggleDisplayColumn,
@@ -170,6 +172,7 @@ function App() {
         isAIRouteModalOpen,
         isAIChatConfigModalOpen,
         isAICleaningConfigModalOpen,
+        isAIEvaluationConfigModalOpen,
         isAIRunModalOpen,
         setIsAIRunModalOpen,
         aiBatchTask,
@@ -203,25 +206,37 @@ function App() {
         aiCleaningElapsedText,
         aiCleaningStreamText,
         aiCleaningStatusMessage,
+        isAIEvaluating,
+        activeAIEvaluationTaskId,
+        aiEvaluationElapsedText,
+        aiEvaluationStatusMessage,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
         onOpenAIChatConfigModal,
         onOpenAICleaningConfigModal,
+        onOpenAIEvaluationConfigModal,
         onCancelAIStageConfigModal,
         onCancelAIProfileModal,
         onCancelAIRouteModal,
         onCancelAIChatConfigModal,
         onCancelAICleaningConfigModal,
+        onCancelAIEvaluationConfigModal,
         onToggleDraftAISubmitField,
         onToggleDraftAIChatSubmitField,
         onToggleDraftAICleaningSubmitField,
         onUpdateDraftAICleaningOutputMapping,
+        onToggleDraftAIEvaluationQuestionField,
+        onToggleDraftAIEvaluationAnswerField,
+        onAddDraftAIEvaluationTask,
+        onRemoveDraftAIEvaluationTask,
         onSaveAIStageConfig,
         onSaveAIProfileConfig,
         onSaveAIRouteConfig,
         onSaveAIChatConfig,
         onSaveAICleaningConfig,
+        onSaveAIEvaluationConfig,
+        onRunAIEvaluation,
         onRunAICleaning,
         onRunAIDetect,
         onRunAllAIDetect,
@@ -239,6 +254,7 @@ function App() {
         navigateToSection,
         updateRowAIResult,
         updateRowCleaningResult,
+        updateRowEvaluationResults,
         persistFileState,
         flushPendingAIResults,
         latestFileStateRef,
@@ -1056,6 +1072,12 @@ function App() {
                                             cleaningResults={
                                                 selectedRow?.cleaningResults
                                             }
+                                            evaluationTasks={
+                                                aiConfig.evaluationTasks
+                                            }
+                                            evaluationResults={
+                                                selectedRow?.evaluationResults
+                                            }
                                             isAICleaning={isAICleaning}
                                             activeAICleaningToolKey={
                                                 activeAICleaningToolKey
@@ -1069,6 +1091,16 @@ function App() {
                                             aiCleaningStatusMessage={
                                                 aiCleaningStatusMessage
                                             }
+                                            isAIEvaluating={isAIEvaluating}
+                                            activeAIEvaluationTaskId={
+                                                activeAIEvaluationTaskId
+                                            }
+                                            aiEvaluationElapsedText={
+                                                aiEvaluationElapsedText
+                                            }
+                                            aiEvaluationStatusMessage={
+                                                aiEvaluationStatusMessage
+                                            }
                                             onAddLevel3Tag={onAddLevel3Tag}
                                             onRemoveLevel3Tag={
                                                 onRemoveLevel3Tag
@@ -1077,6 +1109,9 @@ function App() {
                                                 onUpdateBiochemLevel1Discipline
                                             }
                                             onRunAICleaning={onRunAICleaning}
+                                            onRunAIEvaluation={
+                                                onRunAIEvaluation
+                                            }
                                             onToggleRowEnabled={
                                                 onToggleRowEnabled
                                             }
@@ -1117,6 +1152,9 @@ function App() {
                                             }
                                             onOpenAICleaningConfigModal={
                                                 onOpenAICleaningConfigModal
+                                            }
+                                            onOpenAIEvaluationConfigModal={
+                                                onOpenAIEvaluationConfigModal
                                             }
                                         />
                                     </section>
@@ -1249,6 +1287,25 @@ function App() {
                 }
                 onCancel={onCancelAICleaningConfigModal}
                 onSave={onSaveAICleaningConfig}
+            />
+            <AIEvaluationConfigModal
+                isOpen={isAIEvaluationConfigModalOpen}
+                activeFile={activeFile}
+                aiConfigFormMessage={aiConfigFormMessage}
+                draftAIConfig={draftAIConfig}
+                setDraftAIConfig={setDraftAIConfig}
+                aiSubmitFieldColumns={aiSubmitFieldColumns}
+                aiConfigSaving={aiConfigSaving}
+                onToggleDraftAIEvaluationQuestionField={
+                    onToggleDraftAIEvaluationQuestionField
+                }
+                onToggleDraftAIEvaluationAnswerField={
+                    onToggleDraftAIEvaluationAnswerField
+                }
+                onAddDraftAIEvaluationTask={onAddDraftAIEvaluationTask}
+                onRemoveDraftAIEvaluationTask={onRemoveDraftAIEvaluationTask}
+                onCancel={onCancelAIEvaluationConfigModal}
+                onSave={onSaveAIEvaluationConfig}
             />
             <AIRunModal
                 isOpen={isAIRunModalOpen}
