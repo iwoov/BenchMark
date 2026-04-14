@@ -279,72 +279,6 @@ export const useFileStore = ({
         };
     }, []);
 
-    // Lazy-load full file data when the active file changes
-    const fileDetailLoadingRef = useRef<Record<string, boolean>>({});
-
-    useEffect(() => {
-        if (!activeFileId || !initialLoadComplete) {
-            return;
-        }
-        const file = files.find((f) => f.fileId === activeFileId);
-        if (!file || file.detailLoaded) {
-            return;
-        }
-        if (fileDetailLoadingRef.current[activeFileId]) {
-            return;
-        }
-        fileDetailLoadingRef.current[activeFileId] = true;
-
-        const controller = new AbortController();
-        const loadDetail = async () => {
-            try {
-                const response = await fetch(
-                    `/api/files/${encodeURIComponent(activeFileId)}`,
-                    { signal: controller.signal },
-                );
-                if (!response.ok) {
-                    return;
-                }
-                const payload = (await response.json()) as {
-                    file?: unknown;
-                };
-                const fullFile = normalizeLoadedFileState(payload.file);
-                if (!fullFile) {
-                    return;
-                }
-                const savedConditions = loadFilterConditionsFromLocal(
-                    fullFile.fileId,
-                );
-                const columnKeys = new Set(fullFile.columns.map((c) => c.key));
-                const validConditions = savedConditions.filter(
-                    (cond) =>
-                        columnKeys.has(cond.columnKey) &&
-                        cond.value.trim().length > 0,
-                );
-                const merged: FileViewState = {
-                    ...fullFile,
-                    detailLoaded: true,
-                    rowCount: fullFile.rows.length,
-                    filterConditions:
-                        validConditions.length > 0 ? validConditions : [],
-                };
-                setFiles((prev) =>
-                    prev.map((f) => (f.fileId === activeFileId ? merged : f)),
-                );
-            } catch {
-                // ignore aborted / network errors
-            } finally {
-                delete fileDetailLoadingRef.current[activeFileId];
-            }
-        };
-
-        void loadDetail();
-
-        return () => {
-            controller.abort();
-        };
-    }, [activeFileId, initialLoadComplete, files]);
-
     useEffect(() => {
         return () => {
             Object.values(persistTimersRef.current).forEach((timerId) => {
@@ -359,15 +293,26 @@ export const useFileStore = ({
         const currentVersion = stateVersionRef.current[file.fileId] ?? 0;
         const nextVersion = Math.max(Date.now(), currentVersion + 1);
         stateVersionRef.current[file.fileId] = nextVersion;
+        const shouldPreserveRows =
+            file.detailLoaded !== true &&
+            (file.rowCount ?? 0) > 0 &&
+            file.rows.length === 0;
         const sanitizedState: FileViewState = {
             ...file,
             filterConditions: [],
-            rows: file.rows.map(
-                ({ cleaningResults, evaluationResults, ...row }) => row,
-            ),
+            rows: shouldPreserveRows
+                ? []
+                : file.rows.map(
+                      ({ cleaningResults, evaluationResults, ...row }) => row,
+                  ),
         };
         return {
-            ...sanitizedState,
+            state: {
+                ...sanitizedState,
+                ...(shouldPreserveRows ? { rows: undefined } : {}),
+                clientStateVersion: nextVersion,
+            },
+            preserveRows: shouldPreserveRows,
             clientStateVersion: nextVersion,
         };
     };
@@ -380,7 +325,10 @@ export const useFileStore = ({
                 {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ state: statePayload }),
+                    body: JSON.stringify({
+                        state: statePayload.state,
+                        preserveRows: statePayload.preserveRows,
+                    }),
                 },
             );
             if (response.ok || response.status === 409) {
@@ -926,9 +874,23 @@ export const useFileStore = ({
         setErrorMessage("");
 
         try {
-            const exportColumns = activeFile.columns;
+            const responseState = await fetch(
+                `/api/files/${encodeURIComponent(activeFile.fileId)}`,
+            );
+            if (!responseState.ok) {
+                throw new Error("加载导出数据失败");
+            }
+            const statePayload = (await responseState.json()) as {
+                file?: unknown;
+            };
+            const fullFile = normalizeLoadedFileState(statePayload.file);
+            if (!fullFile) {
+                throw new Error("导出数据无效");
+            }
+
+            const exportColumns = fullFile.columns;
             const headers = exportColumns.map((column) => column.title);
-            const rows = activeFile.rows.map((row) =>
+            const rows = fullFile.rows.map((row) =>
                 exportColumns.map(
                     (column) => row.values[column.key]?.value ?? "",
                 ),
@@ -938,7 +900,7 @@ export const useFileStore = ({
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    fileName: activeFile.fileName,
+                    fileName: fullFile.fileName,
                     headers,
                     rows,
                 }),

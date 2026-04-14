@@ -357,6 +357,467 @@ function attachPersistedMetadataToState(
     };
 }
 
+const EMPTY_FILTER_VALUE = "__EMPTY_FILTER__";
+const NON_EMPTY_FILTER_VALUE = "__NON_EMPTY_FILTER__";
+const DEFAULT_LIST_PAGE_SIZE = 50;
+const MAX_LIST_PAGE_SIZE = 500;
+
+type NormalizedFilterCondition = {
+    columnKey: string;
+    value: string;
+};
+
+type StatisticsDistributionItem = {
+    label: string;
+    count: number;
+};
+
+function parseJsonQueryValue(value: unknown): unknown {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+        return null;
+    }
+    try {
+        return JSON.parse(trimmed) as unknown;
+    } catch {
+        return null;
+    }
+}
+
+function normalizeFilterConditionsFromUnknown(
+    value: unknown,
+): NormalizedFilterCondition[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .map((item): NormalizedFilterCondition | null => {
+            if (!item || typeof item !== "object") {
+                return null;
+            }
+            const candidate = item as {
+                columnKey?: unknown;
+                value?: unknown;
+            };
+            if (
+                typeof candidate.columnKey !== "string" ||
+                typeof candidate.value !== "string"
+            ) {
+                return null;
+            }
+            const columnKey = candidate.columnKey.trim();
+            const filterValue = candidate.value.trim();
+            if (columnKey.length === 0 || filterValue.length === 0) {
+                return null;
+            }
+            return {
+                columnKey,
+                value: filterValue,
+            };
+        })
+        .filter(
+            (condition): condition is NormalizedFilterCondition =>
+                condition !== null,
+        );
+}
+
+function parseFilterConditionsQuery(value: unknown): NormalizedFilterCondition[] {
+    return normalizeFilterConditionsFromUnknown(parseJsonQueryValue(value));
+}
+
+function parseStringArrayQuery(value: unknown): string[] {
+    const parsed = parseJsonQueryValue(value);
+    if (!Array.isArray(parsed)) {
+        return [];
+    }
+    return parsed
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+}
+
+function readPositiveInteger(value: unknown, fallback: number): number {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        return Math.trunc(value);
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return Math.trunc(parsed);
+        }
+    }
+    return fallback;
+}
+
+function extractStateRows(state: unknown): Array<Record<string, unknown>> {
+    if (!state || typeof state !== "object") {
+        return [];
+    }
+    const rows = (state as { rows?: unknown }).rows;
+    if (!Array.isArray(rows)) {
+        return [];
+    }
+    return rows.filter(
+        (row): row is Record<string, unknown> =>
+            !!row && typeof row === "object",
+    );
+}
+
+function getRowIdFromRecord(row: Record<string, unknown>): string | null {
+    const rowId = row.rowId;
+    return typeof rowId === "string" && rowId.trim().length > 0
+        ? rowId
+        : null;
+}
+
+function getRowCellTextValue(row: Record<string, unknown>, columnKey: string): string {
+    const values = row.values;
+    if (!values || typeof values !== "object") {
+        return "";
+    }
+    const cell = (values as Record<string, unknown>)[columnKey];
+    if (!cell || typeof cell !== "object") {
+        return "";
+    }
+    const value = (cell as { value?: unknown }).value;
+    if (typeof value === "string") {
+        return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+    }
+    return "";
+}
+
+function rowMatchesFilters(
+    row: Record<string, unknown>,
+    filterConditions: NormalizedFilterCondition[],
+): boolean {
+    for (const condition of filterConditions) {
+        const value = getRowCellTextValue(row, condition.columnKey).trim();
+        if (condition.value === EMPTY_FILTER_VALUE) {
+            if (value.length !== 0) {
+                return false;
+            }
+            continue;
+        }
+        if (condition.value === NON_EMPTY_FILTER_VALUE) {
+            if (value.length === 0) {
+                return false;
+            }
+            continue;
+        }
+        if (value !== condition.value) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function filterStateRows(
+    rows: Array<Record<string, unknown>>,
+    filterConditions: NormalizedFilterCondition[],
+): Array<Record<string, unknown>> {
+    if (filterConditions.length === 0) {
+        return rows;
+    }
+    return rows.filter((row) => rowMatchesFilters(row, filterConditions));
+}
+
+function getDistinctOptionsForColumn(
+    rows: Array<Record<string, unknown>>,
+    columnKey: string,
+): string[] {
+    const unique = new Set<string>();
+    let hasEmpty = false;
+    let hasNonEmpty = false;
+    rows.forEach((row) => {
+        const value = getRowCellTextValue(row, columnKey).trim();
+        if (value.length === 0) {
+            hasEmpty = true;
+            return;
+        }
+        hasNonEmpty = true;
+        unique.add(value);
+    });
+
+    const options: string[] = [];
+    if (hasNonEmpty) {
+        options.push(NON_EMPTY_FILTER_VALUE);
+    }
+    if (hasEmpty) {
+        options.push(EMPTY_FILTER_VALUE);
+    }
+    options.push(...Array.from(unique));
+    return options;
+}
+
+function buildFilterOptionsMap(
+    state: unknown,
+): Record<string, string[]> {
+    if (!state || typeof state !== "object") {
+        return {};
+    }
+    const candidate = state as {
+        columns?: unknown;
+    };
+    if (!Array.isArray(candidate.columns)) {
+        return {};
+    }
+    const rows = extractStateRows(state);
+    const result: Record<string, string[]> = {};
+    candidate.columns.forEach((column) => {
+        if (!column || typeof column !== "object") {
+            return;
+        }
+        const key = (column as { key?: unknown }).key;
+        if (typeof key !== "string" || key.trim().length === 0) {
+            return;
+        }
+        result[key] = getDistinctOptionsForColumn(rows, key);
+    });
+    return result;
+}
+
+function buildFilterOptionsForColumn(
+    state: unknown,
+    columnKey: string,
+): string[] {
+    if (columnKey.trim().length === 0) {
+        return [];
+    }
+    return getDistinctOptionsForColumn(extractStateRows(state), columnKey);
+}
+
+function attachResultsToRows(
+    fileId: string,
+    rows: Array<Record<string, unknown>>,
+    options?: {
+        includeCleaning?: boolean;
+        includeEvaluation?: boolean;
+    },
+): Array<Record<string, unknown>> {
+    const includeCleaning = options?.includeCleaning !== false;
+    const includeEvaluation = options?.includeEvaluation === true;
+    let state: unknown = { rows };
+    if (includeCleaning) {
+        state = attachCleaningResultsToState(
+            state,
+            listFileAICleaningResults(fileId),
+        );
+    }
+    if (includeEvaluation) {
+        state = attachEvaluationResultsToState(
+            state,
+            listFileAIEvaluationResults(fileId),
+        );
+    }
+    return extractStateRows(state);
+}
+
+function splitStatisticsFieldValues(rawValue: string): string[] {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+        return ["空值"];
+    }
+    const parts = trimmed
+        .split(/[\n,，;；、|]+/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+    if (parts.length === 0) {
+        return ["空值"];
+    }
+    return Array.from(new Set(parts));
+}
+
+function buildStatisticsDistribution(
+    rows: Array<Record<string, unknown>>,
+    fieldKey: string,
+): {
+    total: number;
+    distinctCount: number;
+    items: StatisticsDistributionItem[];
+} {
+    const counts = new Map<string, number>();
+    rows.forEach((row) => {
+        splitStatisticsFieldValues(getRowCellTextValue(row, fieldKey)).forEach(
+            (label) => {
+                counts.set(label, (counts.get(label) ?? 0) + 1);
+            },
+        );
+    });
+    const items = Array.from(counts.entries())
+        .map(([label, count]) => ({ label, count }))
+        .sort((left, right) => {
+            if (right.count !== left.count) {
+                return right.count - left.count;
+            }
+            return left.label.localeCompare(right.label, "zh-CN");
+        });
+    return {
+        total: items.reduce((sum, item) => sum + item.count, 0),
+        distinctCount: items.length,
+        items,
+    };
+}
+
+function replaceStateRow(
+    state: unknown,
+    rowId: string,
+    nextRow: Record<string, unknown>,
+): {
+    nextState: Record<string, unknown> | null;
+    updated: boolean;
+} {
+    if (!state || typeof state !== "object") {
+        return { nextState: null, updated: false };
+    }
+    const current = state as {
+        rows?: unknown;
+        clientStateVersion?: unknown;
+    };
+    if (!Array.isArray(current.rows)) {
+        return { nextState: null, updated: false };
+    }
+
+    let updated = false;
+    const nextRows = current.rows.map((row) => {
+        if (!row || typeof row !== "object") {
+            return row;
+        }
+        const currentRowId = getRowIdFromRecord(row as Record<string, unknown>);
+        if (currentRowId !== rowId) {
+            return row;
+        }
+        updated = true;
+        return nextRow;
+    });
+
+    if (!updated) {
+        return { nextState: current as Record<string, unknown>, updated: false };
+    }
+
+    const currentVersion =
+        typeof current.clientStateVersion === "number" &&
+        Number.isFinite(current.clientStateVersion)
+            ? Math.trunc(current.clientStateVersion)
+            : 0;
+
+    return {
+        nextState: {
+            ...(current as Record<string, unknown>),
+            rows: nextRows,
+            clientStateVersion: Math.max(Date.now(), currentVersion + 1),
+        },
+        updated: true,
+    };
+}
+
+function sanitizeRowForState(
+    row: Record<string, unknown>,
+): Record<string, unknown> {
+    const {
+        cleaningResults: _cleaningResults,
+        evaluationResults: _evaluationResults,
+        ...rest
+    } = row;
+    return rest;
+}
+
+function toListCell(cell: unknown): unknown {
+    if (!cell || typeof cell !== "object") {
+        return cell;
+    }
+    const candidate = cell as {
+        type?: unknown;
+        value?: unknown;
+        src?: unknown;
+        srcList?: unknown;
+    };
+    const type = candidate.type === "image" ? "image" : "text";
+    const value =
+        typeof candidate.value === "string"
+            ? candidate.value
+            : typeof candidate.value === "number" ||
+                typeof candidate.value === "boolean"
+              ? String(candidate.value)
+              : undefined;
+    if (type === "image") {
+        return {
+            type: "image",
+            value,
+        };
+    }
+    return {
+        type: "text",
+        value,
+    };
+}
+
+function toListAIResults(
+    value: unknown,
+): Record<string, string> | undefined {
+    if (!value || typeof value !== "object") {
+        return undefined;
+    }
+    const entries = Object.entries(value as Record<string, unknown>)
+        .filter(
+            ([, item]) => typeof item === "string" && item.trim().length > 0,
+        )
+        .map(([key]) => [key, "1"] as const);
+    if (entries.length === 0) {
+        return undefined;
+    }
+    return Object.fromEntries(entries);
+}
+
+function toListCleaningResults(
+    value: unknown,
+): Record<string, { responseText: string }> | undefined {
+    if (!value || typeof value !== "object") {
+        return undefined;
+    }
+    const entries = Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => {
+            if (!item || typeof item !== "object") {
+                return false;
+            }
+            const responseText = (item as { responseText?: unknown }).responseText;
+            return typeof responseText === "string" && responseText.trim().length > 0;
+        })
+        .map(([key]) => [key, { responseText: "1" }] as const);
+    if (entries.length === 0) {
+        return undefined;
+    }
+    return Object.fromEntries(entries);
+}
+
+function toListRow(row: Record<string, unknown>): Record<string, unknown> {
+    const valuesRecord =
+        row.values && typeof row.values === "object"
+            ? (row.values as Record<string, unknown>)
+            : {};
+    const values = Object.entries(valuesRecord).reduce<Record<string, unknown>>(
+        (acc, [key, cell]) => {
+            acc[key] = toListCell(cell);
+            return acc;
+        },
+        {},
+    );
+    const aiResults = toListAIResults(row.aiResults);
+    const cleaningResults = toListCleaningResults(row.cleaningResults);
+    return {
+        rowId: getRowIdFromRecord(row),
+        enabled: row.enabled !== false,
+        values,
+        ...(aiResults ? { aiResults } : {}),
+        ...(cleaningResults ? { cleaningResults } : {}),
+    };
+}
+
 export const registerFileRoutes = (app: Express, upload: Multer) => {
     app.post("/api/files/upload", upload.single("file"), async (req, res) => {
         try {
@@ -462,6 +923,160 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         return res.json({ files: summaries });
     });
 
+    app.get("/api/files/:fileId/filter-options", (req, res) => {
+        const { fileId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+        const columnKey =
+            typeof req.query.columnKey === "string"
+                ? req.query.columnKey.trim()
+                : "";
+        if (columnKey.length > 0) {
+            return res.json({
+                columnKey,
+                options: buildFilterOptionsForColumn(item.state, columnKey),
+            });
+        }
+        return res.json({
+            filterOptions: buildFilterOptionsMap(item.state),
+        });
+    });
+
+    app.get("/api/files/:fileId/row-ids", (req, res) => {
+        const { fileId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+        const filterConditions = parseFilterConditionsQuery(req.query.filters);
+        const rowIds = filterStateRows(
+            extractStateRows(item.state),
+            filterConditions,
+        )
+            .map((row) => getRowIdFromRecord(row))
+            .filter((rowId): rowId is string => rowId !== null);
+        return res.json({
+            rowIds,
+            totalCount: rowIds.length,
+        });
+    });
+
+    app.get("/api/files/:fileId/rows", (req, res) => {
+        const { fileId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+
+        const page = readPositiveInteger(req.query.page, 1);
+        const requestedPageSize = readPositiveInteger(
+            req.query.pageSize,
+            DEFAULT_LIST_PAGE_SIZE,
+        );
+        const pageSize = Math.min(MAX_LIST_PAGE_SIZE, requestedPageSize);
+        const filterConditions = parseFilterConditionsQuery(req.query.filters);
+        const filteredRows = filterStateRows(
+            extractStateRows(item.state),
+            filterConditions,
+        );
+        const totalCount = filteredRows.length;
+        const totalPages = Math.max(1, Math.ceil(totalCount / pageSize) || 1);
+        const normalizedPage = Math.min(page, totalPages);
+        const start = (normalizedPage - 1) * pageSize;
+        const pagedRows = filteredRows.slice(start, start + pageSize);
+        const rows = attachResultsToRows(fileId, pagedRows, {
+            includeCleaning: true,
+            includeEvaluation: false,
+        }).map((row) => toListRow(row));
+
+        return res.json({
+            rows,
+            totalCount,
+            page: normalizedPage,
+            pageSize,
+            totalPages,
+        });
+    });
+
+    app.post("/api/files/:fileId/rows/batch", (req, res) => {
+        const { fileId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+        const rowIds = Array.isArray(req.body?.rowIds)
+            ? req.body.rowIds
+                  .filter((value: unknown): value is string => typeof value === "string")
+                  .map((value: string) => value.trim())
+                  .filter((value: string) => value.length > 0)
+            : [];
+        if (rowIds.length === 0) {
+            return res.status(400).json({ message: "rowIds must be a string array" });
+        }
+
+        const rowMap = new Map<string, Record<string, unknown>>();
+        extractStateRows(item.state).forEach((row) => {
+            const rowId = getRowIdFromRecord(row);
+            if (rowId) {
+                rowMap.set(rowId, row);
+            }
+        });
+        const rows = rowIds
+            .map(
+                (rowId: string): Record<string, unknown> | null =>
+                    rowMap.get(rowId) ?? null,
+            )
+            .filter(
+                (row: Record<string, unknown> | null): row is Record<string, unknown> =>
+                    row !== null,
+            );
+        const rowsWithResults = attachResultsToRows(fileId, rows, {
+            includeCleaning: true,
+            includeEvaluation: true,
+        });
+        return res.json({ rows: rowsWithResults });
+    });
+
+    app.get("/api/files/:fileId/rows/:rowId", (req, res) => {
+        const { fileId, rowId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+        const filterConditions = parseFilterConditionsQuery(req.query.filters);
+        const filteredRows = filterStateRows(
+            extractStateRows(item.state),
+            filterConditions,
+        );
+        const index = filteredRows.findIndex(
+            (row) => getRowIdFromRecord(row) === rowId,
+        );
+        if (index < 0) {
+            return res.status(404).json({ message: "row not found" });
+        }
+        const row = attachResultsToRows(fileId, [filteredRows[index]!], {
+            includeCleaning: true,
+            includeEvaluation: true,
+        })[0];
+        if (!row) {
+            return res.status(404).json({ message: "row not found" });
+        }
+        const previousRowId =
+            index > 0 ? getRowIdFromRecord(filteredRows[index - 1]!) : null;
+        const nextRowId =
+            index < filteredRows.length - 1
+                ? getRowIdFromRecord(filteredRows[index + 1]!)
+                : null;
+        return res.json({
+            row,
+            previousRowId,
+            nextRowId,
+            totalCount: filteredRows.length,
+        });
+    });
+
     app.get("/api/files/:fileId", (req, res) => {
         const { fileId } = req.params;
         const item = getFileState(fileId);
@@ -537,7 +1152,10 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
     app.put("/api/files/:fileId/state", (req, res) => {
         const { fileId } = req.params;
-        const { state } = req.body as { state?: unknown };
+        const { state, preserveRows } = req.body as {
+            state?: unknown;
+            preserveRows?: unknown;
+        };
 
         if (!state || typeof state !== "object") {
             return res.status(400).json({ message: "state must be an object" });
@@ -573,10 +1191,19 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             });
         }
 
-        const versionedState =
+        let versionedState =
             nextVersion === null
                 ? attachClientStateVersion(state as Record<string, unknown>)
                 : state;
+
+        if (preserveRows === true) {
+            const existingState = getFileState(fileId)?.state;
+            const existingRows = extractStateRows(existingState);
+            versionedState = {
+                ...(versionedState as Record<string, unknown>),
+                rows: existingRows,
+            };
+        }
 
         if (SHOULD_LOG_AI_RESULTS) {
             const summary = summarizeFileStateAIResults(versionedState);
@@ -592,6 +1219,72 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
         saveFileState(fileId, nextState.fileName, versionedState);
         return res.json({ ok: true });
+    });
+
+    app.put("/api/files/:fileId/rows/:rowId", (req, res) => {
+        const { fileId, rowId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+
+        const row = req.body?.row;
+        if (!row || typeof row !== "object") {
+            return res.status(400).json({ message: "row must be an object" });
+        }
+        if ((row as { rowId?: unknown }).rowId !== rowId) {
+            return res.status(400).json({ message: "row.rowId must match route rowId" });
+        }
+
+        const sanitizedRow = sanitizeRowForState(row as Record<string, unknown>);
+        const { nextState, updated } = replaceStateRow(
+            item.state,
+            rowId,
+            sanitizedRow,
+        );
+        if (!nextState) {
+            return res.status(404).json({ message: "file state not found" });
+        }
+        if (!updated) {
+            return res.status(404).json({ message: "row not found" });
+        }
+
+        saveFileState(fileId, item.fileName, nextState);
+        const savedRow = attachResultsToRows(fileId, [sanitizedRow], {
+            includeCleaning: true,
+            includeEvaluation: true,
+        })[0];
+        return res.json({
+            row: savedRow ?? row,
+            updatedAt: new Date().toISOString(),
+        });
+    });
+
+    app.get("/api/files/:fileId/statistics", (req, res) => {
+        const { fileId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+        const fieldKeys = parseStringArrayQuery(req.query.fieldKeys);
+        const rows = extractStateRows(item.state);
+        const distributions = fieldKeys.reduce<
+            Record<
+                string,
+                {
+                    total: number;
+                    distinctCount: number;
+                    items: StatisticsDistributionItem[];
+                }
+            >
+        >((acc, fieldKey) => {
+            acc[fieldKey] = buildStatisticsDistribution(rows, fieldKey);
+            return acc;
+        }, {});
+        return res.json({
+            rowCount: rows.length,
+            distributions,
+        });
     });
 
     app.put("/api/files/:fileId/ai-results", (req, res) => {

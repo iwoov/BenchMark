@@ -11,8 +11,8 @@ import { AI_CLEANING_TOOL_ORDER, AI_STAGE_ORDER } from "../constants";
 
 interface ListPageProps {
     activeFile: FileViewState;
-    visibleRows: ParsedRow[];
     paginatedRows: ParsedRow[];
+    totalFilteredRows: number;
     listPage: number;
     listPageSize: number;
     totalListPages: number;
@@ -36,8 +36,8 @@ interface ListPageProps {
 
 export function ListPage({
     activeFile,
-    visibleRows,
     paginatedRows,
+    totalFilteredRows,
     listPage,
     listPageSize,
     totalListPages,
@@ -55,7 +55,7 @@ export function ListPage({
     getCellTitle,
     renderListReadonlyCell,
 }: ListPageProps) {
-    if (visibleRows.length === 0) {
+    if (totalFilteredRows === 0) {
         return <div className="record-list-empty">当前筛选条件下无数据</div>;
     }
 
@@ -229,7 +229,7 @@ export function ListPage({
             </div>
             <div className="list-pagination">
                 <div className="list-pagination-meta">
-                    <span>{`当前显示 ${visibleRows.length} / ${activeFile.rows.length} 条`}</span>
+                    <span>{`当前显示 ${totalFilteredRows} / ${activeFile.rowCount ?? totalFilteredRows} 条`}</span>
                     <label className="filter-group">
                         <span>每页</span>
                         <select

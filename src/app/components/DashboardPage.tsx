@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
     FileViewState,
     ParsedColumn,
@@ -31,53 +31,6 @@ const CHART_COLORS = [
     "#ca8a04",
     "#2563eb",
 ] as const;
-
-function splitFieldValues(rawValue: string): string[] {
-    const trimmed = rawValue.trim();
-    if (!trimmed) {
-        return ["空值"];
-    }
-
-    const parts = trimmed
-        .split(/[\n,，;；、|]+/)
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0);
-
-    if (parts.length === 0) {
-        return ["空值"];
-    }
-
-    return Array.from(new Set(parts));
-}
-
-function buildDistribution(
-    file: FileViewState,
-    fieldKey: string,
-): FieldDistribution {
-    const counts = new Map<string, number>();
-
-    file.rows.forEach((row) => {
-        const rawValue = row.values[fieldKey]?.value ?? "";
-        splitFieldValues(rawValue).forEach((label) => {
-            counts.set(label, (counts.get(label) ?? 0) + 1);
-        });
-    });
-
-    const items = Array.from(counts.entries())
-        .map(([label, count]) => ({ label, count }))
-        .sort((left, right) => {
-            if (right.count !== left.count) {
-                return right.count - left.count;
-            }
-            return left.label.localeCompare(right.label, "zh-CN");
-        });
-
-    return {
-        total: items.reduce((sum, item) => sum + item.count, 0),
-        distinctCount: items.length,
-        items,
-    };
-}
 
 function truncateLabel(value: string, maxLength: number = 18): string {
     return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
@@ -310,6 +263,89 @@ export function DashboardPage({
     onOpenStatisticsSettings,
 }: DashboardPageProps) {
     const selectedFieldKeys = activeFile.statisticsConfig.selectedFieldKeys;
+    const [rowCount, setRowCount] = useState(activeFile.rowCount ?? 0);
+    const [distributionMap, setDistributionMap] = useState<
+        Record<string, FieldDistribution>
+    >({});
+
+    useEffect(() => {
+        setRowCount(activeFile.rowCount ?? 0);
+        if (selectedFieldKeys.length === 0) {
+            setDistributionMap({});
+            return;
+        }
+
+        const controller = new AbortController();
+        const loadStatistics = async () => {
+            try {
+                const params = new URLSearchParams({
+                    fieldKeys: JSON.stringify(selectedFieldKeys),
+                });
+                const response = await fetch(
+                    `/api/files/${encodeURIComponent(activeFile.fileId)}/statistics?${params.toString()}`,
+                    { signal: controller.signal },
+                );
+                if (!response.ok) {
+                    return;
+                }
+                const payload = (await response.json()) as {
+                    rowCount?: unknown;
+                    distributions?: unknown;
+                };
+                if (typeof payload.rowCount === "number") {
+                    setRowCount(payload.rowCount);
+                }
+                const rawDistributions =
+                    payload.distributions &&
+                    typeof payload.distributions === "object"
+                        ? (payload.distributions as Record<string, unknown>)
+                        : {};
+                const nextMap = Object.entries(rawDistributions).reduce<
+                    Record<string, FieldDistribution>
+                >((acc, [fieldKey, value]) => {
+                    if (!value || typeof value !== "object") {
+                        return acc;
+                    }
+                    const candidate = value as {
+                        total?: unknown;
+                        distinctCount?: unknown;
+                        items?: unknown;
+                    };
+                    acc[fieldKey] = {
+                        total:
+                            typeof candidate.total === "number"
+                                ? candidate.total
+                                : 0,
+                        distinctCount:
+                            typeof candidate.distinctCount === "number"
+                                ? candidate.distinctCount
+                                : 0,
+                        items: Array.isArray(candidate.items)
+                            ? candidate.items.filter(
+                                  (item): item is FieldDistributionItem =>
+                                      !!item &&
+                                      typeof item === "object" &&
+                                      typeof (
+                                          item as FieldDistributionItem
+                                      ).label === "string" &&
+                                      typeof (
+                                          item as FieldDistributionItem
+                                      ).count === "number",
+                              )
+                            : [],
+                    };
+                    return acc;
+                }, {});
+                setDistributionMap(nextMap);
+            } catch {
+                // Ignore aborted / network errors.
+            }
+        };
+
+        void loadStatistics();
+        return () => controller.abort();
+    }, [activeFile.fileId, activeFile.rowCount, selectedFieldKeys]);
+
     const fieldCards = useMemo(
         () =>
             selectedFieldKeys.map((fieldKey) => {
@@ -321,10 +357,14 @@ export function DashboardPage({
                     fieldKey,
                     title,
                     chartType,
-                    distribution: buildDistribution(activeFile, fieldKey),
+                    distribution: distributionMap[fieldKey] ?? {
+                        total: 0,
+                        distinctCount: 0,
+                        items: [],
+                    },
                 };
             }),
-        [activeFile, selectedFieldKeys],
+        [activeFile, distributionMap, selectedFieldKeys],
     );
 
     const totalDistinctValues = fieldCards.reduce(
@@ -356,9 +396,7 @@ export function DashboardPage({
             <section className="dashboard-summary-grid">
                 <article className="dashboard-summary-card">
                     <span>题目总数</span>
-                    <strong>
-                        {activeFile.rowCount ?? activeFile.rows.length}
-                    </strong>
+                    <strong>{rowCount}</strong>
                     <p>当前数据源下的全部记录数</p>
                 </article>
                 <article className="dashboard-summary-card">

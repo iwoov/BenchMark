@@ -48,6 +48,7 @@ import { useFileStore } from "./app/hooks/useFileStore";
 import { useListView } from "./app/hooks/useListView";
 import { useAIManager } from "./app/hooks/useAIManager";
 import { useCellRenderers } from "./app/hooks/useCellRenderers";
+import type { ParsedRow } from "./types";
 
 function App() {
     const initialRoute = getInitialRoute();
@@ -84,6 +85,7 @@ function App() {
 
     const {
         files,
+        setFiles,
         activeFileId,
         setActiveFileId,
         activeFile,
@@ -102,14 +104,8 @@ function App() {
         projectNameDialogError,
         projectNameTargetFileId,
         removingFileId,
-        persistFileState,
         flushPendingAIResults,
-        latestFileStateRef,
-        updateRowAIResult,
-        updateRowCleaningResult,
-        updateRowEvaluationResults,
-        onEditCell,
-        onToggleRowEnabled,
+        updateRowAIResult: persistRowAIResult,
         onToggleDisplayColumn,
         onUpdateFilterConditions,
         onClearFilterConditions,
@@ -140,24 +136,300 @@ function App() {
         setListPageSize,
         totalListPages,
         paginatedRows,
-        visibleRows,
+        totalFilteredRows,
         displayColumns,
         hiddenColumns,
         selectedRow,
-        previousRow,
-        nextRow,
+        previousRowId,
+        nextRowId,
         batchSelectedRowIds,
         batchSelectedRowIdSet,
         onToggleBatchRowSelection,
         onSelectAllBatchRows,
         onSelectCurrentPageBatchRows,
         onClearBatchRows,
+        replaceRowInCaches,
+        filterOptionsByColumn,
+        loadFilterOptions,
+        isListLoading,
+        isDetailLoading,
     } = useListView({
         activeFile,
         selectedRowId,
         setSelectedRowId,
         defaultPageSize: LIST_PAGE_SIZE_OPTIONS[2],
+        setErrorMessage,
     });
+
+    useEffect(() => {
+        if (initialLoadComplete && !activeFile) {
+            navigateToSection(
+                "project-management",
+                activeSettingsSection,
+                null,
+                {
+                    replace: true,
+                },
+            );
+        }
+    }, [
+        initialLoadComplete,
+        activeFile,
+        activeSettingsSection,
+        navigateToSection,
+    ]);
+
+    useEffect(() => {
+        const handleMouseMove = (event: MouseEvent) => {
+            if (!detailChatResizeRef.current.active) {
+                return;
+            }
+            const deltaX = detailChatResizeRef.current.startX - event.clientX;
+            const nextWidth = Math.min(
+                560,
+                Math.max(280, detailChatResizeRef.current.startWidth + deltaX),
+            );
+            setDetailChatSidebarWidth(nextWidth);
+        };
+
+        const handleMouseUp = () => {
+            detailChatResizeRef.current.active = false;
+        };
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, []);
+
+    const aiSubmitFieldColumns = useMemo(
+        () => (activeFile ? activeFile.columns : []),
+        [activeFile],
+    );
+
+    const openRowDetail = (rowId: string) => {
+        setSelectedRowId(rowId);
+        navigateToSection("list", activeSettingsSection, rowId);
+    };
+
+    const onRunSelectedBatchAIAnswer = async () => {
+        await onRunBatchAIAnswer(batchSelectedRowIds);
+    };
+
+    const findCachedRow = (rowId: string) => {
+        if (selectedRow?.rowId === rowId) {
+            return selectedRow;
+        }
+        return paginatedRows.find((row) => row.rowId === rowId) ?? null;
+    };
+
+    const replaceRowInProjectCache = (nextRow: ParsedRow) => {
+        replaceRowInCaches(nextRow);
+        if (!activeFile) {
+            return;
+        }
+        setFiles((previous) =>
+            previous.map((file) => {
+                if (file.fileId !== activeFile.fileId || file.rows.length === 0) {
+                    return file;
+                }
+                const hasTargetRow = file.rows.some(
+                    (row) => row.rowId === nextRow.rowId,
+                );
+                if (!hasTargetRow) {
+                    return file;
+                }
+                return {
+                    ...file,
+                    rows: file.rows.map((row) =>
+                        row.rowId === nextRow.rowId ? nextRow : row,
+                    ),
+                };
+            }),
+        );
+    };
+
+    const persistRowRecord = async (nextRow: ParsedRow) => {
+        if (!activeFile) {
+            return;
+        }
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(activeFile.fileId)}/rows/${encodeURIComponent(nextRow.rowId)}`,
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ row: nextRow }),
+            },
+        );
+        if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+                message?: string;
+            };
+            throw new Error(payload.message ?? "保存行数据失败");
+        }
+        const payload = (await response.json()) as { row?: ParsedRow };
+        if (payload.row) {
+            replaceRowInProjectCache(payload.row);
+        }
+    };
+
+    const onEditCell = (rowId: string, columnKey: string, value: string) => {
+        const currentRow = findCachedRow(rowId);
+        if (!currentRow) {
+            return;
+        }
+        const currentCell = currentRow.values[columnKey];
+        const nextRow: ParsedRow = {
+            ...currentRow,
+            values: {
+                ...currentRow.values,
+                [columnKey]:
+                    currentCell?.type === "image" && currentCell.src
+                        ? {
+                              type: "image",
+                              src: currentCell.src,
+                              srcList: currentCell.srcList,
+                              value,
+                          }
+                        : {
+                              type: "text",
+                              value,
+                          },
+            },
+        };
+        replaceRowInProjectCache(nextRow);
+        void persistRowRecord(nextRow).catch((error) => {
+            setErrorMessage(
+                error instanceof Error ? error.message : "保存行数据失败",
+            );
+        });
+    };
+
+    const onToggleRowEnabled = (rowId: string, enabled: boolean) => {
+        const currentRow = findCachedRow(rowId);
+        if (!currentRow) {
+            return;
+        }
+        const nextRow: ParsedRow = {
+            ...currentRow,
+            enabled,
+        };
+        replaceRowInProjectCache(nextRow);
+        void persistRowRecord(nextRow).catch((error) => {
+            setErrorMessage(
+                error instanceof Error ? error.message : "保存行数据失败",
+            );
+        });
+    };
+
+    const updateRowAIResult = (
+        fileId: string,
+        rowId: string,
+        stageKey: "precheck" | "context_audit" | "independent_solving" | "final_verdict",
+        resultText: string,
+    ) => {
+        persistRowAIResult(fileId, rowId, stageKey, resultText);
+        if (!activeFile || activeFile.fileId !== fileId) {
+            return;
+        }
+        const currentRow = findCachedRow(rowId);
+        if (!currentRow) {
+            return;
+        }
+        replaceRowInProjectCache({
+            ...currentRow,
+            aiResults: {
+                ...(currentRow.aiResults ?? {}),
+                [stageKey]: resultText,
+            },
+        });
+    };
+
+    const updateRowCleaningResult = (
+        fileId: string,
+        rowId: string,
+        toolKey: "generate_level3_tags" | "biochem_level1_refine" | "question_formatting",
+        result: {
+            responseText: string;
+            parsedJsonText?: string;
+            updatedAt?: string;
+        },
+        mappedFieldValues?: Record<string, string>,
+    ) => {
+        if (!activeFile || activeFile.fileId !== fileId) {
+            return;
+        }
+        const currentRow = findCachedRow(rowId);
+        if (!currentRow) {
+            return;
+        }
+        const nextValues = { ...currentRow.values };
+        Object.entries(mappedFieldValues ?? {}).forEach(([columnKey, value]) => {
+            const currentCell = currentRow.values[columnKey];
+            nextValues[columnKey] =
+                currentCell?.type === "image" && currentCell.src
+                    ? {
+                          type: "image",
+                          src: currentCell.src,
+                          srcList: currentCell.srcList,
+                          value,
+                      }
+                    : {
+                          type: "text",
+                          value,
+                      };
+        });
+        const nextRow: ParsedRow = {
+            ...currentRow,
+            values: nextValues,
+            cleaningResults: {
+                ...(currentRow.cleaningResults ?? {}),
+                [toolKey]: result,
+            },
+        };
+        replaceRowInProjectCache(nextRow);
+        if (Object.keys(mappedFieldValues ?? {}).length > 0) {
+            void persistRowRecord(nextRow).catch((error) => {
+                setErrorMessage(
+                    error instanceof Error ? error.message : "保存行数据失败",
+                );
+            });
+        }
+    };
+
+    const updateRowEvaluationResults = (
+        fileId: string,
+        rowId: string,
+        taskId: string,
+        results: Array<{
+            attemptIndex: number;
+            generationResponseText: string;
+            generationParsedJsonText?: string;
+            judgmentResponseText: string;
+            judgmentParsedJsonText?: string;
+            finalVerdict: string;
+            updatedAt?: string;
+        }>,
+    ) => {
+        if (!activeFile || activeFile.fileId !== fileId) {
+            return;
+        }
+        const currentRow = findCachedRow(rowId);
+        if (!currentRow) {
+            return;
+        }
+        replaceRowInProjectCache({
+            ...currentRow,
+            evaluationResults: {
+                ...(currentRow.evaluationResults ?? {}),
+                [taskId]: results,
+            },
+        });
+    };
 
     const {
         aiConfigList,
@@ -256,67 +528,8 @@ function App() {
         updateRowAIResult,
         updateRowCleaningResult,
         updateRowEvaluationResults,
-        persistFileState,
         flushPendingAIResults,
-        latestFileStateRef,
     });
-
-    useEffect(() => {
-        if (initialLoadComplete && !activeFile) {
-            navigateToSection(
-                "project-management",
-                activeSettingsSection,
-                null,
-                {
-                    replace: true,
-                },
-            );
-        }
-    }, [
-        initialLoadComplete,
-        activeFile,
-        activeSettingsSection,
-        navigateToSection,
-    ]);
-
-    useEffect(() => {
-        const handleMouseMove = (event: MouseEvent) => {
-            if (!detailChatResizeRef.current.active) {
-                return;
-            }
-            const deltaX = detailChatResizeRef.current.startX - event.clientX;
-            const nextWidth = Math.min(
-                560,
-                Math.max(280, detailChatResizeRef.current.startWidth + deltaX),
-            );
-            setDetailChatSidebarWidth(nextWidth);
-        };
-
-        const handleMouseUp = () => {
-            detailChatResizeRef.current.active = false;
-        };
-
-        window.addEventListener("mousemove", handleMouseMove);
-        window.addEventListener("mouseup", handleMouseUp);
-        return () => {
-            window.removeEventListener("mousemove", handleMouseMove);
-            window.removeEventListener("mouseup", handleMouseUp);
-        };
-    }, []);
-
-    const aiSubmitFieldColumns = useMemo(
-        () => (activeFile ? activeFile.columns : []),
-        [activeFile],
-    );
-
-    const openRowDetail = (rowId: string) => {
-        setSelectedRowId(rowId);
-        navigateToSection("list", activeSettingsSection, rowId);
-    };
-
-    const onRunSelectedBatchAIAnswer = async () => {
-        await onRunBatchAIAnswer(batchSelectedRowIds);
-    };
 
     const getLatexToggleKey = (columnKey: string) =>
         activeFileId ? `${activeFileId}::${columnKey}` : columnKey;
@@ -847,14 +1060,14 @@ function App() {
                                                                 onSelectAllBatchRows
                                                             }
                                                             disabled={
-                                                                visibleRows.length ===
+                                                                totalFilteredRows ===
                                                                     0 ||
                                                                 isAIBatchRunning
                                                             }
                                                         >
                                                             {batchSelectedRowIds.length ===
-                                                                visibleRows.length &&
-                                                            visibleRows.length >
+                                                                totalFilteredRows &&
+                                                            totalFilteredRows >
                                                                 0
                                                                 ? "取消全选"
                                                                 : "全选筛选结果"}
@@ -914,12 +1127,12 @@ function App() {
                                                     type="button"
                                                     className="btn"
                                                     onClick={() =>
-                                                        previousRow &&
+                                                        previousRowId &&
                                                         openRowDetail(
-                                                            previousRow.rowId,
+                                                            previousRowId,
                                                         )
                                                     }
-                                                    disabled={!previousRow}
+                                                    disabled={!previousRowId}
                                                 >
                                                     上一题
                                                 </button>
@@ -927,12 +1140,12 @@ function App() {
                                                     type="button"
                                                     className="btn"
                                                     onClick={() =>
-                                                        nextRow &&
+                                                        nextRowId &&
                                                         openRowDetail(
-                                                            nextRow.rowId,
+                                                            nextRowId,
                                                         )
                                                     }
-                                                    disabled={!nextRow}
+                                                    disabled={!nextRowId}
                                                 >
                                                     下一题
                                                 </button>
@@ -998,8 +1211,8 @@ function App() {
                             ) : null}
 
                             <section className="workspace-view">
-                                {!activeFile.detailLoaded &&
-                                activeSection !== "settings" ? (
+                                {((activeSection === "list" && isListLoading) ||
+                                    (isDetailView && isDetailLoading)) ? (
                                     <section className="page-panel">
                                         <div className="placeholder workspace-placeholder">
                                             <p>加载数据中...</p>
@@ -1007,8 +1220,7 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {activeFile.detailLoaded &&
-                                activeSection === "dashboard" ? (
+                                {activeSection === "dashboard" ? (
                                     <section className="page-panel">
                                         <DashboardPage
                                             activeFile={activeFile}
@@ -1022,14 +1234,15 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {activeFile.detailLoaded &&
-                                activeSection === "list" &&
+                                {activeSection === "list" &&
                                 !isDetailView ? (
                                     <section className="page-panel">
                                         <ListPage
                                             activeFile={activeFile}
-                                            visibleRows={visibleRows}
                                             paginatedRows={paginatedRows}
+                                            totalFilteredRows={
+                                                totalFilteredRows
+                                            }
                                             listPage={listPage}
                                             listPageSize={listPageSize}
                                             totalListPages={totalListPages}
@@ -1060,7 +1273,7 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {activeFile.detailLoaded && isDetailView ? (
+                                {isDetailView ? (
                                     <section className="page-panel detail-page-panel">
                                         <DetailPage
                                             selectedRow={selectedRow}
@@ -1243,6 +1456,8 @@ function App() {
             <FilterConfigModal
                 isOpen={isFilterModalOpen}
                 activeFile={activeFile}
+                filterOptionsByColumn={filterOptionsByColumn}
+                loadFilterOptions={loadFilterOptions}
                 onClose={() => setIsFilterModalOpen(false)}
                 onSave={onUpdateFilterConditions}
             />

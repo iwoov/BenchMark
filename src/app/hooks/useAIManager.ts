@@ -74,9 +74,7 @@ export const useAIManager = ({
     updateRowAIResult,
     updateRowCleaningResult,
     updateRowEvaluationResults,
-    persistFileState,
     flushPendingAIResults,
-    latestFileStateRef,
 }: {
     activeFile: FileViewState | null;
     activeFileId: string | null;
@@ -103,9 +101,7 @@ export const useAIManager = ({
         taskId: string,
         results: AIEvaluationAttemptResult[],
     ) => void;
-    persistFileState: (file: FileViewState) => Promise<void>;
     flushPendingAIResults: (fileId: string) => Promise<void>;
-    latestFileStateRef: React.MutableRefObject<Record<string, FileViewState>>;
 }) => {
     const [isAIStageConfigModalOpen, setIsAIStageConfigModalOpen] =
         useState(false);
@@ -195,7 +191,6 @@ export const useAIManager = ({
     const aiChatStartedAtRef = useRef<number | null>(null);
     const aiCleaningStartedAtRef = useRef<number | null>(null);
     const aiEvaluationStartedAtRef = useRef<number | null>(null);
-    const aiBatchPersistTimerRef = useRef<number | null>(null);
     const rowStreamCharsRef = useRef<
         Record<
             string,
@@ -223,10 +218,6 @@ export const useAIManager = ({
             if (rowStreamFlushTimerRef.current !== null) {
                 window.clearTimeout(rowStreamFlushTimerRef.current);
                 rowStreamFlushTimerRef.current = null;
-            }
-            if (aiBatchPersistTimerRef.current !== null) {
-                window.clearInterval(aiBatchPersistTimerRef.current);
-                aiBatchPersistTimerRef.current = null;
             }
             rowStreamCharsRef.current = {};
             rowStreamProgressRef.current = {};
@@ -612,23 +603,6 @@ export const useAIManager = ({
         }, 120);
     };
 
-    const stopBatchPersistLoop = () => {
-        if (aiBatchPersistTimerRef.current !== null) {
-            window.clearInterval(aiBatchPersistTimerRef.current);
-            aiBatchPersistTimerRef.current = null;
-        }
-    };
-
-    const startBatchPersistLoop = (fileId: string) => {
-        stopBatchPersistLoop();
-        aiBatchPersistTimerRef.current = window.setInterval(() => {
-            const latest = latestFileStateRef.current[fileId];
-            if (latest) {
-                void persistFileState(latest);
-            }
-        }, 1500);
-    };
-
     const resetRowStreamProgress = () => {
         if (rowStreamFlushTimerRef.current !== null) {
             window.clearTimeout(rowStreamFlushTimerRef.current);
@@ -927,7 +901,6 @@ export const useAIManager = ({
         aiBatchAbortRef.current?.abort();
         const controller = new AbortController();
         aiBatchAbortRef.current = controller;
-        startBatchPersistLoop(targetFileId);
         resetRowStreamProgress();
         resetRowBatchStatuses();
         setAIBatchTask({
@@ -1137,10 +1110,9 @@ export const useAIManager = ({
             if (aiBatchAbortRef.current === controller) {
                 aiBatchAbortRef.current = null;
             }
-            stopBatchPersistLoop();
-            resetRowStreamProgress();
-        }
-    };
+                resetRowStreamProgress();
+            }
+        };
 
     const syncActiveAIConfigState = (nextConfig: AIDetectConfig) => {
         setAIConfig(nextConfig);
@@ -3029,6 +3001,42 @@ export const useAIManager = ({
         void onRunAIDetect(AI_RUN_ALL_KEY);
     };
 
+    const fetchRowsByIds = async (
+        fileId: string,
+        rowIds: string[],
+    ): Promise<ParsedRow[]> => {
+        if (rowIds.length === 0) {
+            return [];
+        }
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(fileId)}/rows/batch`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ rowIds }),
+            },
+        );
+        if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+                message?: string;
+            };
+            throw new Error(payload.message ?? "加载批量行数据失败");
+        }
+        const payload = (await response.json()) as { rows?: unknown };
+        return Array.isArray(payload.rows)
+            ? payload.rows.filter(
+                  (row): row is ParsedRow =>
+                      !!row &&
+                      typeof row === "object" &&
+                      typeof (row as ParsedRow).rowId === "string" &&
+                      !!(row as ParsedRow).values &&
+                      typeof (row as ParsedRow).values === "object",
+              )
+            : [];
+    };
+
     const onRunBatchAIAnswer = async (rowIds?: string[]) => {
         if (!activeFile) {
             return;
@@ -3042,21 +3050,21 @@ export const useAIManager = ({
             activeFile.columns,
         );
         syncActiveAIConfigState(normalizedConfig);
-        const rowIdSet = new Set(activeFile.rows.map((row) => row.rowId));
         const normalizedTargetRowIds = rowIds
-            ? Array.from(new Set(rowIds.filter((rowId) => rowIdSet.has(rowId))))
+            ? Array.from(
+                  new Set(
+                      rowIds
+                          .filter((rowId): rowId is string => typeof rowId === "string")
+                          .map((rowId) => rowId.trim())
+                          .filter((rowId) => rowId.length > 0),
+                  ),
+              )
             : null;
-        const selectedRowIdSet = normalizedTargetRowIds
-            ? new Set(normalizedTargetRowIds)
-            : null;
-        const targetRows =
-            normalizedTargetRowIds && normalizedTargetRowIds.length > 0
-                ? activeFile.rows.filter(
-                      (row) => selectedRowIdSet?.has(row.rowId) === true,
-                  )
-                : normalizedTargetRowIds
-                  ? []
-                  : activeFile.rows;
+        const targetRows = normalizedTargetRowIds
+            ? await fetchRowsByIds(activeFile.fileId, normalizedTargetRowIds)
+            : selectedRow
+              ? [selectedRow]
+              : [];
         if (targetRows.length === 0) {
             setErrorMessage(
                 normalizedTargetRowIds
@@ -3125,7 +3133,6 @@ export const useAIManager = ({
             aiBatchAbortRef.current?.abort();
             const controller = new AbortController();
             aiBatchAbortRef.current = controller;
-            startBatchPersistLoop(targetFileId);
             resetRowStreamProgress();
             resetRowBatchStatuses();
             setAIBatchTask({
@@ -3267,10 +3274,6 @@ export const useAIManager = ({
                     return;
                 }
 
-                const latestFile = latestFileStateRef.current[targetFileId];
-                if (latestFile) {
-                    await persistFileState(latestFile);
-                }
                 setAIBatchTask((previous) => ({
                     ...previous,
                     status: "completed",
@@ -3296,7 +3299,6 @@ export const useAIManager = ({
                 if (aiBatchAbortRef.current === controller) {
                     aiBatchAbortRef.current = null;
                 }
-                stopBatchPersistLoop();
                 resetRowStreamProgress();
             }
             return;
@@ -3332,7 +3334,7 @@ export const useAIManager = ({
         }
 
         if (stageKey === "final_verdict") {
-            const rowsWithoutIndependentSolving = activeFile.rows.filter(
+            const rowsWithoutIndependentSolving = targetRows.filter(
                 (row) =>
                     !row.aiResults?.independent_solving ||
                     row.aiResults.independent_solving.trim().length === 0,
@@ -3353,7 +3355,6 @@ export const useAIManager = ({
         aiBatchAbortRef.current?.abort();
         const controller = new AbortController();
         aiBatchAbortRef.current = controller;
-        startBatchPersistLoop(targetFileId);
         resetRowStreamProgress();
         resetRowBatchStatuses();
         setAIBatchTask({
@@ -3438,10 +3439,6 @@ export const useAIManager = ({
                 message: "批量完成，正在写入 AI 检测结果",
             }));
             await flushPendingAIResults(targetFileId);
-            const latestFile = latestFileStateRef.current[targetFileId];
-            if (latestFile) {
-                await persistFileState(latestFile);
-            }
             setAIBatchTask((previous) => ({
                 ...previous,
                 status: "completed",
@@ -3467,7 +3464,6 @@ export const useAIManager = ({
             if (aiBatchAbortRef.current === controller) {
                 aiBatchAbortRef.current = null;
             }
-            stopBatchPersistLoop();
             resetRowStreamProgress();
         }
     };

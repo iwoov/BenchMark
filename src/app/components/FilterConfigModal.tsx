@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FileViewState, FilterCondition } from "../../types";
 import { EMPTY_FILTER_LABEL, EMPTY_FILTER_VALUE, NON_EMPTY_FILTER_LABEL, NON_EMPTY_FILTER_VALUE } from "../constants";
-import { getDistinctOptions } from "../file-helpers";
 
 interface FilterConfigModalProps {
     isOpen: boolean;
     activeFile: FileViewState | null;
+    filterOptionsByColumn: Record<string, string[]>;
+    loadFilterOptions: (columnKey: string) => Promise<string[]>;
     onClose: () => void;
     onSave: (conditions: FilterCondition[]) => void;
 }
@@ -24,12 +25,15 @@ function getOptionLabel(value: string): string {
     return value;
 }
 
-function getInitialCondition(activeFile: FileViewState): FilterCondition | null {
+function getInitialCondition(
+    activeFile: FileViewState,
+    filterOptionsByColumn: Record<string, string[]>,
+): FilterCondition | null {
     const firstColumn = activeFile.columns[0];
     if (!firstColumn) {
         return null;
     }
-    const options = getDistinctOptions(activeFile.rows, firstColumn.key);
+    const options = filterOptionsByColumn[firstColumn.key] ?? [];
     return {
         id: createConditionId(),
         columnKey: firstColumn.key,
@@ -40,6 +44,8 @@ function getInitialCondition(activeFile: FileViewState): FilterCondition | null 
 export function FilterConfigModal({
     isOpen,
     activeFile,
+    filterOptionsByColumn,
+    loadFilterOptions,
     onClose,
     onSave,
 }: FilterConfigModalProps) {
@@ -52,27 +58,67 @@ export function FilterConfigModal({
         setDraftConditions(activeFile.filterConditions);
     }, [isOpen, activeFile]);
 
+    useEffect(() => {
+        if (!isOpen || !activeFile) {
+            return;
+        }
+        const pendingColumnKeys = new Set<string>();
+        draftConditions.forEach((condition) => {
+            if (
+                condition.columnKey.trim().length > 0 &&
+                !filterOptionsByColumn[condition.columnKey]
+            ) {
+                pendingColumnKeys.add(condition.columnKey);
+            }
+        });
+        if (pendingColumnKeys.size === 0) {
+            return;
+        }
+        pendingColumnKeys.forEach((columnKey) => {
+            void loadFilterOptions(columnKey).catch(() => {});
+        });
+    }, [
+        activeFile,
+        draftConditions,
+        filterOptionsByColumn,
+        isOpen,
+        loadFilterOptions,
+    ]);
+
     const optionsMap = useMemo(() => {
         if (!activeFile) {
             return new Map<string, string[]>();
         }
         const map = new Map<string, string[]>();
         activeFile.columns.forEach((column) => {
-            map.set(column.key, getDistinctOptions(activeFile.rows, column.key));
+            map.set(column.key, filterOptionsByColumn[column.key] ?? []);
         });
         return map;
-    }, [activeFile]);
+    }, [activeFile, filterOptionsByColumn]);
 
     if (!isOpen || !activeFile) {
         return null;
     }
 
     const addCondition = () => {
-        const next = getInitialCondition(activeFile);
-        if (!next) {
+        const next = getInitialCondition(activeFile, filterOptionsByColumn);
+        if (next) {
+            setDraftConditions((previous) => [...previous, next]);
             return;
         }
-        setDraftConditions((previous) => [...previous, next]);
+        const firstColumn = activeFile.columns[0];
+        if (!firstColumn) {
+            return;
+        }
+        setDraftConditions((previous) => [
+            ...previous,
+            {
+                id: createConditionId(),
+                columnKey: firstColumn.key,
+                value: "",
+            },
+        ]);
+        void loadFilterOptions(firstColumn.key).catch(() => {});
     };
 
     const updateCondition = (
@@ -136,6 +182,11 @@ export function FilterConfigModal({
                                                 const nextColumnKey = event.target.value;
                                                 const nextOptions =
                                                     optionsMap.get(nextColumnKey) ?? [];
+                                                if (!filterOptionsByColumn[nextColumnKey]) {
+                                                    void loadFilterOptions(nextColumnKey).catch(
+                                                        () => {},
+                                                    );
+                                                }
                                                 updateCondition(condition.id, (previous) => ({
                                                     ...previous,
                                                     columnKey: nextColumnKey,
