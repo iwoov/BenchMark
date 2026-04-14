@@ -666,6 +666,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         level1Filter?: unknown;
         level2Filter?: unknown;
         timeFilter?: unknown;
+        rowCount?: unknown;
     };
     if (
         typeof candidate.fileId !== "string" ||
@@ -673,9 +674,10 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
     ) {
         return null;
     }
-    if (!Array.isArray(candidate.columns) || !Array.isArray(candidate.rows)) {
+    if (!Array.isArray(candidate.columns)) {
         return null;
     }
+    const candidateRows = Array.isArray(candidate.rows) ? candidate.rows : [];
 
     const columns: ParsedColumn[] = candidate.columns
         .map((column) => {
@@ -702,7 +704,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         return null;
     }
 
-    const rows: ParsedRow[] = candidate.rows
+    const rows: ParsedRow[] = candidateRows
         .map((row): ParsedRow | null => {
             if (!row || typeof row !== "object") {
                 return null;
@@ -801,6 +803,9 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         displayKeysFromState,
         editableKeysFromState,
     );
+    const rawRowCount =
+        typeof candidate.rowCount === "number" ? candidate.rowCount : undefined;
+    const hasRows = rows.length > 0;
     return {
         ...normalized,
         filterConditions: [],
@@ -808,5 +813,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             cleanedParsed.columns,
             candidate.statisticsConfig,
         ),
+        rowCount: rawRowCount ?? rows.length,
+        detailLoaded: hasRows,
     };
 }

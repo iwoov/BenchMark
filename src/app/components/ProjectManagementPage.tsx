@@ -110,7 +110,9 @@ export function ProjectManagementPage({
                                 <div className="project-card-metrics">
                                     <div>
                                         <span>题目数</span>
-                                        <strong>{file.rows.length}</strong>
+                                        <strong>
+                                            {file.rowCount ?? file.rows.length}
+                                        </strong>
                                     </div>
                                     <div>
                                         <span>字段数</span>
@@ -128,7 +130,9 @@ export function ProjectManagementPage({
                                     <button
                                         type="button"
                                         className="btn"
-                                        onClick={() => onSelectFile(file.fileId)}
+                                        onClick={() =>
+                                            onSelectFile(file.fileId)
+                                        }
                                         disabled={isRemoving}
                                     >
                                         切换到该项目
@@ -160,7 +164,9 @@ export function ProjectManagementPage({
                                     <button
                                         type="button"
                                         className="btn btn-danger"
-                                        onClick={() => onRemoveFile(file.fileId)}
+                                        onClick={() =>
+                                            onRemoveFile(file.fileId)
+                                        }
                                         disabled={isUploading || isRemoving}
                                     >
                                         <IconTrash />

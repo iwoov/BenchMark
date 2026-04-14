@@ -279,6 +279,72 @@ export const useFileStore = ({
         };
     }, []);
 
+    // Lazy-load full file data when the active file changes
+    const fileDetailLoadingRef = useRef<Record<string, boolean>>({});
+
+    useEffect(() => {
+        if (!activeFileId || !initialLoadComplete) {
+            return;
+        }
+        const file = files.find((f) => f.fileId === activeFileId);
+        if (!file || file.detailLoaded) {
+            return;
+        }
+        if (fileDetailLoadingRef.current[activeFileId]) {
+            return;
+        }
+        fileDetailLoadingRef.current[activeFileId] = true;
+
+        const controller = new AbortController();
+        const loadDetail = async () => {
+            try {
+                const response = await fetch(
+                    `/api/files/${encodeURIComponent(activeFileId)}`,
+                    { signal: controller.signal },
+                );
+                if (!response.ok) {
+                    return;
+                }
+                const payload = (await response.json()) as {
+                    file?: unknown;
+                };
+                const fullFile = normalizeLoadedFileState(payload.file);
+                if (!fullFile) {
+                    return;
+                }
+                const savedConditions = loadFilterConditionsFromLocal(
+                    fullFile.fileId,
+                );
+                const columnKeys = new Set(fullFile.columns.map((c) => c.key));
+                const validConditions = savedConditions.filter(
+                    (cond) =>
+                        columnKeys.has(cond.columnKey) &&
+                        cond.value.trim().length > 0,
+                );
+                const merged: FileViewState = {
+                    ...fullFile,
+                    detailLoaded: true,
+                    rowCount: fullFile.rows.length,
+                    filterConditions:
+                        validConditions.length > 0 ? validConditions : [],
+                };
+                setFiles((prev) =>
+                    prev.map((f) => (f.fileId === activeFileId ? merged : f)),
+                );
+            } catch {
+                // ignore aborted / network errors
+            } finally {
+                delete fileDetailLoadingRef.current[activeFileId];
+            }
+        };
+
+        void loadDetail();
+
+        return () => {
+            controller.abort();
+        };
+    }, [activeFileId, initialLoadComplete, files]);
+
     useEffect(() => {
         return () => {
             Object.values(persistTimersRef.current).forEach((timerId) => {

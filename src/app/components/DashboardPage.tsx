@@ -356,7 +356,9 @@ export function DashboardPage({
             <section className="dashboard-summary-grid">
                 <article className="dashboard-summary-card">
                     <span>题目总数</span>
-                    <strong>{activeFile.rows.length}</strong>
+                    <strong>
+                        {activeFile.rowCount ?? activeFile.rows.length}
+                    </strong>
                     <p>当前数据源下的全部记录数</p>
                 </article>
                 <article className="dashboard-summary-card">

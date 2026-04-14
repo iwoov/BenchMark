@@ -998,7 +998,17 @@ function App() {
                             ) : null}
 
                             <section className="workspace-view">
-                                {activeSection === "dashboard" ? (
+                                {!activeFile.detailLoaded &&
+                                activeSection !== "settings" ? (
+                                    <section className="page-panel">
+                                        <div className="placeholder workspace-placeholder">
+                                            <p>加载数据中...</p>
+                                        </div>
+                                    </section>
+                                ) : null}
+
+                                {activeFile.detailLoaded &&
+                                activeSection === "dashboard" ? (
                                     <section className="page-panel">
                                         <DashboardPage
                                             activeFile={activeFile}
@@ -1012,7 +1022,9 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {activeSection === "list" && !isDetailView ? (
+                                {activeFile.detailLoaded &&
+                                activeSection === "list" &&
+                                !isDetailView ? (
                                     <section className="page-panel">
                                         <ListPage
                                             activeFile={activeFile}
@@ -1048,7 +1060,7 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {isDetailView ? (
+                                {activeFile.detailLoaded && isDetailView ? (
                                     <section className="page-panel detail-page-panel">
                                         <DetailPage
                                             selectedRow={selectedRow}

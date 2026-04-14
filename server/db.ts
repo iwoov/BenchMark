@@ -567,7 +567,9 @@ function ensureAIRoutingTables(): void {
         );
     }
     if (!columns.has("cleaning_json")) {
-        db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN cleaning_json TEXT");
+        db.exec(
+            "ALTER TABLE file_ai_stage_configs ADD COLUMN cleaning_json TEXT",
+        );
     }
 }
 
@@ -615,6 +617,14 @@ export interface PersistedFileState {
     fileId: string;
     fileName: string;
     state: unknown;
+    updatedAt: string;
+}
+
+export interface PersistedFileStateSummary {
+    fileId: string;
+    fileName: string;
+    state: unknown;
+    rowCount: number;
     updatedAt: string;
 }
 
@@ -1311,6 +1321,41 @@ export function listFileStates(): PersistedFileState[] {
         .filter((row): row is PersistedFileState => row !== null);
 }
 
+export function listFileStateSummaries(): PersistedFileStateSummary[] {
+    const rows = db
+        .prepare(
+            `SELECT file_id, file_name,
+                    json_remove(state_json, '$.rows') AS summary_json,
+                    json_array_length(json_extract(state_json, '$.rows')) AS row_count,
+                    updated_at
+             FROM file_states
+             ORDER BY datetime(updated_at) DESC`,
+        )
+        .all() as Array<{
+        file_id: string;
+        file_name: string;
+        summary_json: string;
+        row_count: number | null;
+        updated_at: string;
+    }>;
+
+    return rows
+        .map((row) => {
+            try {
+                return {
+                    fileId: row.file_id,
+                    fileName: row.file_name,
+                    state: JSON.parse(row.summary_json) as unknown,
+                    rowCount: row.row_count ?? 0,
+                    updatedAt: row.updated_at,
+                };
+            } catch {
+                return null;
+            }
+        })
+        .filter((row): row is PersistedFileStateSummary => row !== null);
+}
+
 export function getFileState(fileId: string): PersistedFileState | null {
     const row = db
         .prepare(
@@ -1413,9 +1458,9 @@ export function isProjectNameInUse(
         }
 
         const hasAIConfig = Boolean(
-            db.prepare("SELECT 1 FROM ai_configs WHERE file_name = ? LIMIT 1").get(
-                fileName,
-            ),
+            db
+                .prepare("SELECT 1 FROM ai_configs WHERE file_name = ? LIMIT 1")
+                .get(fileName),
         );
         if (hasAIConfig) {
             return true;
@@ -1449,10 +1494,9 @@ function renameProjectReferences(
              WHERE file_id = ?`,
         ).run(nextFileName, JSON.stringify(nextState), fileId);
 
-        db.prepare("UPDATE ai_configs SET file_name = ? WHERE file_name = ?").run(
-            nextFileName,
-            previousFileName,
-        );
+        db.prepare(
+            "UPDATE ai_configs SET file_name = ? WHERE file_name = ?",
+        ).run(nextFileName, previousFileName);
 
         db.prepare(
             `UPDATE file_ai_stage_configs
@@ -1911,14 +1955,22 @@ function normalizeProviderEndpointConfig(
     const candidate = value as Partial<AIProviderEndpointConfig>;
     return {
         name:
-            typeof candidate.name === "string" && candidate.name.trim().length > 0
+            typeof candidate.name === "string" &&
+            candidate.name.trim().length > 0
                 ? candidate.name.trim()
                 : defaultValue.name,
-        apiType: normalizeProviderApiType(candidate.apiType, defaultValue.apiType),
+        apiType: normalizeProviderApiType(
+            candidate.apiType,
+            defaultValue.apiType,
+        ),
         apiUrl:
-            typeof candidate.apiUrl === "string" ? candidate.apiUrl : defaultValue.apiUrl,
+            typeof candidate.apiUrl === "string"
+                ? candidate.apiUrl
+                : defaultValue.apiUrl,
         apiKey:
-            typeof candidate.apiKey === "string" ? candidate.apiKey : defaultValue.apiKey,
+            typeof candidate.apiKey === "string"
+                ? candidate.apiKey
+                : defaultValue.apiKey,
         updatedAt:
             typeof candidate.updatedAt === "string"
                 ? candidate.updatedAt
@@ -1949,11 +2001,13 @@ function normalizeModelRouteConfig(
     const candidate = value as Partial<AIModelRouteConfig>;
     return {
         name:
-            typeof candidate.name === "string" && candidate.name.trim().length > 0
+            typeof candidate.name === "string" &&
+            candidate.name.trim().length > 0
                 ? candidate.name.trim()
                 : defaultValue.name,
         model:
-            typeof candidate.model === "string" && candidate.model.trim().length > 0
+            typeof candidate.model === "string" &&
+            candidate.model.trim().length > 0
                 ? candidate.model
                 : defaultValue.model,
         reasoningEffort:
@@ -1963,7 +2017,9 @@ function normalizeModelRouteConfig(
                 ? candidate.reasoningEffort
                 : defaultValue.reasoningEffort,
         retryCount: normalizeRetryCount(
-            typeof candidate.retryCount === "number" ? candidate.retryCount : null,
+            typeof candidate.retryCount === "number"
+                ? candidate.retryCount
+                : null,
         ),
         steps: normalizeRouteStepList(candidate.steps, fallbackProviderName),
         updatedAt:
@@ -1995,7 +2051,8 @@ function normalizeFileStageConfig(
           )
         : [...fallback.submitFieldKeys];
     const routeName =
-        typeof candidate.routeName === "string" && candidate.routeName.trim().length > 0
+        typeof candidate.routeName === "string" &&
+        candidate.routeName.trim().length > 0
             ? candidate.routeName.trim()
             : typeof candidate.profileName === "string" &&
                 candidate.profileName.trim().length > 0
@@ -2005,7 +2062,8 @@ function normalizeFileStageConfig(
         routeName,
         submitFieldKeys,
         prompt:
-            typeof candidate.prompt === "string" && candidate.prompt.trim().length > 0
+            typeof candidate.prompt === "string" &&
+            candidate.prompt.trim().length > 0
                 ? candidate.prompt
                 : fallback.prompt,
     };
@@ -2137,7 +2195,8 @@ function normalizeFileEvaluationTaskConfig(
                 | undefined,
     ).find((item) => item && typeof item === "object");
     const answerGeneration =
-        candidate.answerGeneration && typeof candidate.answerGeneration === "object"
+        candidate.answerGeneration &&
+        typeof candidate.answerGeneration === "object"
             ? (candidate.answerGeneration as {
                   routeName?: unknown;
                   prompt?: unknown;
@@ -2187,7 +2246,9 @@ function normalizeFileEvaluationTaskConfig(
                 answerGeneration.prompt.trim().length > 0
                     ? answerGeneration.prompt
                     : DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
-            questionFieldKeys: Array.isArray(answerGeneration?.questionFieldKeys)
+            questionFieldKeys: Array.isArray(
+                answerGeneration?.questionFieldKeys,
+            )
                 ? answerGeneration.questionFieldKeys.filter(
                       (item): item is string => typeof item === "string",
                   )
@@ -2195,7 +2256,7 @@ function normalizeFileEvaluationTaskConfig(
                   ? legacyStageCandidate.questionFieldKeys.filter(
                         (item): item is string => typeof item === "string",
                     )
-                : [],
+                  : [],
         },
         answerJudgment: {
             routeName:
@@ -2216,7 +2277,7 @@ function normalizeFileEvaluationTaskConfig(
                   ? legacyStageCandidate.answerFieldKeys.filter(
                         (item): item is string => typeof item === "string",
                     )
-                : [],
+                  : [],
         },
     };
 }
@@ -2529,7 +2590,9 @@ export function getFileAIEvaluationConfig(
     );
 }
 
-export function getFileAICleaningConfig(fileName: string): FileAICleaningConfigMap {
+export function getFileAICleaningConfig(
+    fileName: string,
+): FileAICleaningConfigMap {
     const row = db
         .prepare(
             `SELECT cleaning_json
@@ -2590,7 +2653,9 @@ export function saveFileAIChatConfig(
     ).run(
         fileName,
         existingRow?.stages_json ??
-            JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
+            JSON.stringify(
+                parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME),
+            ),
         JSON.stringify(chat),
         existingRow?.evaluation_json ?? null,
         existingRow?.cleaning_json ?? null,
@@ -2630,7 +2695,9 @@ export function saveFileAIEvaluationConfig(
     ).run(
         fileName,
         existingRow?.stages_json ??
-            JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
+            JSON.stringify(
+                parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME),
+            ),
         existingRow?.chat_json ?? null,
         JSON.stringify(evaluation),
         existingRow?.cleaning_json ?? null,
@@ -2670,20 +2737,20 @@ export function saveFileAICleaningConfig(
     ).run(
         fileName,
         existingRow?.stages_json ??
-            JSON.stringify(parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME)),
+            JSON.stringify(
+                parseFileStageConfigMap(null, DEFAULT_AI_ROUTE_NAME),
+            ),
         existingRow?.chat_json ?? null,
         existingRow?.evaluation_json ?? null,
         JSON.stringify(cleaning),
     );
 }
 
-function normalizeFileAICleaningToolResult(
-    value: {
-        response_text?: unknown;
-        parsed_json_text?: unknown;
-        updated_at?: unknown;
-    },
-): FileAICleaningToolResult | null {
+function normalizeFileAICleaningToolResult(value: {
+    response_text?: unknown;
+    parsed_json_text?: unknown;
+    updated_at?: unknown;
+}): FileAICleaningToolResult | null {
     if (typeof value.response_text !== "string") {
         return null;
     }
@@ -2698,17 +2765,15 @@ function normalizeFileAICleaningToolResult(
     };
 }
 
-function normalizeFileAIEvaluationAttemptResult(
-    value: {
-        attempt_index?: unknown;
-        generation_response_text?: unknown;
-        generation_parsed_json_text?: unknown;
-        judgment_response_text?: unknown;
-        judgment_parsed_json_text?: unknown;
-        final_verdict?: unknown;
-        updated_at?: unknown;
-    },
-): FileAIEvaluationAttemptResult | null {
+function normalizeFileAIEvaluationAttemptResult(value: {
+    attempt_index?: unknown;
+    generation_response_text?: unknown;
+    generation_parsed_json_text?: unknown;
+    judgment_response_text?: unknown;
+    judgment_parsed_json_text?: unknown;
+    final_verdict?: unknown;
+    updated_at?: unknown;
+}): FileAIEvaluationAttemptResult | null {
     if (
         typeof value.attempt_index !== "number" ||
         typeof value.generation_response_text !== "string" ||
@@ -2737,7 +2802,9 @@ function normalizeFileAIEvaluationAttemptResult(
 
 export function listFileAICleaningResults(
     fileId: string,
-): Partial<Record<AICleaningToolKey, Record<string, FileAICleaningToolResult>>> {
+): Partial<
+    Record<AICleaningToolKey, Record<string, FileAICleaningToolResult>>
+> {
     const result: Partial<
         Record<AICleaningToolKey, Record<string, FileAICleaningToolResult>>
     > = {};
@@ -2793,8 +2860,10 @@ export function listFileAIEvaluationResults(
         final_verdict: string;
         updated_at: string;
     }>;
-    const result: Record<string, Record<string, FileAIEvaluationAttemptResult[]>> =
-        {};
+    const result: Record<
+        string,
+        Record<string, FileAIEvaluationAttemptResult[]>
+    > = {};
     rows.forEach((row) => {
         const normalized = normalizeFileAIEvaluationAttemptResult(row);
         if (!normalized) {
@@ -2926,7 +2995,9 @@ export function findAIProviderEndpointByName(
     });
 }
 
-export function findAIModelRouteByName(name: string): AIModelRouteConfig | null {
+export function findAIModelRouteByName(
+    name: string,
+): AIModelRouteConfig | null {
     const row = db
         .prepare(
             `SELECT name, model, reasoning_effort, retry_count, steps_json, updated_at
@@ -2990,7 +3061,9 @@ function migrateLegacyAIConfigToRoutingTables(): void {
     }
 
     const fileRows = db
-        .prepare("SELECT DISTINCT file_name FROM ai_configs ORDER BY file_name ASC")
+        .prepare(
+            "SELECT DISTINCT file_name FROM ai_configs ORDER BY file_name ASC",
+        )
         .all() as Array<{ file_name: string }>;
     if (fileRows.length === 0) {
         return;
@@ -3008,7 +3081,8 @@ function migrateLegacyAIConfigToRoutingTables(): void {
     fileRows.forEach(({ file_name: fileName }) => {
         const { configs, activeConfigName } = listAIDetectConfigs(fileName);
         const activeConfig =
-            configs.find((item) => item.name === activeConfigName) ?? configs[0];
+            configs.find((item) => item.name === activeConfigName) ??
+            configs[0];
         if (!activeConfig) {
             return;
         }

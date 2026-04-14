@@ -52,6 +52,10 @@ export interface FileViewState extends ParsedFile {
     selectedEditableColumnKeys: string[];
     filterConditions: FilterCondition[];
     statisticsConfig: StatisticsConfig;
+    /** Row count from server summary; always available even before rows are loaded. */
+    rowCount?: number;
+    /** Whether full row data has been fetched from the server. */
+    detailLoaded?: boolean;
 }
 
 export type AIDetectStageKey =

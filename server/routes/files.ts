@@ -15,7 +15,7 @@ import {
     getFileState,
     getColumnPrefs,
     isProjectNameInUse,
-    listFileStates,
+    listFileStateSummaries,
     renameProject,
     saveColumnPrefs,
     saveFileAICleaningToolResult,
@@ -318,7 +318,8 @@ function attachEvaluationResultsToState(
             return row;
         }
         const rowId = candidate.rowId;
-        const mergedResults: Record<string, FileAIEvaluationAttemptResult[]> = {};
+        const mergedResults: Record<string, FileAIEvaluationAttemptResult[]> =
+            {};
         Object.entries(evaluationResultsByTask).forEach(([taskId, rowMap]) => {
             const attempts = rowMap[rowId];
             if (attempts && attempts.length > 0) {
@@ -404,7 +405,8 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             }
 
             const projectId = persistedState?.fileId ?? randomUUID();
-            const projectName = persistedState?.fileName ?? requestedProjectName;
+            const projectName =
+                persistedState?.fileName ?? requestedProjectName;
             const parsed = await parseUploadedFile(
                 file,
                 normalizedFileName,
@@ -452,33 +454,42 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
     });
 
     app.get("/api/files", (_req, res) => {
-        const files = listFileStates().map((item) =>
-            attachPersistedMetadataToState(
-                attachEvaluationResultsToState(
-                    attachCleaningResultsToState(
-                        item.state,
-                        listFileAICleaningResults(item.fileId),
-                    ),
-                    listFileAIEvaluationResults(item.fileId),
+        const summaries = listFileStateSummaries().map((item) => ({
+            ...(item.state as Record<string, unknown>),
+            rowCount: item.rowCount,
+            updatedAt: item.updatedAt,
+        }));
+        return res.json({ files: summaries });
+    });
+
+    app.get("/api/files/:fileId", (req, res) => {
+        const { fileId } = req.params;
+        const item = getFileState(fileId);
+        if (!item) {
+            return res.status(404).json({ message: "file not found" });
+        }
+        const file = attachPersistedMetadataToState(
+            attachEvaluationResultsToState(
+                attachCleaningResultsToState(
+                    item.state,
+                    listFileAICleaningResults(item.fileId),
                 ),
-                item.updatedAt,
+                listFileAIEvaluationResults(item.fileId),
             ),
+            item.updatedAt,
         );
         if (SHOULD_LOG_AI_RESULTS) {
-            files.forEach((state) => {
-                const summary = summarizeFileStateAIResults(state);
-                if (!summary) {
-                    return;
-                }
+            const summary = summarizeFileStateAIResults(file);
+            if (summary) {
                 // eslint-disable-next-line no-console
                 console.log(
-                    `[FileStateList] fileId=${summary.fileId} fileName=${summary.fileName} rows=${summary.rows} rowsWithAI=${summary.rowsWithAI} stageCounts=${JSON.stringify(
+                    `[FileStateDetail] fileId=${summary.fileId} fileName=${summary.fileName} rows=${summary.rows} rowsWithAI=${summary.rowsWithAI} stageCounts=${JSON.stringify(
                         summary.stageCounts,
                     )}`,
                 );
-            });
+            }
         }
-        return res.json({ files });
+        return res.json({ file });
     });
 
     app.put("/api/files/:fileId/name", (req, res) => {
@@ -647,12 +658,7 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
 
     app.put("/api/files/:fileId/cleaning-results/:toolKey", (req, res) => {
         const { fileId, toolKey } = req.params;
-        const {
-            rowId,
-            fileName,
-            responseText,
-            parsedJsonText,
-        } = req.body as {
+        const { rowId, fileName, responseText, parsedJsonText } = req.body as {
             rowId?: unknown;
             fileName?: unknown;
             responseText?: unknown;
@@ -663,23 +669,31 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             return res.status(400).json({ message: "toolKey is invalid" });
         }
         if (typeof rowId !== "string" || rowId.trim().length === 0) {
-            return res.status(400).json({ message: "rowId must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "rowId must be a non-empty string" });
         }
         if (typeof fileName !== "string" || fileName.trim().length === 0) {
-            return res.status(400).json({ message: "fileName must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "fileName must be a non-empty string" });
         }
         if (
             typeof responseText !== "string" ||
             responseText.trim().length === 0
         ) {
-            return res.status(400).json({ message: "responseText must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "responseText must be a non-empty string" });
         }
         if (
             parsedJsonText !== undefined &&
             parsedJsonText !== null &&
             typeof parsedJsonText !== "string"
         ) {
-            return res.status(400).json({ message: "parsedJsonText must be a string" });
+            return res
+                .status(400)
+                .json({ message: "parsedJsonText must be a string" });
         }
 
         saveFileAICleaningToolResult(
@@ -715,46 +729,65 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             finalVerdict?: unknown;
         };
         if (typeof rowId !== "string" || rowId.trim().length === 0) {
-            return res.status(400).json({ message: "rowId must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "rowId must be a non-empty string" });
         }
         if (typeof fileName !== "string" || fileName.trim().length === 0) {
-            return res.status(400).json({ message: "fileName must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "fileName must be a non-empty string" });
         }
         if (
             typeof attemptIndex !== "number" ||
             !Number.isInteger(attemptIndex) ||
             attemptIndex < 1
         ) {
-            return res.status(400).json({ message: "attemptIndex must be a positive integer" });
+            return res
+                .status(400)
+                .json({ message: "attemptIndex must be a positive integer" });
         }
         if (
             typeof generationResponseText !== "string" ||
             generationResponseText.trim().length === 0
         ) {
-            return res.status(400).json({ message: "generationResponseText must be a non-empty string" });
+            return res.status(400).json({
+                message: "generationResponseText must be a non-empty string",
+            });
         }
         if (
             typeof judgmentResponseText !== "string" ||
             judgmentResponseText.trim().length === 0
         ) {
-            return res.status(400).json({ message: "judgmentResponseText must be a non-empty string" });
+            return res.status(400).json({
+                message: "judgmentResponseText must be a non-empty string",
+            });
         }
-        if (typeof finalVerdict !== "string" || finalVerdict.trim().length === 0) {
-            return res.status(400).json({ message: "finalVerdict must be a non-empty string" });
+        if (
+            typeof finalVerdict !== "string" ||
+            finalVerdict.trim().length === 0
+        ) {
+            return res
+                .status(400)
+                .json({ message: "finalVerdict must be a non-empty string" });
         }
         if (
             generationParsedJsonText !== undefined &&
             generationParsedJsonText !== null &&
             typeof generationParsedJsonText !== "string"
         ) {
-            return res.status(400).json({ message: "generationParsedJsonText must be a string" });
+            return res
+                .status(400)
+                .json({ message: "generationParsedJsonText must be a string" });
         }
         if (
             judgmentParsedJsonText !== undefined &&
             judgmentParsedJsonText !== null &&
             typeof judgmentParsedJsonText !== "string"
         ) {
-            return res.status(400).json({ message: "judgmentParsedJsonText must be a string" });
+            return res
+                .status(400)
+                .json({ message: "judgmentParsedJsonText must be a string" });
         }
 
         saveFileAIEvaluationAttemptResult(
