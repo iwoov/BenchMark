@@ -34,6 +34,7 @@ type AIDetectStageKey =
 const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
     "generate_level3_tags",
     "biochem_level1_refine",
+    "question_formatting",
 ];
 
 const AI_STAGE_ORDER: AIDetectStageKey[] = [

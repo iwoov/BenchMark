@@ -384,12 +384,23 @@ export const useCellRenderers = ({
         const tags = isLevel3TagsField ? splitTagValues(copyText) : [];
 
         const handleCopyFieldText = async () => {
-            if (!canCopyFieldText || !navigator.clipboard?.writeText) {
+            if (!canCopyFieldText) {
                 return;
             }
 
             try {
-                await navigator.clipboard.writeText(copyText);
+                if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(copyText);
+                } else {
+                    const textarea = document.createElement("textarea");
+                    textarea.value = copyText;
+                    textarea.style.position = "fixed";
+                    textarea.style.opacity = "0";
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(textarea);
+                }
                 setCopiedFieldKey(column.key);
             } catch (error) {
                 console.error("[DetailFieldCopy] failed", error);

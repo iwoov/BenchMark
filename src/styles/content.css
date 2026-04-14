@@ -1094,6 +1094,20 @@
     color: var(--text-primary);
 }
 
+.ai-result-note-multiline {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    font-family: inherit;
+}
+
+.ai-result-raw-block {
+    margin-top: 6px;
+}
+
 .ai-result-analysis {
     display: flex;
     flex-direction: column;

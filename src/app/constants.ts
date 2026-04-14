@@ -206,6 +206,7 @@ export const DEFAULT_AI_CHAT_PROMPT = `你是题目详情页中的 AI 助手。
 export const AI_CLEANING_TOOL_ORDER = [
     "generate_level3_tags",
     "biochem_level1_refine",
+    "question_formatting",
 ] as const;
 
 export const AI_CLEANING_TOOL_LABELS: Record<
@@ -234,6 +235,13 @@ export const AI_CLEANING_TOOL_LABELS: Record<
         description:
             "判断题目所属的生物学科方向，并给出置信度与判断依据。",
         outputKeys: ["discipline", "confidence", "reason"],
+    },
+    question_formatting: {
+        title: "题目格式化",
+        shortTitle: "题目格式化",
+        description:
+            "根据原题、选项和答案，规范输出 question_text、options、answer 三个字段。",
+        outputKeys: ["question_text", "options", "answer"],
     },
 };
 
@@ -278,6 +286,52 @@ export const DEFAULT_AI_CLEANING_PROMPTS: Record<AICleaningToolKey, string> = {
   "confidence": "高/中/低",
   "reason": "判断依据的简要说明"
 }
+
+字段内容如下：
+{{fields_json}}`,
+    question_formatting: `你是一个题库整理专家。现在有一些人工出题的题目文本、选项以及答案。由于是人工出题，可能在形式或需求表述上没有表达清楚（例如题目缺少对答案格式的具体要求）。
+
+请在不改变核心考察知识点的前提下，结合给出的答案，对题目文本、选项和答案进行优化，使其符合正式题库的规范。
+
+要求：
+
+1. 题目文本（question_text）：
+
+   - 应简洁清晰，剥离掉原本混在题目中的选项（如果有的话）。
+
+   - 如果是填空题，使用适当的连续下划线（如：______）表示填空处。
+
+   - 关键调整：请根据【原答案】的形式或内容反推题目的需求。例如，如果答案是一个数值范围，但题目中没有明确要求“求出 xxx 的范围”，请在题目中补充相关提示（如：“（请给出数值范围）”）；如果答案有特定单位或精度，请在题目末尾加上适当的要求提示，避免回答者因为题目需求不清而回答不到位。
+
+2. 选项（options）：
+
+   - 如果是选择题，请整理为标准的选项格式（A. xxx 换行 B. xxx ...），保持纯文本换行，不使用 Markdown 加粗或特殊符号。
+
+   - 如果是填空/简答题，选项请输出 null 或空字符串。
+
+3. 答案（answer）：
+
+   - 同样进行格式规范化（如修正排版、去除非必要的冗余提示词等），确保其与优化后的题目要求完全匹配。
+
+4. 修正所有文本中可能存在的明显排版问题（如多余换行、不规范的括号等）。
+
+5. 注意：保留原有的 LaTeX 公式（例如 $A_3$、$M_s$ 等），不要将其转换为 Unicode 字符。
+
+6. 必须严格以 JSON 格式输出，包含 question_text、options 和 answer 三个字段。
+
+原题目文本：
+{question_text}
+
+原选项：
+{options}
+
+原答案：
+{answer}
+
+补充说明：
+- 你收到的是题目相关字段 JSON。请自行从字段中识别“原题目文本”“原选项”“原答案”对应内容。
+- 若 prompt 中的 {question_text}、{options}、{answer} 未被直接替换，请从下方字段 JSON 中提取对应内容完成任务。
+- 最终只输出 JSON，不要附加任何解释。
 
 字段内容如下：
 {{fields_json}}`,
@@ -401,6 +455,16 @@ export const DEFAULT_AI_CLEANING_CONFIGS: AICleaningConfigMap = {
         ...DEFAULT_AI_CLEANING_TOOL_BASE,
         prompt: DEFAULT_AI_CLEANING_PROMPTS.biochem_level1_refine,
         outputMappings: AI_CLEANING_TOOL_LABELS.biochem_level1_refine.outputKeys.map(
+            (outputKey) => ({
+                outputKey,
+                targetFieldKey: "",
+            }),
+        ),
+    },
+    question_formatting: {
+        ...DEFAULT_AI_CLEANING_TOOL_BASE,
+        prompt: DEFAULT_AI_CLEANING_PROMPTS.question_formatting,
+        outputMappings: AI_CLEANING_TOOL_LABELS.question_formatting.outputKeys.map(
             (outputKey) => ({
                 outputKey,
                 targetFieldKey: "",

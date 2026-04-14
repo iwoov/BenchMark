@@ -73,10 +73,12 @@ const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
 const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
     "generate_level3_tags",
     "biochem_level1_refine",
+    "question_formatting",
 ];
 const AI_CLEANING_TOOL_LABELS: Record<AICleaningToolKey, string> = {
     generate_level3_tags: "生成 level3 标签",
     biochem_level1_refine: "细分生化 level1",
+    question_formatting: "题目格式化",
 };
 const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
     generate_level3_tags: [
@@ -85,6 +87,7 @@ const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
         "tags",
     ],
     biochem_level1_refine: ["discipline", "confidence", "reason"],
+    question_formatting: ["question_text", "options", "answer"],
 };
 const DEFAULT_AI_RETRY_COUNT = 5;
 const MIN_AI_RETRY_COUNT = 0;
@@ -1392,6 +1395,42 @@ function buildPromptContent(
     prompt: string,
     fields: AIDetectField[],
 ): PromptBuildResult {
+    const normalizeFieldTitle = (value: string): string =>
+        value
+            .trim()
+            .toLowerCase()
+            .replace(/[\s_\-()（）[\]【】:：.]/g, "");
+    const readPromptFieldValue = (
+        source: Record<string, string>,
+        aliases: string[],
+    ): string => {
+        const entries = Object.entries(source).map(([title, value]) => ({
+            title,
+            value,
+            normalizedTitle: normalizeFieldTitle(title),
+        }));
+        for (const alias of aliases) {
+            const normalizedAlias = normalizeFieldTitle(alias);
+            const exactMatch = entries.find(
+                (entry) => entry.normalizedTitle === normalizedAlias,
+            );
+            if (exactMatch) {
+                return exactMatch.value;
+            }
+        }
+        for (const alias of aliases) {
+            const normalizedAlias = normalizeFieldTitle(alias);
+            const fuzzyMatch = entries.find(
+                (entry) =>
+                    entry.normalizedTitle.includes(normalizedAlias) ||
+                    normalizedAlias.includes(entry.normalizedTitle),
+            );
+            if (fuzzyMatch) {
+                return fuzzyMatch.value;
+            }
+        }
+        return "";
+    };
     const fieldSummary: Record<string, string> = {};
     const imageFields: Array<{
         title: string;
@@ -1430,6 +1469,26 @@ function buildPromptContent(
                   )
                   .join("、")
             : "无";
+    const questionText = readPromptFieldValue(fieldSummary, [
+        "question_text",
+        "题目文本",
+        "题干",
+        "题目",
+        "question",
+        "stem",
+    ]);
+    const optionsText = readPromptFieldValue(fieldSummary, [
+        "options",
+        "选项",
+        "option",
+    ]);
+    const answerText = readPromptFieldValue(fieldSummary, [
+        "answer",
+        "答案",
+        "标准答案",
+        "参考答案",
+        "final_answer",
+    ]);
 
     const hasJsonPlaceholder = prompt.includes("{{fields_json}}");
     const hasTextPlaceholder = prompt.includes("{{fields_text}}");
@@ -1438,7 +1497,10 @@ function buildPromptContent(
     const mergedPrompt = prompt
         .replaceAll("{{fields_json}}", fieldsJson)
         .replaceAll("{{fields_text}}", fieldsText)
-        .replaceAll("{{image_fields}}", imageFieldsText);
+        .replaceAll("{{image_fields}}", imageFieldsText)
+        .replaceAll("{question_text}", questionText)
+        .replaceAll("{options}", optionsText)
+        .replaceAll("{answer}", answerText);
 
     if (hasJsonPlaceholder || hasTextPlaceholder) {
         return {

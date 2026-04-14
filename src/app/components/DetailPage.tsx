@@ -34,8 +34,7 @@ import {
 
 type DetailWorkspacePanelKey = "quality" | "cleaning" | "evaluation";
 
-const DETAIL_WORKSPACE_PANEL_STORAGE_KEY =
-    "benchmark:detail-workspace-panel";
+const DETAIL_WORKSPACE_PANEL_STORAGE_KEY = "benchmark:detail-workspace-panel";
 const DETAIL_CLEANING_TOOL_STORAGE_KEY = "benchmark:detail-cleaning-tool";
 
 const DETAIL_WORKSPACE_PANELS: Array<{
@@ -133,6 +132,23 @@ function renderInfoBlock(
         <div className={`ai-result-note note-${tone}`}>
             <strong>{label}：</strong>
             <span>{value}</span>
+        </div>
+    );
+}
+
+function renderMultilineInfoBlock(
+    label: string,
+    value: string,
+    tone: "danger" | "warning" | "neutral" = "neutral",
+) {
+    if (!hasMeaningfulText(value)) {
+        return null;
+    }
+
+    return (
+        <div className={`ai-result-note note-${tone}`}>
+            <strong>{label}：</strong>
+            <pre className="ai-result-note-multiline">{value}</pre>
         </div>
     );
 }
@@ -855,6 +871,24 @@ function renderAICleaningResultContent(
         );
     }
 
+    if (toolKey === "question_formatting") {
+        const questionText = readTextValue(parsed.question_text);
+        const optionsText =
+            typeof parsed.options === "string"
+                ? parsed.options.trim()
+                : parsed.options === null
+                  ? ""
+                  : "";
+        const answerText = readTextValue(parsed.answer);
+        return (
+            <div className="ai-result-formatted">
+                {renderMultilineInfoBlock("题目文本", questionText, "neutral")}
+                {renderMultilineInfoBlock("选项", optionsText, "neutral")}
+                {renderMultilineInfoBlock("答案", answerText, "neutral")}
+            </div>
+        );
+    }
+
     return <pre className="ai-result-raw">{trimmed}</pre>;
 }
 
@@ -1269,6 +1303,8 @@ export function DetailPage({
     const [selectedEvaluationTaskId, setSelectedEvaluationTaskId] = useState(
         () => evaluationTasks[0]?.id ?? "",
     );
+    const [selectedCleaningRawToolKey, setSelectedCleaningRawToolKey] =
+        useState<AICleaningToolKey | null>(null);
     const [selectedEvaluationRawAttempt, setSelectedEvaluationRawAttempt] =
         useState<AIEvaluationAttemptResult | null>(null);
 
@@ -1277,16 +1313,16 @@ export function DetailPage({
             !selectedRow
                 ? []
                 : [...displayColumns]
-                .filter(
-                    (column) =>
-                        !isImageColumn(selectedRow, column) &&
-                        isProblemTextColumn(column),
-                )
-                .sort(
-                    (left, right) =>
-                        getProblemTextColumnPriority(left) -
-                        getProblemTextColumnPriority(right),
-                ),
+                      .filter(
+                          (column) =>
+                              !isImageColumn(selectedRow, column) &&
+                              isProblemTextColumn(column),
+                      )
+                      .sort(
+                          (left, right) =>
+                              getProblemTextColumnPriority(left) -
+                              getProblemTextColumnPriority(right),
+                      ),
         [displayColumns, selectedRow],
     );
     const imageColumns = useMemo(
@@ -1366,6 +1402,8 @@ export function DetailPage({
 
     useEffect(() => {
         setDetailImageZoom(100);
+        setSelectedCleaningRawToolKey(null);
+        setSelectedEvaluationRawAttempt(null);
     }, [selectedRow?.rowId]);
 
     useEffect(() => {
@@ -1438,13 +1476,15 @@ export function DetailPage({
             (panel) => panel.key === activeWorkspacePanel,
         ) ?? DETAIL_WORKSPACE_PANELS[1];
     const cleaningToolLabel = AI_CLEANING_TOOL_LABELS[selectedCleaningToolKey];
+    const selectedCleaningResult =
+        cleaningResults?.[selectedCleaningToolKey] ?? null;
     const cleaningSavedContent =
-        cleaningResults?.[selectedCleaningToolKey]?.responseText ?? "";
+        selectedCleaningResult?.responseText ?? "";
     const isSelectedCleaningToolRunning =
         activeAICleaningToolKey === selectedCleaningToolKey && isAICleaning;
+    const hasSelectedCleaningResult = cleaningSavedContent.trim().length > 0;
     const selectedCleaningContent =
-        isSelectedCleaningToolRunning &&
-        aiCleaningStreamText.trim().length > 0
+        isSelectedCleaningToolRunning && aiCleaningStreamText.trim().length > 0
             ? aiCleaningStreamText
             : cleaningSavedContent;
     const selectedEvaluationTask =
@@ -1470,7 +1510,8 @@ export function DetailPage({
               (_, index) => index + 1,
           )
               .map((attemptIndex) => {
-                  const attempt = evaluationAttemptMap.get(attemptIndex) ?? null;
+                  const attempt =
+                      evaluationAttemptMap.get(attemptIndex) ?? null;
                   if (!attempt) {
                       return {
                           attemptIndex,
@@ -1489,9 +1530,8 @@ export function DetailPage({
                           attempt.generationParsedJsonText ?? "",
                       ) ?? parseAIResultJSON(attempt.generationResponseText);
                   const judgmentParsed =
-                      parseAIResultJSON(
-                          attempt.judgmentParsedJsonText ?? "",
-                      ) ?? parseAIResultJSON(attempt.judgmentResponseText);
+                      parseAIResultJSON(attempt.judgmentParsedJsonText ?? "") ??
+                      parseAIResultJSON(attempt.judgmentResponseText);
                   return {
                       attemptIndex,
                       status: "done",
@@ -1519,312 +1559,457 @@ export function DetailPage({
 
     return (
         <>
-        <section className="record-detail standalone-record-detail">
-            <div className="record-detail-status-bar">
-                <div className="record-detail-status-copy">
-                    <strong>题目状态</strong>
-                    <span>
-                        {selectedRow.enabled
-                            ? "当前题目已启用"
-                            : "当前题目已停用"}
-                    </span>
-                </div>
-                <label className="column-config-switch record-detail-enabled-switch">
-                    <input
-                        type="checkbox"
-                        checked={selectedRow.enabled}
-                        onChange={(event) =>
-                            onToggleRowEnabled(
-                                selectedRow.rowId,
-                                event.target.checked,
-                            )
-                        }
-                    />
-                    <span>{selectedRow.enabled ? "启用" : "停用"}</span>
-                </label>
-            </div>
-            <div className="detail-page-layout">
-                <div className="detail-page-main">
-                    <div className="record-detail-header">
-                        <div>
-                            <h3>原始题目</h3>
-                            <span>题目内容始终固定展示，右侧工作区围绕它展开。</span>
-                        </div>
+            <section className="record-detail standalone-record-detail">
+                <div className="record-detail-status-bar">
+                    <div className="record-detail-status-copy">
+                        <strong>题目状态</strong>
+                        <span>
+                            {selectedRow.enabled
+                                ? "当前题目已启用"
+                                : "当前题目已停用"}
+                        </span>
                     </div>
-                    <div className="detail-fields">
-                        {hasHeroLayout ? (
-                            <section className="detail-problem-layout">
-                                <div className="detail-problem-main">
-                                    <div
-                                        className="detail-problem-main-grid"
-                                        style={
-                                            {
-                                                "--detail-problem-row-count":
-                                                    problemTextColumns.length,
-                                            } as CSSProperties
-                                        }
-                                    >
-                                        {problemTextColumns.map((column) =>
-                                            renderDetailField(column, false),
-                                        )}
-                                    </div>
-                                </div>
-                                <div className="detail-problem-side">
-                                    {imageColumns.length > 0 ? (
-                                        <>
-                                            <div
-                                                className="detail-problem-image-panels"
-                                                style={
-                                                    {
-                                                        "--detail-image-scale": `${detailImageZoom / 100}`,
-                                                    } as CSSProperties
-                                                }
-                                            >
-                                                {imageColumns.map((column) => (
-                                                    <DraggableImagePanel
-                                                        key={`${selectedRow.rowId}_${column.key}_hero`}
-                                                        canDrag={
-                                                            detailImageZoom >
-                                                            100
-                                                        }
-                                                        zoomLevel={
-                                                            detailImageZoom
-                                                        }
-                                                        panelId={`${selectedRow.rowId}_${column.key}`}
-                                                    >
-                                                        {renderDetailField(
-                                                            column,
-                                                            false,
-                                                            imageColumns[0]
-                                                                ?.key ===
-                                                                column.key
-                                                                ? {
-                                                                      labelActions:
-                                                                          (
-                                                                              <div className="detail-image-toolbar inline-toolbar">
-                                                                                  <div className="detail-image-zoom-controls">
-                                                                                      <button
-                                                                                          type="button"
-                                                                                          className="btn btn-ghost"
-                                                                                          onClick={
-                                                                                              decreaseImageZoom
-                                                                                          }
-                                                                                          disabled={
-                                                                                              detailImageZoom <=
-                                                                                              50
-                                                                                          }
-                                                                                      >
-                                                                                          -
-                                                                                      </button>
-                                                                                      <span>{`${detailImageZoom}%`}</span>
-                                                                                      <button
-                                                                                          type="button"
-                                                                                          className="btn btn-ghost"
-                                                                                          onClick={() =>
-                                                                                              setDetailImageZoom(
-                                                                                                  100,
-                                                                                              )
-                                                                                          }
-                                                                                      >
-                                                                                          100%
-                                                                                      </button>
-                                                                                      <button
-                                                                                          type="button"
-                                                                                          className="btn btn-ghost"
-                                                                                          onClick={
-                                                                                              increaseImageZoom
-                                                                                          }
-                                                                                          disabled={
-                                                                                              detailImageZoom >=
-                                                                                              250
-                                                                                          }
-                                                                                      >
-                                                                                          +
-                                                                                      </button>
-                                                                                  </div>
-                                                                              </div>
-                                                                          ),
-                                                                  }
-                                                                : undefined,
-                                                        )}
-                                                    </DraggableImagePanel>
-                                                ))}
-                                            </div>
-                                        </>
-                                    ) : null}
-                                </div>
-                            </section>
-                        ) : null}
-                        {sourceColumnsBelowHero.map((column) =>
-                            renderDetailField(column, false),
-                        )}
-                        {regularDisplayColumns.map((column) =>
-                            renderDetailField(column, false),
-                        )}
-                        {hiddenColumns.length > 0 ? (
-                            <div className="hidden-fields-section">
-                                <button
-                                    type="button"
-                                    className={`hidden-fields-toggle ${showHiddenFields ? "expanded" : ""}`}
-                                    onClick={onToggleHiddenFields}
-                                >
-                                    <IconChevron />
-                                    <span>
-                                        {hiddenColumns.length} 个已隐藏字段
-                                    </span>
-                                </button>
-                                {showHiddenFields ? (
-                                    <div className="hidden-fields-list">
-                                        {hiddenColumns.map((column) =>
-                                            renderDetailField(column, true),
-                                        )}
-                                    </div>
-                                ) : null}
-                            </div>
-                        ) : null}
-                    </div>
+                    <label className="column-config-switch record-detail-enabled-switch">
+                        <input
+                            type="checkbox"
+                            checked={selectedRow.enabled}
+                            onChange={(event) =>
+                                onToggleRowEnabled(
+                                    selectedRow.rowId,
+                                    event.target.checked,
+                                )
+                            }
+                        />
+                        <span>{selectedRow.enabled ? "启用" : "停用"}</span>
+                    </label>
                 </div>
-                <aside className="detail-page-workspace">
-                    <div className="detail-workspace-shell">
-                        <div className="detail-workspace-header">
-                            <div className="detail-workspace-header-copy">
-                                <span className="detail-workspace-eyebrow">
-                                    处理工作区
+                <div className="detail-page-layout">
+                    <div className="detail-page-main">
+                        <div className="record-detail-header">
+                            <div>
+                                <h3>原始题目</h3>
+                                <span>
+                                    题目内容始终固定展示，右侧工作区围绕它展开。
                                 </span>
-                                <h3>{activeWorkspaceMeta.title}</h3>
-                                <p>{activeWorkspaceMeta.description}</p>
                             </div>
-                            {activeWorkspacePanel === "quality" ? (
-                                <button
-                                    type="button"
-                                    className="btn btn-primary"
-                                    onClick={onRunAllAIDetect}
-                                    disabled={!canRunAllAIDetect}
-                                >
-                                    {runAllTimerText
-                                        ? `执行全部中 ${runAllTimerText}`
-                                        : AI_RUN_ALL_LABEL}
-                                </button>
-                            ) : null}
                         </div>
-
-                        <div className="detail-workspace-switcher">
-                            {DETAIL_WORKSPACE_PANELS.map((panel) => (
-                                <button
-                                    key={panel.key}
-                                    type="button"
-                                    className={`detail-workspace-tab ${activeWorkspacePanel === panel.key ? "active" : ""}`}
-                                    onClick={() =>
-                                        setActiveWorkspacePanel(panel.key)
-                                    }
-                                >
-                                    {panel.title}
-                                </button>
-                            ))}
-                        </div>
-
-                        <div className="detail-workspace-body">
-                            {activeWorkspacePanel === "quality" ? (
-                                <div className="detail-workspace-stage-list">
-                                    {AI_STAGE_ORDER.map((stageKey) => {
-                                        const label = AI_STAGE_LABELS[stageKey];
-                                        const content =
-                                            aiResults?.[stageKey] ?? "";
-                                        const hasResult =
-                                            content.trim().length > 0;
-                                        const stageTimer =
-                                            runAllStageTimers?.[stageKey];
-                                        const isRunAllRunning =
-                                            Boolean(runAllTimerText);
-                                        const buttonLabel = hasResult
-                                            ? "查看"
-                                            : isRunAllRunning
-                                              ? (stageTimer ?? "00:00")
-                                              : "运行";
-                                        const isButtonDisabled =
-                                            !hasResult && isRunAllRunning;
-                                        return (
-                                            <section
-                                                key={stageKey}
-                                                className="detail-workspace-card"
-                                            >
-                                                <div className="detail-workspace-card-head">
-                                                    <div className="detail-workspace-card-copy">
-                                                        <strong>
-                                                            {label.shortTitle}
-                                                        </strong>
-                                                        <span>{label.title}</span>
-                                                    </div>
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-ghost ai-stage-run-btn"
-                                                        onClick={() =>
-                                                            onOpenAIRunModal(
-                                                                stageKey,
-                                                            )
-                                                        }
-                                                        disabled={
-                                                            isButtonDisabled
-                                                        }
-                                                    >
-                                                        {buttonLabel}
-                                                    </button>
-                                                </div>
-                                                <div className="detail-workspace-card-body">
-                                                    {renderAIResultContent(
-                                                        stageKey,
-                                                        content,
+                        <div className="detail-fields">
+                            {hasHeroLayout ? (
+                                <section className="detail-problem-layout">
+                                    <div className="detail-problem-main">
+                                        <div
+                                            className="detail-problem-main-grid"
+                                            style={
+                                                {
+                                                    "--detail-problem-row-count":
+                                                        problemTextColumns.length,
+                                                } as CSSProperties
+                                            }
+                                        >
+                                            {problemTextColumns.map((column) =>
+                                                renderDetailField(
+                                                    column,
+                                                    false,
+                                                ),
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="detail-problem-side">
+                                        {imageColumns.length > 0 ? (
+                                            <>
+                                                <div
+                                                    className="detail-problem-image-panels"
+                                                    style={
+                                                        {
+                                                            "--detail-image-scale": `${detailImageZoom / 100}`,
+                                                        } as CSSProperties
+                                                    }
+                                                >
+                                                    {imageColumns.map(
+                                                        (column) => (
+                                                            <DraggableImagePanel
+                                                                key={`${selectedRow.rowId}_${column.key}_hero`}
+                                                                canDrag={
+                                                                    detailImageZoom >
+                                                                    100
+                                                                }
+                                                                zoomLevel={
+                                                                    detailImageZoom
+                                                                }
+                                                                panelId={`${selectedRow.rowId}_${column.key}`}
+                                                            >
+                                                                {renderDetailField(
+                                                                    column,
+                                                                    false,
+                                                                    imageColumns[0]
+                                                                        ?.key ===
+                                                                        column.key
+                                                                        ? {
+                                                                              labelActions:
+                                                                                  (
+                                                                                      <div className="detail-image-toolbar inline-toolbar">
+                                                                                          <div className="detail-image-zoom-controls">
+                                                                                              <button
+                                                                                                  type="button"
+                                                                                                  className="btn btn-ghost"
+                                                                                                  onClick={
+                                                                                                      decreaseImageZoom
+                                                                                                  }
+                                                                                                  disabled={
+                                                                                                      detailImageZoom <=
+                                                                                                      50
+                                                                                                  }
+                                                                                              >
+                                                                                                  -
+                                                                                              </button>
+                                                                                              <span>{`${detailImageZoom}%`}</span>
+                                                                                              <button
+                                                                                                  type="button"
+                                                                                                  className="btn btn-ghost"
+                                                                                                  onClick={() =>
+                                                                                                      setDetailImageZoom(
+                                                                                                          100,
+                                                                                                      )
+                                                                                                  }
+                                                                                              >
+                                                                                                  100%
+                                                                                              </button>
+                                                                                              <button
+                                                                                                  type="button"
+                                                                                                  className="btn btn-ghost"
+                                                                                                  onClick={
+                                                                                                      increaseImageZoom
+                                                                                                  }
+                                                                                                  disabled={
+                                                                                                      detailImageZoom >=
+                                                                                                      250
+                                                                                                  }
+                                                                                              >
+                                                                                                  +
+                                                                                              </button>
+                                                                                          </div>
+                                                                                      </div>
+                                                                                  ),
+                                                                          }
+                                                                        : undefined,
+                                                                )}
+                                                            </DraggableImagePanel>
+                                                        ),
                                                     )}
                                                 </div>
-                                            </section>
-                                        );
-                                    })}
+                                            </>
+                                        ) : null}
+                                    </div>
+                                </section>
+                            ) : null}
+                            {sourceColumnsBelowHero.map((column) =>
+                                renderDetailField(column, false),
+                            )}
+                            {regularDisplayColumns.map((column) =>
+                                renderDetailField(column, false),
+                            )}
+                            {hiddenColumns.length > 0 ? (
+                                <div className="hidden-fields-section">
+                                    <button
+                                        type="button"
+                                        className={`hidden-fields-toggle ${showHiddenFields ? "expanded" : ""}`}
+                                        onClick={onToggleHiddenFields}
+                                    >
+                                        <IconChevron />
+                                        <span>
+                                            {hiddenColumns.length} 个已隐藏字段
+                                        </span>
+                                    </button>
+                                    {showHiddenFields ? (
+                                        <div className="hidden-fields-list">
+                                            {hiddenColumns.map((column) =>
+                                                renderDetailField(column, true),
+                                            )}
+                                        </div>
+                                    ) : null}
                                 </div>
                             ) : null}
+                        </div>
+                    </div>
+                    <aside className="detail-page-workspace">
+                        <div className="detail-workspace-shell">
+                            <div className="detail-workspace-header">
+                                <div className="detail-workspace-header-copy">
+                                    <span className="detail-workspace-eyebrow">
+                                        处理工作区
+                                    </span>
+                                    <h3>{activeWorkspaceMeta.title}</h3>
+                                    <p>{activeWorkspaceMeta.description}</p>
+                                </div>
+                                {activeWorkspacePanel === "quality" ? (
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        onClick={onRunAllAIDetect}
+                                        disabled={!canRunAllAIDetect}
+                                    >
+                                        {runAllTimerText
+                                            ? `执行全部中 ${runAllTimerText}`
+                                            : AI_RUN_ALL_LABEL}
+                                    </button>
+                                ) : null}
+                            </div>
 
-                            {activeWorkspacePanel === "cleaning" ? (
-                                <div className="detail-workspace-cleaning">
-                                    <section className="detail-workspace-card detail-workspace-cleaning-card">
+                            <div className="detail-workspace-switcher">
+                                {DETAIL_WORKSPACE_PANELS.map((panel) => (
+                                    <button
+                                        key={panel.key}
+                                        type="button"
+                                        className={`detail-workspace-tab ${activeWorkspacePanel === panel.key ? "active" : ""}`}
+                                        onClick={() =>
+                                            setActiveWorkspacePanel(panel.key)
+                                        }
+                                    >
+                                        {panel.title}
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div className="detail-workspace-body">
+                                {activeWorkspacePanel === "quality" ? (
+                                    <div className="detail-workspace-stage-list">
+                                        {AI_STAGE_ORDER.map((stageKey) => {
+                                            const label =
+                                                AI_STAGE_LABELS[stageKey];
+                                            const content =
+                                                aiResults?.[stageKey] ?? "";
+                                            const hasResult =
+                                                content.trim().length > 0;
+                                            const stageTimer =
+                                                runAllStageTimers?.[stageKey];
+                                            const isRunAllRunning =
+                                                Boolean(runAllTimerText);
+                                            const buttonLabel = hasResult
+                                                ? "查看"
+                                                : isRunAllRunning
+                                                  ? (stageTimer ?? "00:00")
+                                                  : "运行";
+                                            const isButtonDisabled =
+                                                !hasResult && isRunAllRunning;
+                                            return (
+                                                <section
+                                                    key={stageKey}
+                                                    className="detail-workspace-card"
+                                                >
+                                                    <div className="detail-workspace-card-head">
+                                                        <div className="detail-workspace-card-copy">
+                                                            <strong>
+                                                                {
+                                                                    label.shortTitle
+                                                                }
+                                                            </strong>
+                                                            <span>
+                                                                {label.title}
+                                                            </span>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-ghost ai-stage-run-btn"
+                                                            onClick={() =>
+                                                                onOpenAIRunModal(
+                                                                    stageKey,
+                                                                )
+                                                            }
+                                                            disabled={
+                                                                isButtonDisabled
+                                                            }
+                                                        >
+                                                            {buttonLabel}
+                                                        </button>
+                                                    </div>
+                                                    <div className="detail-workspace-card-body">
+                                                        {renderAIResultContent(
+                                                            stageKey,
+                                                            content,
+                                                        )}
+                                                    </div>
+                                                </section>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+
+                                {activeWorkspacePanel === "cleaning" ? (
+                                    <div className="detail-workspace-cleaning">
+                                        <section className="detail-workspace-card detail-workspace-cleaning-card">
+                                            <div className="detail-workspace-card-head detail-workspace-cleaning-head">
+                                                <div className="detail-workspace-card-copy">
+                                                    <strong>
+                                                        {
+                                                            cleaningToolLabel.shortTitle
+                                                        }
+                                                    </strong>
+                                                    <span>
+                                                        {
+                                                            cleaningToolLabel.title
+                                                        }
+                                                    </span>
+                                                </div>
+                                                <div className="detail-workspace-cleaning-actions">
+                                                    <label className="detail-workspace-select">
+                                                        <span>清洗工具</span>
+                                                        <select
+                                                            value={
+                                                                selectedCleaningToolKey
+                                                            }
+                                                            onChange={(event) =>
+                                                                setSelectedCleaningToolKey(
+                                                                    event.target
+                                                                        .value as AICleaningToolKey,
+                                                                )
+                                                            }
+                                                            disabled={
+                                                                isAICleaning
+                                                            }
+                                                        >
+                                                            {AI_CLEANING_TOOL_ORDER.map(
+                                                                (toolKey) => (
+                                                                    <option
+                                                                        key={
+                                                                            toolKey
+                                                                        }
+                                                                        value={
+                                                                            toolKey
+                                                                        }
+                                                                    >
+                                                                        {
+                                                                            AI_CLEANING_TOOL_LABELS[
+                                                                                toolKey
+                                                                            ]
+                                                                                .title
+                                                                        }
+                                                                    </option>
+                                                                ),
+                                                            )}
+                                                        </select>
+                                                    </label>
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-primary"
+                                                        onClick={() => {
+                                                            if (
+                                                                hasSelectedCleaningResult
+                                                            ) {
+                                                                setSelectedCleaningRawToolKey(
+                                                                    selectedCleaningToolKey,
+                                                                );
+                                                                return;
+                                                            }
+                                                            onRunAICleaning(
+                                                                selectedCleaningToolKey,
+                                                            );
+                                                        }}
+                                                        disabled={isAICleaning}
+                                                    >
+                                                        {isSelectedCleaningToolRunning
+                                                            ? aiCleaningElapsedText
+                                                            : hasSelectedCleaningResult
+                                                              ? "查看"
+                                                              : "运行工具"}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="detail-workspace-card-body">
+                                                {selectedCleaningToolKey ===
+                                                "generate_level3_tags" ? (
+                                                    <GenerateLevel3TagsResult
+                                                        rowId={
+                                                            selectedRow.rowId
+                                                        }
+                                                        content={
+                                                            selectedCleaningContent
+                                                        }
+                                                        onAddTag={
+                                                            onAddLevel3Tag
+                                                        }
+                                                        onRemoveTag={
+                                                            onRemoveLevel3Tag
+                                                        }
+                                                    />
+                                                ) : selectedCleaningToolKey ===
+                                                  "biochem_level1_refine" ? (
+                                                    <BiochemLevel1Result
+                                                        rowId={
+                                                            selectedRow.rowId
+                                                        }
+                                                        content={
+                                                            selectedCleaningContent
+                                                        }
+                                                        level1Options={
+                                                            level1Options
+                                                        }
+                                                        onSaveDiscipline={
+                                                            onUpdateBiochemLevel1Discipline
+                                                        }
+                                                    />
+                                                ) : (
+                                                    renderAICleaningResultContent(
+                                                        selectedCleaningToolKey,
+                                                        selectedCleaningContent,
+                                                    )
+                                                )}
+                                            </div>
+                                            {isSelectedCleaningToolRunning ||
+                                            aiCleaningStatusMessage ? (
+                                                <div className="detail-workspace-cleaning-footer">
+                                                    {isSelectedCleaningToolRunning ? (
+                                                        <span className="detail-workspace-status-pill">
+                                                            {`运行中 ${aiCleaningElapsedText}`}
+                                                        </span>
+                                                    ) : null}
+                                                    {aiCleaningStatusMessage ? (
+                                                        <div className="record-detail-ai-cleaning-message">
+                                                            {
+                                                                aiCleaningStatusMessage
+                                                            }
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                            ) : null}
+                                        </section>
+                                    </div>
+                                ) : null}
+
+                                {activeWorkspacePanel === "evaluation" ? (
+                                    <section className="detail-workspace-card">
                                         <div className="detail-workspace-card-head detail-workspace-cleaning-head">
                                             <div className="detail-workspace-card-copy">
-                                                <strong>
-                                                    {cleaningToolLabel.shortTitle}
-                                                </strong>
+                                                <strong>数据评测</strong>
                                                 <span>
-                                                    {cleaningToolLabel.title}
+                                                    按评测任务切换查看与运行结果
                                                 </span>
                                             </div>
                                             <div className="detail-workspace-cleaning-actions">
                                                 <label className="detail-workspace-select">
-                                                    <span>清洗工具</span>
+                                                    <span>评测任务</span>
                                                     <select
                                                         value={
-                                                            selectedCleaningToolKey
+                                                            selectedEvaluationTask?.id ??
+                                                            ""
                                                         }
                                                         onChange={(event) =>
-                                                            setSelectedCleaningToolKey(
+                                                            setSelectedEvaluationTaskId(
                                                                 event.target
-                                                                    .value as AICleaningToolKey,
+                                                                    .value,
                                                             )
                                                         }
-                                                        disabled={isAICleaning}
                                                     >
-                                                        {AI_CLEANING_TOOL_ORDER.map(
-                                                            (toolKey) => (
+                                                        {evaluationTasks.map(
+                                                            (task) => (
                                                                 <option
                                                                     key={
-                                                                        toolKey
+                                                                        task.id
                                                                     }
                                                                     value={
-                                                                        toolKey
+                                                                        task.id
                                                                     }
                                                                 >
-                                                                    {
-                                                                        AI_CLEANING_TOOL_LABELS[
-                                                                            toolKey
-                                                                        ]
-                                                                            .title
-                                                                    }
+                                                                    {task.name}
                                                                 </option>
                                                             ),
                                                         )}
@@ -1834,319 +2019,257 @@ export function DetailPage({
                                                     type="button"
                                                     className="btn btn-primary"
                                                     onClick={() =>
-                                                        onRunAICleaning(
-                                                            selectedCleaningToolKey,
+                                                        selectedEvaluationTask &&
+                                                        onRunAIEvaluation(
+                                                            selectedEvaluationTask.id,
                                                         )
                                                     }
-                                                    disabled={isAICleaning}
+                                                    disabled={
+                                                        !selectedEvaluationTask ||
+                                                        isAIEvaluating
+                                                    }
                                                 >
-                                                    {isSelectedCleaningToolRunning
-                                                        ? aiCleaningElapsedText
-                                                        : "运行工具"}
+                                                    {isSelectedEvaluationTaskRunning
+                                                        ? aiEvaluationElapsedText
+                                                        : "运行评测"}
                                                 </button>
                                             </div>
                                         </div>
-                                        <div className="detail-workspace-card-body">
-                                            {selectedCleaningToolKey ===
-                                            "generate_level3_tags" ? (
-                                                <GenerateLevel3TagsResult
-                                                    rowId={selectedRow.rowId}
-                                                    content={
-                                                        selectedCleaningContent
-                                                    }
-                                                    onAddTag={onAddLevel3Tag}
-                                                    onRemoveTag={
-                                                        onRemoveLevel3Tag
-                                                    }
-                                                />
-                                            ) : selectedCleaningToolKey ===
-                                              "biochem_level1_refine" ? (
-                                                <BiochemLevel1Result
-                                                    rowId={selectedRow.rowId}
-                                                    content={
-                                                        selectedCleaningContent
-                                                    }
-                                                    level1Options={
-                                                        level1Options
-                                                    }
-                                                    onSaveDiscipline={
-                                                        onUpdateBiochemLevel1Discipline
-                                                    }
-                                                />
+                                        <div className="detail-workspace-card-body detail-workspace-cleaning-layout">
+                                            {selectedEvaluationTask ? (
+                                                <>
+                                                    <div className="detail-workspace-cleaning-tools">
+                                                        <div className="detail-workspace-cleaning-tool-summary">
+                                                            <strong>
+                                                                {
+                                                                    selectedEvaluationTask.name
+                                                                }
+                                                            </strong>
+                                                            <span>{`评测次数 ${selectedEvaluationTask.attemptCount} 次`}</span>
+                                                            <span>
+                                                                {selectedEvaluationTask.enabled
+                                                                    ? "已启用"
+                                                                    : "未启用"}
+                                                            </span>
+                                                        </div>
+                                                        <div className="detail-workspace-cleaning-tool-summary">
+                                                            <strong>
+                                                                第一步：题目作答
+                                                            </strong>
+                                                            <span>
+                                                                {
+                                                                    selectedEvaluationTask
+                                                                        .answerGeneration
+                                                                        .routeName
+                                                                }
+                                                            </span>
+                                                        </div>
+                                                        <div className="detail-workspace-cleaning-tool-summary">
+                                                            <strong>
+                                                                第二步：答案判定
+                                                            </strong>
+                                                            <span>
+                                                                {
+                                                                    selectedEvaluationTask
+                                                                        .answerJudgment
+                                                                        .routeName
+                                                                }
+                                                            </span>
+                                                        </div>
+                                                        <div className="detail-workspace-cleaning-tool-summary">
+                                                            <strong>
+                                                                已保存尝试
+                                                            </strong>
+                                                            <span>{`${selectedEvaluationAttempts.length} 次`}</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="detail-workspace-cleaning-content">
+                                                        {evaluationAttemptCards.length >
+                                                        0 ? (
+                                                            <div className="detail-evaluation-attempt-list">
+                                                                {evaluationAttemptCards.map(
+                                                                    ({
+                                                                        attemptIndex,
+                                                                        finalAnswer,
+                                                                        verdict,
+                                                                        rawAttempt,
+                                                                        status,
+                                                                    }) => (
+                                                                        <article
+                                                                            key={
+                                                                                attemptIndex
+                                                                            }
+                                                                            className="detail-evaluation-attempt-card"
+                                                                        >
+                                                                            <div className="detail-evaluation-attempt-head">
+                                                                                <strong>{`第 ${attemptIndex} 次`}</strong>
+                                                                                {rawAttempt ? (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        className="btn btn-ghost"
+                                                                                        onClick={() =>
+                                                                                            setSelectedEvaluationRawAttempt(
+                                                                                                rawAttempt,
+                                                                                            )
+                                                                                        }
+                                                                                    >
+                                                                                        查看
+                                                                                        JSON
+                                                                                    </button>
+                                                                                ) : null}
+                                                                            </div>
+                                                                            <div className="detail-evaluation-attempt-grid">
+                                                                                <div className="detail-evaluation-attempt-item">
+                                                                                    <span>
+                                                                                        最终答案
+                                                                                    </span>
+                                                                                    <strong>
+                                                                                        {
+                                                                                            finalAnswer
+                                                                                        }
+                                                                                    </strong>
+                                                                                </div>
+                                                                                <div className="detail-evaluation-attempt-item">
+                                                                                    <span>
+                                                                                        判定结果
+                                                                                    </span>
+                                                                                    <strong>
+                                                                                        {status ===
+                                                                                        "done"
+                                                                                            ? getEvaluationVerdictLabel(
+                                                                                                  verdict,
+                                                                                              )
+                                                                                            : verdict}
+                                                                                    </strong>
+                                                                                </div>
+                                                                            </div>
+                                                                        </article>
+                                                                    ),
+                                                                )}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="detail-workspace-placeholder">
+                                                                <p>
+                                                                    当前任务还没有评测结果。
+                                                                </p>
+                                                                <p>
+                                                                    选择任务后点击“运行评测”即可写入数据库并在这里查看多次结果。
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </>
                                             ) : (
-                                                renderAICleaningResultContent(
-                                                    selectedCleaningToolKey,
-                                                    selectedCleaningContent,
-                                                )
+                                                <div className="detail-workspace-placeholder">
+                                                    <p>
+                                                        当前还没有配置任何评测任务。
+                                                    </p>
+                                                </div>
                                             )}
                                         </div>
-                                        {isSelectedCleaningToolRunning ||
-                                        aiCleaningStatusMessage ? (
+                                        {isSelectedEvaluationTaskRunning ||
+                                        aiEvaluationStatusMessage ? (
                                             <div className="detail-workspace-cleaning-footer">
-                                                {isSelectedCleaningToolRunning ? (
+                                                {isSelectedEvaluationTaskRunning ? (
                                                     <span className="detail-workspace-status-pill">
-                                                        {`运行中 ${aiCleaningElapsedText}`}
+                                                        {`运行中 ${aiEvaluationElapsedText}`}
                                                     </span>
                                                 ) : null}
-                                                {aiCleaningStatusMessage ? (
+                                                {aiEvaluationStatusMessage ? (
                                                     <div className="record-detail-ai-cleaning-message">
                                                         {
-                                                            aiCleaningStatusMessage
+                                                            aiEvaluationStatusMessage
                                                         }
                                                     </div>
                                                 ) : null}
                                             </div>
                                         ) : null}
                                     </section>
+                                ) : null}
+                            </div>
+                        </div>
+                    </aside>
+                </div>
+            </section>
+            {selectedEvaluationRawAttempt ? (
+                <div className="column-modal-mask">
+                    <div className="column-modal ai-config-modal">
+                        <h3>{`第 ${selectedEvaluationRawAttempt.attemptIndex} 次评测原始 JSON`}</h3>
+                        <p>{selectedEvaluationTask?.name ?? "评测任务"}</p>
+                        <div className="ai-config-form">
+                            <div className="ai-config-section">
+                                <div className="ai-config-section-title">
+                                    第一步：题目作答 JSON
                                 </div>
-                            ) : null}
-
-                            {activeWorkspacePanel === "evaluation" ? (
-                                <section className="detail-workspace-card">
-                                    <div className="detail-workspace-card-head detail-workspace-cleaning-head">
-                                        <div className="detail-workspace-card-copy">
-                                            <strong>数据评测</strong>
-                                            <span>按评测任务切换查看与运行结果</span>
-                                        </div>
-                                        <div className="detail-workspace-cleaning-actions">
-                                            <label className="detail-workspace-select">
-                                                <span>评测任务</span>
-                                                <select
-                                                    value={
-                                                        selectedEvaluationTask?.id ??
-                                                        ""
-                                                    }
-                                                    onChange={(event) =>
-                                                        setSelectedEvaluationTaskId(
-                                                            event.target.value,
-                                                        )
-                                                    }
-                                                >
-                                                    {evaluationTasks.map((task) => (
-                                                        <option
-                                                            key={task.id}
-                                                            value={task.id}
-                                                        >
-                                                            {task.name}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            </label>
-                                            <button
-                                                type="button"
-                                                className="btn btn-primary"
-                                                onClick={() =>
-                                                    selectedEvaluationTask &&
-                                                    onRunAIEvaluation(
-                                                        selectedEvaluationTask.id,
-                                                    )
-                                                }
-                                                disabled={
-                                                    !selectedEvaluationTask ||
-                                                    isAIEvaluating
-                                                }
-                                            >
-                                                {isSelectedEvaluationTaskRunning
-                                                    ? aiEvaluationElapsedText
-                                                    : "运行评测"}
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div className="detail-workspace-card-body detail-workspace-cleaning-layout">
-                                        {selectedEvaluationTask ? (
-                                            <>
-                                                <div className="detail-workspace-cleaning-tools">
-                                                    <div className="detail-workspace-cleaning-tool-summary">
-                                                        <strong>
-                                                            {
-                                                                selectedEvaluationTask.name
-                                                            }
-                                                        </strong>
-                                                        <span>{`评测次数 ${selectedEvaluationTask.attemptCount} 次`}</span>
-                                                        <span>
-                                                            {selectedEvaluationTask.enabled
-                                                                ? "已启用"
-                                                                : "未启用"}
-                                                        </span>
-                                                    </div>
-                                                    <div className="detail-workspace-cleaning-tool-summary">
-                                                        <strong>
-                                                            第一步：题目作答
-                                                        </strong>
-                                                        <span>
-                                                            {
-                                                                selectedEvaluationTask
-                                                                    .answerGeneration
-                                                                    .routeName
-                                                            }
-                                                        </span>
-                                                    </div>
-                                                    <div className="detail-workspace-cleaning-tool-summary">
-                                                        <strong>
-                                                            第二步：答案判定
-                                                        </strong>
-                                                        <span>
-                                                            {
-                                                                selectedEvaluationTask
-                                                                    .answerJudgment
-                                                                    .routeName
-                                                            }
-                                                        </span>
-                                                    </div>
-                                                    <div className="detail-workspace-cleaning-tool-summary">
-                                                        <strong>已保存尝试</strong>
-                                                        <span>{`${selectedEvaluationAttempts.length} 次`}</span>
-                                                    </div>
-                                                </div>
-                                                <div className="detail-workspace-cleaning-content">
-                                                    {evaluationAttemptCards.length > 0 ? (
-                                                        <div className="detail-evaluation-attempt-list">
-                                                            {evaluationAttemptCards.map(
-                                                                ({
-                                                                    attemptIndex,
-                                                                    finalAnswer,
-                                                                    verdict,
-                                                                    rawAttempt,
-                                                                    status,
-                                                                }) => (
-                                                                    <article
-                                                                        key={
-                                                                            attemptIndex
-                                                                        }
-                                                                        className="detail-evaluation-attempt-card"
-                                                                    >
-                                                                        <div className="detail-evaluation-attempt-head">
-                                                                            <strong>{`第 ${attemptIndex} 次`}</strong>
-                                                                            {rawAttempt ? (
-                                                                                <button
-                                                                                    type="button"
-                                                                                    className="btn btn-ghost"
-                                                                                    onClick={() =>
-                                                                                        setSelectedEvaluationRawAttempt(
-                                                                                            rawAttempt,
-                                                                                        )
-                                                                                    }
-                                                                                >
-                                                                                    查看 JSON
-                                                                                </button>
-                                                                            ) : null}
-                                                                        </div>
-                                                                        <div className="detail-evaluation-attempt-grid">
-                                                                            <div className="detail-evaluation-attempt-item">
-                                                                                <span>
-                                                                                    最终答案
-                                                                                </span>
-                                                                                <strong>
-                                                                                    {
-                                                                                        finalAnswer
-                                                                                    }
-                                                                                </strong>
-                                                                            </div>
-                                                                            <div className="detail-evaluation-attempt-item">
-                                                                                <span>
-                                                                                    判定结果
-                                                                                </span>
-                                                                                <strong>
-                                                                                    {
-                                                                                        status ===
-                                                                                        "done"
-                                                                                            ? getEvaluationVerdictLabel(
-                                                                                                  verdict,
-                                                                                              )
-                                                                                            : verdict
-                                                                                    }
-                                                                                </strong>
-                                                                            </div>
-                                                                        </div>
-                                                                    </article>
-                                                                ),
-                                                            )}
-                                                        </div>
-                                                    ) : (
-                                                        <div className="detail-workspace-placeholder">
-                                                            <p>
-                                                                当前任务还没有评测结果。
-                                                            </p>
-                                                            <p>
-                                                                选择任务后点击“运行评测”即可写入数据库并在这里查看多次结果。
-                                                            </p>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </>
-                                        ) : (
-                                            <div className="detail-workspace-placeholder">
-                                                <p>当前还没有配置任何评测任务。</p>
-                                            </div>
-                                        )}
-                                    </div>
-                                    {isSelectedEvaluationTaskRunning ||
-                                    aiEvaluationStatusMessage ? (
-                                        <div className="detail-workspace-cleaning-footer">
-                                            {isSelectedEvaluationTaskRunning ? (
-                                                <span className="detail-workspace-status-pill">
-                                                    {`运行中 ${aiEvaluationElapsedText}`}
-                                                </span>
-                                            ) : null}
-                                            {aiEvaluationStatusMessage ? (
-                                                <div className="record-detail-ai-cleaning-message">
-                                                    {
-                                                        aiEvaluationStatusMessage
-                                                    }
-                                                </div>
-                                            ) : null}
-                                        </div>
-                                    ) : null}
-                                </section>
-                            ) : null}
-                        </div>
-                    </div>
-                </aside>
-            </div>
-        </section>
-        {selectedEvaluationRawAttempt ? (
-            <div className="column-modal-mask">
-                <div className="column-modal ai-config-modal">
-                    <h3>{`第 ${selectedEvaluationRawAttempt.attemptIndex} 次评测原始 JSON`}</h3>
-                    <p>
-                        {selectedEvaluationTask?.name ?? "评测任务"}
-                    </p>
-                    <div className="ai-config-form">
-                        <div className="ai-config-section">
-                            <div className="ai-config-section-title">
-                                第一步：题目作答 JSON
+                                <pre className="detail-evaluation-json">
+                                    {formatJsonText(
+                                        selectedEvaluationRawAttempt.generationParsedJsonText,
+                                        selectedEvaluationRawAttempt.generationResponseText,
+                                    )}
+                                </pre>
                             </div>
-                            <pre className="detail-evaluation-json">
-                                {formatJsonText(
-                                    selectedEvaluationRawAttempt.generationParsedJsonText,
-                                    selectedEvaluationRawAttempt.generationResponseText,
-                                )}
-                            </pre>
-                        </div>
-                        <div className="ai-config-section">
-                            <div className="ai-config-section-title">
-                                第二步：答案判定 JSON
+                            <div className="ai-config-section">
+                                <div className="ai-config-section-title">
+                                    第二步：答案判定 JSON
+                                </div>
+                                <pre className="detail-evaluation-json">
+                                    {formatJsonText(
+                                        selectedEvaluationRawAttempt.judgmentParsedJsonText,
+                                        selectedEvaluationRawAttempt.judgmentResponseText,
+                                    )}
+                                </pre>
                             </div>
-                            <pre className="detail-evaluation-json">
-                                {formatJsonText(
-                                    selectedEvaluationRawAttempt.judgmentParsedJsonText,
-                                    selectedEvaluationRawAttempt.judgmentResponseText,
-                                )}
-                            </pre>
                         </div>
-                    </div>
-                    <div className="column-modal-footer">
-                        <button
-                            type="button"
-                            className="btn btn-primary"
-                            onClick={() => setSelectedEvaluationRawAttempt(null)}
-                        >
-                            关闭
-                        </button>
+                        <div className="column-modal-footer">
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() =>
+                                    setSelectedEvaluationRawAttempt(null)
+                                }
+                            >
+                                关闭
+                            </button>
+                        </div>
                     </div>
                 </div>
-            </div>
-        ) : null}
+            ) : null}
+            {selectedCleaningRawToolKey ? (
+                <div className="column-modal-mask">
+                    <div className="column-modal ai-config-modal">
+                        <h3>{`${AI_CLEANING_TOOL_LABELS[selectedCleaningRawToolKey].title} 原始 JSON`}</h3>
+                        <p>{selectedRow?.rowId ?? ""}</p>
+                        <div className="ai-config-form">
+                            <div className="ai-config-section">
+                                <div className="ai-config-section-title">
+                                    AI 原始响应
+                                </div>
+                                <pre className="detail-evaluation-json">
+                                    {formatJsonText(
+                                        cleaningResults?.[
+                                            selectedCleaningRawToolKey
+                                        ]?.parsedJsonText,
+                                        cleaningResults?.[
+                                            selectedCleaningRawToolKey
+                                        ]?.responseText ?? "",
+                                    )}
+                                </pre>
+                            </div>
+                        </div>
+                        <div className="column-modal-footer">
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() =>
+                                    setSelectedCleaningRawToolKey(null)
+                                }
+                            >
+                                关闭
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
         </>
     );
 }
