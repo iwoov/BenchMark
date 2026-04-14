@@ -34,6 +34,47 @@ type PendingConfigMode = "import" | "edit";
 type UploadMode = "create" | "merge";
 type ProjectNameDialogMode = "create" | "rename";
 const LAST_ACTIVE_FILE_ID_STORAGE_KEY = "benchmark:last-active-file-id";
+const FILTER_CONDITIONS_STORAGE_PREFIX = "benchmark:filters:";
+
+function saveFilterConditionsToLocal(
+    fileId: string,
+    conditions: FilterCondition[],
+): void {
+    try {
+        const key = `${FILTER_CONDITIONS_STORAGE_PREFIX}${fileId}`;
+        if (conditions.length === 0) {
+            window.localStorage.removeItem(key);
+            return;
+        }
+        window.localStorage.setItem(key, JSON.stringify(conditions));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function loadFilterConditionsFromLocal(fileId: string): FilterCondition[] {
+    try {
+        const key = `${FILTER_CONDITIONS_STORAGE_PREFIX}${fileId}`;
+        const raw = window.localStorage.getItem(key);
+        if (!raw) {
+            return [];
+        }
+        const parsed = JSON.parse(raw) as unknown;
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed.filter(
+            (item): item is FilterCondition =>
+                !!item &&
+                typeof item === "object" &&
+                typeof (item as FilterCondition).id === "string" &&
+                typeof (item as FilterCondition).columnKey === "string" &&
+                typeof (item as FilterCondition).value === "string",
+        );
+    } catch {
+        return [];
+    }
+}
 
 export const useFileStore = ({
     navigateToSection,
@@ -169,7 +210,26 @@ export const useFileStore = ({
                     : [];
                 const restoredFiles = rawFiles
                     .map((item) => normalizeLoadedFileState(item))
-                    .filter((item): item is FileViewState => item !== null);
+                    .filter((item): item is FileViewState => item !== null)
+                    .map((file) => {
+                        const savedConditions = loadFilterConditionsFromLocal(
+                            file.fileId,
+                        );
+                        if (savedConditions.length === 0) {
+                            return file;
+                        }
+                        const columnKeys = new Set(
+                            file.columns.map((column) => column.key),
+                        );
+                        const validConditions = savedConditions.filter(
+                            (condition) =>
+                                columnKeys.has(condition.columnKey) &&
+                                condition.value.trim().length > 0,
+                        );
+                        return validConditions.length > 0
+                            ? { ...file, filterConditions: validConditions }
+                            : file;
+                    });
 
                 if (shouldLogAIResults && restoredFiles.length > 0) {
                     logAIResultsSummary(restoredFiles);
@@ -734,21 +794,26 @@ export const useFileStore = ({
     };
 
     const onUpdateFilterConditions = (filterConditions: FilterCondition[]) => {
-        patchActiveFile((file) => ({
-            ...file,
-            filterConditions,
-        }));
+        patchActiveFile((file) => {
+            saveFilterConditionsToLocal(file.fileId, filterConditions);
+            return {
+                ...file,
+                filterConditions,
+            };
+        });
     };
 
     const onClearFilterConditions = () => {
-        patchActiveFile((file) =>
-            file.filterConditions.length === 0
-                ? file
-                : {
-                      ...file,
-                      filterConditions: [],
-                  },
-        );
+        patchActiveFile((file) => {
+            if (file.filterConditions.length === 0) {
+                return file;
+            }
+            saveFilterConditionsToLocal(file.fileId, []);
+            return {
+                ...file,
+                filterConditions: [],
+            };
+        });
     };
 
     const onToggleStatisticsField = (fieldKey: string) => {
