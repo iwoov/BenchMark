@@ -958,6 +958,8 @@ export const useAIManager = ({
                 const row = targetRows[currentIndex];
                 let rowFailed = false;
                 try {
+                    // Run stages 1-3 in parallel; save each result immediately
+                    // upon completion. Stage 4 depends on stage 3 only.
                     const precheckPromise = runStageRequest({
                         stageConfig: precheckConfig.stageConfig,
                         route: precheckConfig.route,
@@ -970,7 +972,21 @@ export const useAIManager = ({
                         signal: controller.signal,
                         rowId: row.rowId,
                         stageKey: "precheck",
-                    });
+                    }).then(
+                        (text) => {
+                            updateRowAIResult(
+                                targetFileId,
+                                row.rowId,
+                                "precheck",
+                                text,
+                            );
+                            return text;
+                        },
+                        (error) => {
+                            rowFailed = true;
+                            throw error;
+                        },
+                    );
                     const contextPromise = runStageRequest({
                         stageConfig: contextConfig.stageConfig,
                         route: contextConfig.route,
@@ -983,7 +999,21 @@ export const useAIManager = ({
                         signal: controller.signal,
                         rowId: row.rowId,
                         stageKey: "context_audit",
-                    });
+                    }).then(
+                        (text) => {
+                            updateRowAIResult(
+                                targetFileId,
+                                row.rowId,
+                                "context_audit",
+                                text,
+                            );
+                            return text;
+                        },
+                        (error) => {
+                            rowFailed = true;
+                            throw error;
+                        },
+                    );
                     const independentPromise = runStageRequest({
                         stageConfig: independentConfig.stageConfig,
                         route: independentConfig.route,
@@ -996,19 +1026,28 @@ export const useAIManager = ({
                         signal: controller.signal,
                         rowId: row.rowId,
                         stageKey: "independent_solving",
-                    });
+                    }).then(
+                        (text) => {
+                            updateRowAIResult(
+                                targetFileId,
+                                row.rowId,
+                                "independent_solving",
+                                text,
+                            );
+                            return text;
+                        },
+                        (error) => {
+                            rowFailed = true;
+                            throw error;
+                        },
+                    );
 
+                    // Stage 4 depends on stage 3 result
                     let independentResult: string | null = null;
                     try {
                         independentResult = await independentPromise;
-                        updateRowAIResult(
-                            targetFileId,
-                            row.rowId,
-                            "independent_solving",
-                            independentResult,
-                        );
                     } catch {
-                        rowFailed = true;
+                        // already marked rowFailed in .then rejection
                     }
 
                     if (independentResult && !controller.signal.aborted) {
@@ -1040,31 +1079,9 @@ export const useAIManager = ({
                         rowFailed = true;
                     }
 
-                    const [precheckSettled, contextSettled] =
-                        await Promise.allSettled([
-                            precheckPromise,
-                            contextPromise,
-                        ]);
-                    if (precheckSettled.status === "fulfilled") {
-                        updateRowAIResult(
-                            targetFileId,
-                            row.rowId,
-                            "precheck",
-                            precheckSettled.value,
-                        );
-                    } else {
-                        rowFailed = true;
-                    }
-                    if (contextSettled.status === "fulfilled") {
-                        updateRowAIResult(
-                            targetFileId,
-                            row.rowId,
-                            "context_audit",
-                            contextSettled.value,
-                        );
-                    } else {
-                        rowFailed = true;
-                    }
+                    // Wait for stages 1 & 2 to finish (results already saved
+                    // in .then above, just need to catch rejections)
+                    await Promise.allSettled([precheckPromise, contextPromise]);
                 } catch {
                     rowFailed = true;
                 }
@@ -1096,10 +1113,6 @@ export const useAIManager = ({
                 message: "执行全部完成，正在写入 AI 检测结果",
             }));
             await flushPendingAIResults(targetFileId);
-            const latestFile = latestFileStateRef.current[targetFileId];
-            if (latestFile) {
-                await persistFileState(latestFile);
-            }
             setAIBatchTask((previous) => ({
                 ...previous,
                 status: "completed",
