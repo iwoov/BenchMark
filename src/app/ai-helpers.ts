@@ -8,6 +8,7 @@ import type {
     AIEvaluationTaskConfig,
     AIModelRoute,
     AIProviderApiType,
+    AIStreamPhase,
     AIProviderEndpoint,
     AIDetectStageConfigMap,
     AIDetectStageConfig,
@@ -512,7 +513,9 @@ export function cloneAIDetectConfig(config: AIDetectConfig): AIDetectConfig {
         providers,
         routes,
         stages,
-        evaluationTasks: config.evaluationTasks.map(cloneAIEvaluationTaskConfig),
+        evaluationTasks: config.evaluationTasks.map(
+            cloneAIEvaluationTaskConfig,
+        ),
         chat: cloneAIChatConfig(config.chat),
         cleaning,
     };
@@ -535,7 +538,9 @@ export function createDefaultAIDetectConfig(): AIDetectConfig {
         providers: [cloneAIProviderEndpoint(DEFAULT_AI_PROVIDER)],
         routes: [cloneAIModelRoute(DEFAULT_AI_ROUTE)],
         stages,
-        evaluationTasks: [cloneAIEvaluationTaskConfig(DEFAULT_AI_EVALUATION_TASK)],
+        evaluationTasks: [
+            cloneAIEvaluationTaskConfig(DEFAULT_AI_EVALUATION_TASK),
+        ],
         chat: cloneAIChatConfig(DEFAULT_AI_CHAT_CONFIG),
         cleaning,
     };
@@ -697,7 +702,8 @@ function normalizeLoadedRoute(
                 ? candidate.reasoningEffort
                 : fallback.reasoningEffort,
         retryCount: normalizeAIRetryCount(candidate.retryCount),
-        steps: steps.length > 0 ? steps : [{ providerName: fallbackProviderName }],
+        steps:
+            steps.length > 0 ? steps : [{ providerName: fallbackProviderName }],
     };
 }
 
@@ -793,7 +799,9 @@ function normalizeLoadedAIChatConfig(
     }
 
     const candidate = value as Partial<AIChatConfig>;
-    const defaultSubmitFieldKeys = Array.isArray(candidate.defaultSubmitFieldKeys)
+    const defaultSubmitFieldKeys = Array.isArray(
+        candidate.defaultSubmitFieldKeys,
+    )
         ? candidate.defaultSubmitFieldKeys.filter(
               (item): item is string => typeof item === "string",
           )
@@ -858,7 +866,8 @@ function normalizeLoadedAIEvaluationTaskConfig(
             ? routeName.trim()
             : fallbackRouteName;
     const answerGeneration =
-        candidate.answerGeneration && typeof candidate.answerGeneration === "object"
+        candidate.answerGeneration &&
+        typeof candidate.answerGeneration === "object"
             ? (candidate.answerGeneration as {
                   routeName?: unknown;
                   prompt?: unknown;
@@ -903,7 +912,9 @@ function normalizeLoadedAIEvaluationTaskConfig(
                 answerGeneration.prompt.trim().length > 0
                     ? answerGeneration.prompt
                     : DEFAULT_AI_EVALUATION_TASK.answerGeneration.prompt,
-            questionFieldKeys: Array.isArray(answerGeneration?.questionFieldKeys)
+            questionFieldKeys: Array.isArray(
+                answerGeneration?.questionFieldKeys,
+            )
                 ? answerGeneration.questionFieldKeys.filter(
                       (item): item is string => typeof item === "string",
                   )
@@ -911,7 +922,7 @@ function normalizeLoadedAIEvaluationTaskConfig(
                   ? legacyStageCandidate.questionFieldKeys.filter(
                         (item): item is string => typeof item === "string",
                     )
-                : [],
+                  : [],
         },
         answerJudgment: {
             routeName: normalizeRouteName(
@@ -930,7 +941,7 @@ function normalizeLoadedAIEvaluationTaskConfig(
                   ? legacyStageCandidate.answerFieldKeys.filter(
                         (item): item is string => typeof item === "string",
                     )
-                : [],
+                  : [],
         },
     };
 }
@@ -997,7 +1008,9 @@ function normalizeLoadedAICleaningToolConfig(
               (item): item is string => typeof item === "string",
           )
         : [];
-    const allowedOutputKeys = new Set(AI_CLEANING_TOOL_LABELS[toolKey].outputKeys);
+    const allowedOutputKeys = new Set(
+        AI_CLEANING_TOOL_LABELS[toolKey].outputKeys,
+    );
     const fallbackOutputMap = new Map(
         fallback.outputMappings.map((item) => [item.outputKey, item]),
     );
@@ -1155,70 +1168,65 @@ export function normalizeAIDetectConfigForColumns(
             columns,
         );
         const normalizedRouteName =
-            normalizedStage.routeName && routeNames.has(normalizedStage.routeName)
+            normalizedStage.routeName &&
+            routeNames.has(normalizedStage.routeName)
                 ? normalizedStage.routeName
                 : fallbackRouteName;
         stages[stageKey] = {
             ...normalizedStage,
             routeName: normalizedRouteName,
         };
-
     });
 
-    const evaluationTasks =
-        (config.evaluationTasks ?? [DEFAULT_AI_EVALUATION_TASK]).map(
-            (task, index) => ({
-                id:
-                    typeof task.id === "string" && task.id.trim().length > 0
-                        ? task.id.trim()
-                        : `${DEFAULT_AI_EVALUATION_TASK_ID}-${index + 1}`,
-                name:
-                    typeof task.name === "string" && task.name.trim().length > 0
-                        ? task.name.trim()
-                        : index === 0
-                          ? DEFAULT_AI_EVALUATION_TASK_NAME
-                          : `评测配置 ${index + 1}`,
-                enabled: task.enabled === true,
-                attemptCount: normalizeAIEvaluationAttemptCount(
-                    task.attemptCount,
-                ),
-                maxConcurrency: normalizeAIEvaluationMaxConcurrency(
-                    task.maxConcurrency,
-                ),
-                answerGeneration: {
-                    routeName:
-                        task.answerGeneration.routeName &&
-                        routeNames.has(task.answerGeneration.routeName)
-                            ? task.answerGeneration.routeName
-                            : fallbackRouteName,
-                    prompt:
-                        typeof task.answerGeneration.prompt === "string" &&
-                        task.answerGeneration.prompt.trim().length > 0
-                            ? task.answerGeneration.prompt
-                            : DEFAULT_AI_EVALUATION_TASK.answerGeneration.prompt,
-                    questionFieldKeys:
-                        task.answerGeneration.questionFieldKeys.filter((key) =>
-                            keySet.has(key),
-                        ),
-                },
-                answerJudgment: {
-                    routeName:
-                        task.answerJudgment.routeName &&
-                        routeNames.has(task.answerJudgment.routeName)
-                            ? task.answerJudgment.routeName
-                            : fallbackRouteName,
-                    prompt:
-                        typeof task.answerJudgment.prompt === "string" &&
-                        task.answerJudgment.prompt.trim().length > 0
-                            ? task.answerJudgment.prompt
-                            : DEFAULT_AI_EVALUATION_TASK.answerJudgment.prompt,
-                    answerFieldKeys:
-                        task.answerJudgment.answerFieldKeys.filter((key) =>
-                            keySet.has(key),
-                        ),
-                },
-            }),
-        );
+    const evaluationTasks = (
+        config.evaluationTasks ?? [DEFAULT_AI_EVALUATION_TASK]
+    ).map((task, index) => ({
+        id:
+            typeof task.id === "string" && task.id.trim().length > 0
+                ? task.id.trim()
+                : `${DEFAULT_AI_EVALUATION_TASK_ID}-${index + 1}`,
+        name:
+            typeof task.name === "string" && task.name.trim().length > 0
+                ? task.name.trim()
+                : index === 0
+                  ? DEFAULT_AI_EVALUATION_TASK_NAME
+                  : `评测配置 ${index + 1}`,
+        enabled: task.enabled === true,
+        attemptCount: normalizeAIEvaluationAttemptCount(task.attemptCount),
+        maxConcurrency: normalizeAIEvaluationMaxConcurrency(
+            task.maxConcurrency,
+        ),
+        answerGeneration: {
+            routeName:
+                task.answerGeneration.routeName &&
+                routeNames.has(task.answerGeneration.routeName)
+                    ? task.answerGeneration.routeName
+                    : fallbackRouteName,
+            prompt:
+                typeof task.answerGeneration.prompt === "string" &&
+                task.answerGeneration.prompt.trim().length > 0
+                    ? task.answerGeneration.prompt
+                    : DEFAULT_AI_EVALUATION_TASK.answerGeneration.prompt,
+            questionFieldKeys: task.answerGeneration.questionFieldKeys.filter(
+                (key) => keySet.has(key),
+            ),
+        },
+        answerJudgment: {
+            routeName:
+                task.answerJudgment.routeName &&
+                routeNames.has(task.answerJudgment.routeName)
+                    ? task.answerJudgment.routeName
+                    : fallbackRouteName,
+            prompt:
+                typeof task.answerJudgment.prompt === "string" &&
+                task.answerJudgment.prompt.trim().length > 0
+                    ? task.answerJudgment.prompt
+                    : DEFAULT_AI_EVALUATION_TASK.answerJudgment.prompt,
+            answerFieldKeys: task.answerJudgment.answerFieldKeys.filter((key) =>
+                keySet.has(key),
+            ),
+        },
+    }));
 
     const chatConfig = config.chat ?? DEFAULT_AI_CHAT_CONFIG;
     const normalizedChatRouteName =
@@ -1395,8 +1403,11 @@ async function requestAIStreamResult(
         onAnswerChunk?: (chunk: string) => void;
         onThinkingChunk?: (chunk: string) => void;
         onChunk?: (chunk: string) => void;
+        onPhaseChange?: (phase: AIStreamPhase) => void;
     },
 ): Promise<AIDetectStreamResult> {
+    options?.onPhaseChange?.("requesting");
+
     const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -1422,6 +1433,14 @@ async function requestAIStreamResult(
         response.headers.get("content-type")?.toLowerCase() ?? "";
     let answerText = "";
     let thinkingText = "";
+    let currentPhase: AIStreamPhase = "requesting";
+
+    const advancePhase = (nextPhase: AIStreamPhase) => {
+        if (currentPhase !== nextPhase) {
+            currentPhase = nextPhase;
+            options?.onPhaseChange?.(nextPhase);
+        }
+    };
 
     if (contentType.includes("application/x-ndjson")) {
         let buffer = "";
@@ -1454,6 +1473,7 @@ async function requestAIStreamResult(
                         event.type === "answer" &&
                         typeof event.text === "string"
                     ) {
+                        advancePhase("outputting");
                         answerText += event.text;
                         options?.onAnswerChunk?.(event.text);
                         options?.onChunk?.(event.text);
@@ -1463,6 +1483,7 @@ async function requestAIStreamResult(
                         event.type === "thinking" &&
                         typeof event.text === "string"
                     ) {
+                        advancePhase("thinking");
                         thinkingText += event.text;
                         options?.onThinkingChunk?.(event.text);
                         continue;
@@ -1471,6 +1492,7 @@ async function requestAIStreamResult(
                         continue;
                     }
                 } catch {
+                    advancePhase("outputting");
                     answerText += rawLine;
                     options?.onAnswerChunk?.(rawLine);
                     options?.onChunk?.(rawLine);
@@ -1486,6 +1508,7 @@ async function requestAIStreamResult(
                     text?: string;
                 };
                 if (event.type === "answer" && typeof event.text === "string") {
+                    advancePhase("outputting");
                     answerText += event.text;
                     options?.onAnswerChunk?.(event.text);
                     options?.onChunk?.(event.text);
@@ -1493,10 +1516,12 @@ async function requestAIStreamResult(
                     event.type === "thinking" &&
                     typeof event.text === "string"
                 ) {
+                    advancePhase("thinking");
                     thinkingText += event.text;
                     options?.onThinkingChunk?.(event.text);
                 }
             } catch {
+                advancePhase("outputting");
                 answerText += rest;
                 options?.onAnswerChunk?.(rest);
                 options?.onChunk?.(rest);
@@ -1508,6 +1533,7 @@ async function requestAIStreamResult(
             if (done) {
                 const flushText = decoder.decode();
                 if (flushText.length > 0) {
+                    advancePhase("outputting");
                     answerText += flushText;
                     options?.onAnswerChunk?.(flushText);
                     options?.onChunk?.(flushText);
@@ -1519,12 +1545,15 @@ async function requestAIStreamResult(
             }
             const chunkText = decoder.decode(value, { stream: true });
             if (chunkText.length > 0) {
+                advancePhase("outputting");
                 answerText += chunkText;
                 options?.onAnswerChunk?.(chunkText);
                 options?.onChunk?.(chunkText);
             }
         }
     }
+
+    advancePhase("completed");
 
     return {
         answerText,
@@ -1543,6 +1572,7 @@ export async function requestAIDetectResult(
         onAnswerChunk?: (chunk: string) => void;
         onThinkingChunk?: (chunk: string) => void;
         onChunk?: (chunk: string) => void;
+        onPhaseChange?: (phase: AIStreamPhase) => void;
     },
 ): Promise<AIDetectStreamResult> {
     return requestAIStreamResult("/api/ai-detect/stream", payload, options);
@@ -1560,6 +1590,7 @@ export async function requestAIChatResult(
         onAnswerChunk?: (chunk: string) => void;
         onThinkingChunk?: (chunk: string) => void;
         onChunk?: (chunk: string) => void;
+        onPhaseChange?: (phase: AIStreamPhase) => void;
     },
 ): Promise<AIDetectStreamResult> {
     return requestAIStreamResult("/api/ai-chat/stream", payload, options);

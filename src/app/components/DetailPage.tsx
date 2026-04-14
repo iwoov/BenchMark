@@ -1234,6 +1234,7 @@ interface DetailPageProps {
     activeAIEvaluationTaskId: string | null;
     aiEvaluationElapsedText: string;
     aiEvaluationStatusMessage: string;
+    aiEvaluationAttemptPhases: Record<number, string>;
     onAddLevel3Tag?: (tag: string) => Promise<void>;
     onRemoveLevel3Tag?: (tag: string) => void;
     onUpdateBiochemLevel1Discipline?: (discipline: string) => Promise<void>;
@@ -1268,6 +1269,7 @@ export function DetailPage({
     activeAIEvaluationTaskId,
     aiEvaluationElapsedText,
     aiEvaluationStatusMessage,
+    aiEvaluationAttemptPhases,
     onAddLevel3Tag,
     onRemoveLevel3Tag,
     onUpdateBiochemLevel1Discipline,
@@ -1478,8 +1480,7 @@ export function DetailPage({
     const cleaningToolLabel = AI_CLEANING_TOOL_LABELS[selectedCleaningToolKey];
     const selectedCleaningResult =
         cleaningResults?.[selectedCleaningToolKey] ?? null;
-    const cleaningSavedContent =
-        selectedCleaningResult?.responseText ?? "";
+    const cleaningSavedContent = selectedCleaningResult?.responseText ?? "";
     const isSelectedCleaningToolRunning =
         activeAICleaningToolKey === selectedCleaningToolKey && isAICleaning;
     const hasSelectedCleaningResult = cleaningSavedContent.trim().length > 0;
@@ -1513,15 +1514,17 @@ export function DetailPage({
                   const attempt =
                       evaluationAttemptMap.get(attemptIndex) ?? null;
                   if (!attempt) {
+                      const phaseLabel = isSelectedEvaluationTaskRunning
+                          ? (aiEvaluationAttemptPhases[attemptIndex] ??
+                            "等待中")
+                          : "未运行";
                       return {
                           attemptIndex,
                           status: isSelectedEvaluationTaskRunning
                               ? "pending"
                               : "empty",
                           finalAnswer: "-",
-                          verdict: isSelectedEvaluationTaskRunning
-                              ? "进行中"
-                              : "未运行",
+                          verdict: phaseLabel,
                           rawAttempt: null,
                       };
                   }

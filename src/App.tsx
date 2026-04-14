@@ -210,6 +210,7 @@ function App() {
         activeAIEvaluationTaskId,
         aiEvaluationElapsedText,
         aiEvaluationStatusMessage,
+        aiEvaluationAttemptPhases,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,
@@ -262,9 +263,14 @@ function App() {
 
     useEffect(() => {
         if (initialLoadComplete && !activeFile) {
-            navigateToSection("project-management", activeSettingsSection, null, {
-                replace: true,
-            });
+            navigateToSection(
+                "project-management",
+                activeSettingsSection,
+                null,
+                {
+                    replace: true,
+                },
+            );
         }
     }, [
         initialLoadComplete,
@@ -579,7 +585,8 @@ function App() {
         activeSection !== "project-management" &&
         (isDetailView || activeSection !== "dashboard");
     const projectNameDialogTargetFile = projectNameTargetFileId
-        ? files.find((file) => file.fileId === projectNameTargetFileId) ?? null
+        ? (files.find((file) => file.fileId === projectNameTargetFileId) ??
+          null)
         : null;
 
     const startResizeDetailChatSidebar = (
@@ -668,8 +675,8 @@ function App() {
                             </div>
                             <h2>等待项目创建</h2>
                             <p>
-                                请前往“项目管理”页创建项目并导入 Excel 或
-                                JSON 文件。
+                                请前往“项目管理”页创建项目并导入 Excel 或 JSON
+                                文件。
                             </p>
                         </section>
                     ) : (
@@ -1100,6 +1107,9 @@ function App() {
                                             }
                                             aiEvaluationStatusMessage={
                                                 aiEvaluationStatusMessage
+                                            }
+                                            aiEvaluationAttemptPhases={
+                                                aiEvaluationAttemptPhases
                                             }
                                             onAddLevel3Tag={onAddLevel3Tag}
                                             onRemoveLevel3Tag={

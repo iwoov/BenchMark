@@ -7,6 +7,7 @@ import type {
     AIDetectRunKey,
     AIDetectStageKey,
     AIEvaluationAttemptResult,
+    AIStreamPhase,
     FileViewState,
     NamedAIDetectConfig,
     ParsedColumn,
@@ -173,8 +174,7 @@ export const useAIManager = ({
         useState<AICleaningToolKey | null>(null);
     const [aiCleaningElapsedMs, setAICleaningElapsedMs] = useState(0);
     const [aiCleaningStreamText, setAICleaningStreamText] = useState("");
-    const [aiCleaningStatusMessage, setAICleaningStatusMessage] =
-        useState("");
+    const [aiCleaningStatusMessage, setAICleaningStatusMessage] = useState("");
     const [isAIEvaluating, setIsAIEvaluating] = useState(false);
     const [activeAIEvaluationTaskId, setActiveAIEvaluationTaskId] = useState<
         string | null
@@ -182,6 +182,9 @@ export const useAIManager = ({
     const [aiEvaluationElapsedMs, setAIEvaluationElapsedMs] = useState(0);
     const [aiEvaluationStatusMessage, setAIEvaluationStatusMessage] =
         useState("");
+    const [aiEvaluationAttemptPhases, setAIEvaluationAttemptPhases] = useState<
+        Record<number, string>
+    >({});
 
     const aiStreamAbortRef = useRef<AbortController | null>(null);
     const aiChatAbortRef = useRef<AbortController | null>(null);
@@ -888,10 +891,7 @@ export const useAIManager = ({
         >();
         for (const stageKey of AI_STAGE_ORDER) {
             const stageConfig = normalizedConfig.stages[stageKey];
-            const route = resolveRouteForStage(
-                normalizedConfig,
-                stageConfig,
-            );
+            const route = resolveRouteForStage(normalizedConfig, stageConfig);
             const error = validateStageSetup(
                 stageKey,
                 stageConfig,
@@ -1358,14 +1358,15 @@ export const useAIManager = ({
                 ...previous.cleaning,
                 [toolKey]: {
                     ...previous.cleaning[toolKey],
-                    outputMappings: previous.cleaning[toolKey].outputMappings.map(
-                        (item) =>
-                            item.outputKey === outputKey
-                                ? {
-                                      ...item,
-                                      targetFieldKey,
-                                  }
-                                : item,
+                    outputMappings: previous.cleaning[
+                        toolKey
+                    ].outputMappings.map((item) =>
+                        item.outputKey === outputKey
+                            ? {
+                                  ...item,
+                                  targetFieldKey,
+                              }
+                            : item,
                     ),
                 },
             },
@@ -1383,9 +1384,8 @@ export const useAIManager = ({
             if (!task) {
                 return previous;
             }
-            const exists = task.answerGeneration.questionFieldKeys.includes(
-                columnKey,
-            );
+            const exists =
+                task.answerGeneration.questionFieldKeys.includes(columnKey);
             const questionFieldKeys = exists
                 ? task.answerGeneration.questionFieldKeys.filter(
                       (key) => key !== columnKey,
@@ -1419,9 +1419,8 @@ export const useAIManager = ({
             if (!task) {
                 return previous;
             }
-            const exists = task.answerJudgment.answerFieldKeys.includes(
-                columnKey,
-            );
+            const exists =
+                task.answerJudgment.answerFieldKeys.includes(columnKey);
             const answerFieldKeys = exists
                 ? task.answerJudgment.answerFieldKeys.filter(
                       (key) => key !== columnKey,
@@ -1537,7 +1536,9 @@ export const useAIManager = ({
                 return;
             }
             if (route.steps.length === 0) {
-                setAIConfigFormMessage(`【${routeName}】请至少配置一个回退步骤`);
+                setAIConfigFormMessage(
+                    `【${routeName}】请至少配置一个回退步骤`,
+                );
                 return;
             }
             for (const step of route.steps) {
@@ -1580,15 +1581,18 @@ export const useAIManager = ({
         setErrorMessage("");
 
         try {
-            const saveProvidersResponse = await fetch("/api/ai-config/providers", {
-                method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
+            const saveProvidersResponse = await fetch(
+                "/api/ai-config/providers",
+                {
+                    method: "PUT",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        providers: nextConfig.providers,
+                    }),
                 },
-                body: JSON.stringify({
-                    providers: nextConfig.providers,
-                }),
-            });
+            );
             if (!saveProvidersResponse.ok) {
                 const payload = (await saveProvidersResponse
                     .json()
@@ -1671,7 +1675,9 @@ export const useAIManager = ({
             draftAIConfig,
             activeFile.columns,
         );
-        const routeNameSet = new Set(nextConfig.routes.map((item) => item.name));
+        const routeNameSet = new Set(
+            nextConfig.routes.map((item) => item.name),
+        );
         if (!routeNameSet.has(nextConfig.chat.routeName)) {
             setAIConfigFormMessage("聊天模型路由无效");
             return;
@@ -1699,9 +1705,9 @@ export const useAIManager = ({
                 },
             );
             if (!response.ok) {
-                const payload = (await response
-                    .json()
-                    .catch(() => ({}))) as { message?: string };
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
                 throw new Error(payload.message ?? "保存聊天配置失败");
             }
 
@@ -1728,7 +1734,9 @@ export const useAIManager = ({
             draftAIConfig,
             activeFile.columns,
         );
-        const routeNameSet = new Set(nextConfig.routes.map((item) => item.name));
+        const routeNameSet = new Set(
+            nextConfig.routes.map((item) => item.name),
+        );
         for (const toolKey of AI_CLEANING_TOOL_ORDER) {
             const toolConfig = nextConfig.cleaning[toolKey];
             const toolLabel = AI_CLEANING_TOOL_LABELS[toolKey].shortTitle;
@@ -1737,7 +1745,9 @@ export const useAIManager = ({
                 return;
             }
             if (toolConfig.submitFieldKeys.length === 0) {
-                setAIConfigFormMessage(`【${toolLabel}】请至少选择一个提交字段`);
+                setAIConfigFormMessage(
+                    `【${toolLabel}】请至少选择一个提交字段`,
+                );
                 return;
             }
             if (toolConfig.prompt.trim().length === 0) {
@@ -1787,9 +1797,9 @@ export const useAIManager = ({
                 },
             );
             if (!response.ok) {
-                const payload = (await response
-                    .json()
-                    .catch(() => ({}))) as { message?: string };
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
                 throw new Error(payload.message ?? "保存清洗配置失败");
             }
 
@@ -1815,7 +1825,9 @@ export const useAIManager = ({
             draftAIConfig,
             activeFile.columns,
         );
-        const routeNameSet = new Set(nextConfig.routes.map((item) => item.name));
+        const routeNameSet = new Set(
+            nextConfig.routes.map((item) => item.name),
+        );
         if (nextConfig.evaluationTasks.length === 0) {
             setAIConfigFormMessage("请至少保留一个评测配置");
             return;
@@ -1837,7 +1849,9 @@ export const useAIManager = ({
                 task.attemptCount < 1 ||
                 task.attemptCount > 10
             ) {
-                setAIConfigFormMessage(`【${taskName}】评测次数必须是 1 到 10 的整数`);
+                setAIConfigFormMessage(
+                    `【${taskName}】评测次数必须是 1 到 10 的整数`,
+                );
                 return;
             }
             if (
@@ -1845,30 +1859,46 @@ export const useAIManager = ({
                 task.maxConcurrency < 1 ||
                 task.maxConcurrency > 10
             ) {
-                setAIConfigFormMessage(`【${taskName}】最大并发数必须是 1 到 10 的整数`);
+                setAIConfigFormMessage(
+                    `【${taskName}】最大并发数必须是 1 到 10 的整数`,
+                );
                 return;
             }
             if (!routeNameSet.has(task.answerGeneration.routeName)) {
-                setAIConfigFormMessage(`【${taskName}】请为第一步题目作答选择有效的模型路由`);
+                setAIConfigFormMessage(
+                    `【${taskName}】请为第一步题目作答选择有效的模型路由`,
+                );
                 return;
             }
             if (!routeNameSet.has(task.answerJudgment.routeName)) {
-                setAIConfigFormMessage(`【${taskName}】请为第二步答案判定选择有效的模型路由`);
+                setAIConfigFormMessage(
+                    `【${taskName}】请为第二步答案判定选择有效的模型路由`,
+                );
                 return;
             }
             if (task.answerGeneration.prompt.trim().length === 0) {
-                setAIConfigFormMessage(`【${taskName}】第一步题目作答 Prompt 不能为空`);
+                setAIConfigFormMessage(
+                    `【${taskName}】第一步题目作答 Prompt 不能为空`,
+                );
                 return;
             }
             if (task.answerJudgment.prompt.trim().length === 0) {
-                setAIConfigFormMessage(`【${taskName}】第二步答案判定 Prompt 不能为空`);
+                setAIConfigFormMessage(
+                    `【${taskName}】第二步答案判定 Prompt 不能为空`,
+                );
                 return;
             }
-            if (task.enabled && task.answerGeneration.questionFieldKeys.length === 0) {
+            if (
+                task.enabled &&
+                task.answerGeneration.questionFieldKeys.length === 0
+            ) {
                 setAIConfigFormMessage(`【${taskName}】请至少选择一个题目字段`);
                 return;
             }
-            if (task.enabled && task.answerJudgment.answerFieldKeys.length === 0) {
+            if (
+                task.enabled &&
+                task.answerJudgment.answerFieldKeys.length === 0
+            ) {
                 setAIConfigFormMessage(`【${taskName}】请至少选择一个答案字段`);
                 return;
             }
@@ -1892,9 +1922,9 @@ export const useAIManager = ({
                 },
             );
             if (!response.ok) {
-                const payload = (await response
-                    .json()
-                    .catch(() => ({}))) as { message?: string };
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
                 throw new Error(payload.message ?? "保存数据评测配置失败");
             }
 
@@ -1956,7 +1986,9 @@ export const useAIManager = ({
             if (mapping.targetFieldKey.trim().length === 0) {
                 return;
             }
-            const value = stringifyCleaningOutputValue(parsed[mapping.outputKey]);
+            const value = stringifyCleaningOutputValue(
+                parsed[mapping.outputKey],
+            );
             if (value.length === 0) {
                 return;
             }
@@ -1984,7 +2016,9 @@ export const useAIManager = ({
             return;
         }
         if (isAIDetecting || isAIChatting || isAICleaning || isAIBatchRunning) {
-            setAIEvaluationStatusMessage("当前有其他 AI 任务在运行，暂不可发起数据评测");
+            setAIEvaluationStatusMessage(
+                "当前有其他 AI 任务在运行，暂不可发起数据评测",
+            );
             return;
         }
         if (isAIEvaluating) {
@@ -2032,7 +2066,9 @@ export const useAIManager = ({
             task.answerJudgment.answerFieldKeys,
         );
         if (questionFields.length === 0 || answerFields.length === 0) {
-            setAIEvaluationStatusMessage(`【${task.name}】请先配置题目字段和答案字段`);
+            setAIEvaluationStatusMessage(
+                `【${task.name}】请先配置题目字段和答案字段`,
+            );
             return;
         }
 
@@ -2044,6 +2080,7 @@ export const useAIManager = ({
         setIsAIEvaluating(true);
         setActiveAIEvaluationTaskId(taskId);
         setAIEvaluationStatusMessage("");
+        setAIEvaluationAttemptPhases({});
         setErrorMessage("");
 
         const previousResults = selectedRow.evaluationResults?.[taskId] ?? [];
@@ -2057,7 +2094,30 @@ export const useAIManager = ({
                 `【${task.name}】已启动 ${task.attemptCount} 次评测，并发上限 ${task.maxConcurrency}`,
             );
 
+            const phaseLabels: Record<AIStreamPhase, string> = {
+                requesting: "请求中",
+                thinking: "思考中",
+                outputting: "输出中",
+                completed: "完成",
+            };
+
+            const updateAttemptPhase = (
+                attemptIndex: number,
+                stepLabel: string,
+                phase: AIStreamPhase,
+            ) => {
+                const label =
+                    phase === "completed"
+                        ? "完成"
+                        : `${stepLabel} ${phaseLabels[phase]}`;
+                setAIEvaluationAttemptPhases((prev) => ({
+                    ...prev,
+                    [attemptIndex]: label,
+                }));
+            };
+
             const runAttempt = async (attemptIndex: number) => {
+                updateAttemptPhase(attemptIndex, "作答", "requesting");
                 const generationStream = await requestAIDetectResult(
                     {
                         routeName: generationRoute.name,
@@ -2066,17 +2126,22 @@ export const useAIManager = ({
                     },
                     {
                         signal: controller.signal,
+                        onPhaseChange: (phase) =>
+                            updateAttemptPhase(attemptIndex, "作答", phase),
                     },
                 );
                 const generationText = generationStream.answerText.trim();
                 if (generationText.length === 0) {
-                    throw new Error(`【${task.name}】第 ${attemptIndex} 次作答返回为空`);
+                    throw new Error(
+                        `【${task.name}】第 ${attemptIndex} 次作答返回为空`,
+                    );
                 }
                 const generationParsed = parseAIResultJSON(generationText);
                 const generationParsedJsonText = generationParsed
                     ? JSON.stringify(generationParsed)
                     : undefined;
 
+                updateAttemptPhase(attemptIndex, "判定", "requesting");
                 const judgmentStream = await requestAIDetectResult(
                     {
                         routeName: judgmentRoute.name,
@@ -2093,11 +2158,15 @@ export const useAIManager = ({
                     },
                     {
                         signal: controller.signal,
+                        onPhaseChange: (phase) =>
+                            updateAttemptPhase(attemptIndex, "判定", phase),
                     },
                 );
                 const judgmentText = judgmentStream.answerText.trim();
                 if (judgmentText.length === 0) {
-                    throw new Error(`【${task.name}】第 ${attemptIndex} 次判定返回为空`);
+                    throw new Error(
+                        `【${task.name}】第 ${attemptIndex} 次判定返回为空`,
+                    );
                 }
                 const judgmentParsed = parseAIResultJSON(judgmentText);
                 const judgmentParsedJsonText = judgmentParsed
@@ -2142,6 +2211,7 @@ export const useAIManager = ({
                 };
                 resultMap.set(attemptIndex, nextResult);
                 completedCount += 1;
+                updateAttemptPhase(attemptIndex, "", "completed");
                 const nextResults = Array.from(resultMap.values()).sort(
                     (left, right) => left.attemptIndex - right.attemptIndex,
                 );
@@ -2171,7 +2241,10 @@ export const useAIManager = ({
                     await runAttempt(attemptIndex);
                 }
             };
-            const workerCount = Math.min(task.maxConcurrency, task.attemptCount);
+            const workerCount = Math.min(
+                task.maxConcurrency,
+                task.attemptCount,
+            );
             const settledResults = await Promise.allSettled(
                 Array.from({ length: workerCount }, () => runWorker()),
             );
@@ -2233,7 +2306,9 @@ export const useAIManager = ({
             return;
         }
         if (isAIBatchRunning) {
-            setAICleaningStatusMessage("批量 AI 任务运行中，暂不可发起数据清洗");
+            setAICleaningStatusMessage(
+                "批量 AI 任务运行中，暂不可发起数据清洗",
+            );
             return;
         }
         if (isAICleaning) {
@@ -2282,7 +2357,9 @@ export const useAIManager = ({
             toolConfig.submitFieldKeys,
         );
         if (fields.length === 0) {
-            setAICleaningStatusMessage(`【${toolLabel}】当前记录没有可提交字段`);
+            setAICleaningStatusMessage(
+                `【${toolLabel}】当前记录没有可提交字段`,
+            );
             return;
         }
 
@@ -2337,9 +2414,9 @@ export const useAIManager = ({
                 },
             );
             if (!response.ok) {
-                const payload = (await response
-                    .json()
-                    .catch(() => ({}))) as { message?: string };
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
                 throw new Error(payload.message ?? "保存数据清洗结果失败");
             }
 
@@ -2992,7 +3069,9 @@ export const useAIManager = ({
             return;
         }
 
-        if (AI_CLEANING_TOOL_ORDER.includes(activeAIRunKey as AICleaningToolKey)) {
+        if (
+            AI_CLEANING_TOOL_ORDER.includes(activeAIRunKey as AICleaningToolKey)
+        ) {
             const toolKey = activeAIRunKey as AICleaningToolKey;
             const toolConfig = normalizedConfig.cleaning[toolKey];
             const toolLabel = AI_CLEANING_TOOL_LABELS[toolKey].shortTitle;
@@ -3025,7 +3104,10 @@ export const useAIManager = ({
             let nextCursor = 0;
             const requestedConcurrency =
                 normalizeAIBatchConcurrency(aiBatchConcurrency);
-            const workerCount = Math.min(requestedConcurrency, targetRows.length);
+            const workerCount = Math.min(
+                requestedConcurrency,
+                targetRows.length,
+            );
 
             aiBatchAbortRef.current?.abort();
             const controller = new AbortController();
@@ -3125,11 +3207,12 @@ export const useAIManager = ({
                                 payload.message ?? "保存数据清洗结果失败",
                             );
                         }
-                        const mappedFieldValues = buildMappedCleaningFieldValues(
-                            toolKey,
-                            answerText,
-                            normalizedConfig,
-                        );
+                        const mappedFieldValues =
+                            buildMappedCleaningFieldValues(
+                                toolKey,
+                                answerText,
+                                normalizedConfig,
+                            );
                         updateRowCleaningResult(
                             targetFileId,
                             row.rowId,
@@ -3149,7 +3232,10 @@ export const useAIManager = ({
                     if (controller.signal.aborted) {
                         return;
                     }
-                    markRowBatchStatus(row.rowId, rowFailed ? "failed" : "success");
+                    markRowBatchStatus(
+                        row.rowId,
+                        rowFailed ? "failed" : "success",
+                    );
                     setAIBatchTask((previous) => ({
                         ...previous,
                         completed: previous.completed + 1,
@@ -3432,6 +3518,7 @@ export const useAIManager = ({
         activeAIEvaluationTaskId,
         aiEvaluationElapsedText,
         aiEvaluationStatusMessage,
+        aiEvaluationAttemptPhases,
         onOpenAIStageConfigModal,
         onOpenAIProfileModal,
         onOpenAIRouteModal,

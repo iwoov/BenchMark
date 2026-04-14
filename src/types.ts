@@ -176,3 +176,9 @@ export interface NamedAIDetectConfig {
     name: string;
     config: AIDetectConfig;
 }
+
+export type AIStreamPhase =
+    | "requesting"
+    | "thinking"
+    | "outputting"
+    | "completed";
