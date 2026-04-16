@@ -232,7 +232,10 @@ function App() {
         }
         setFiles((previous) =>
             previous.map((file) => {
-                if (file.fileId !== activeFile.fileId || file.rows.length === 0) {
+                if (
+                    file.fileId !== activeFile.fileId ||
+                    file.rows.length === 0
+                ) {
                     return file;
                 }
                 const hasTargetRow = file.rows.some(
@@ -270,10 +273,6 @@ function App() {
                 message?: string;
             };
             throw new Error(payload.message ?? "保存行数据失败");
-        }
-        const payload = (await response.json()) as { row?: ParsedRow };
-        if (payload.row) {
-            replaceRowInProjectCache(payload.row);
         }
     };
 
@@ -329,7 +328,11 @@ function App() {
     const updateRowAIResult = (
         fileId: string,
         rowId: string,
-        stageKey: "precheck" | "context_audit" | "independent_solving" | "final_verdict",
+        stageKey:
+            | "precheck"
+            | "context_audit"
+            | "independent_solving"
+            | "final_verdict",
         resultText: string,
     ) => {
         persistRowAIResult(fileId, rowId, stageKey, resultText);
@@ -352,7 +355,10 @@ function App() {
     const updateRowCleaningResult = (
         fileId: string,
         rowId: string,
-        toolKey: "generate_level3_tags" | "biochem_level1_refine" | "question_formatting",
+        toolKey:
+            | "generate_level3_tags"
+            | "biochem_level1_refine"
+            | "question_formatting",
         result: {
             responseText: string;
             parsedJsonText?: string;
@@ -368,21 +374,23 @@ function App() {
             return;
         }
         const nextValues = { ...currentRow.values };
-        Object.entries(mappedFieldValues ?? {}).forEach(([columnKey, value]) => {
-            const currentCell = currentRow.values[columnKey];
-            nextValues[columnKey] =
-                currentCell?.type === "image" && currentCell.src
-                    ? {
-                          type: "image",
-                          src: currentCell.src,
-                          srcList: currentCell.srcList,
-                          value,
-                      }
-                    : {
-                          type: "text",
-                          value,
-                      };
-        });
+        Object.entries(mappedFieldValues ?? {}).forEach(
+            ([columnKey, value]) => {
+                const currentCell = currentRow.values[columnKey];
+                nextValues[columnKey] =
+                    currentCell?.type === "image" && currentCell.src
+                        ? {
+                              type: "image",
+                              src: currentCell.src,
+                              srcList: currentCell.srcList,
+                              value,
+                          }
+                        : {
+                              type: "text",
+                              value,
+                          };
+            },
+        );
         const nextRow: ParsedRow = {
             ...currentRow,
             values: nextValues,
@@ -1141,9 +1149,7 @@ function App() {
                                                     className="btn"
                                                     onClick={() =>
                                                         nextRowId &&
-                                                        openRowDetail(
-                                                            nextRowId,
-                                                        )
+                                                        openRowDetail(nextRowId)
                                                     }
                                                     disabled={!nextRowId}
                                                 >
@@ -1211,8 +1217,8 @@ function App() {
                             ) : null}
 
                             <section className="workspace-view">
-                                {((activeSection === "list" && isListLoading) ||
-                                    (isDetailView && isDetailLoading)) ? (
+                                {(activeSection === "list" && isListLoading) ||
+                                (isDetailView && isDetailLoading) ? (
                                     <section className="page-panel">
                                         <div className="placeholder workspace-placeholder">
                                             <p>加载数据中...</p>
@@ -1234,8 +1240,7 @@ function App() {
                                     </section>
                                 ) : null}
 
-                                {activeSection === "list" &&
-                                !isDetailView ? (
+                                {activeSection === "list" && !isDetailView ? (
                                     <section className="page-panel">
                                         <ListPage
                                             activeFile={activeFile}

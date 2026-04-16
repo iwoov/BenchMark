@@ -63,7 +63,8 @@ export const useListView = ({
             return [];
         }
         return activeFile.columns.filter(
-            (column) => !activeFile.selectedDisplayColumnKeys.includes(column.key),
+            (column) =>
+                !activeFile.selectedDisplayColumnKeys.includes(column.key),
         );
     }, [activeFile]);
 
@@ -95,8 +96,10 @@ export const useListView = ({
         setFilterOptionsByColumn({});
     }, [activeFile?.fileId]);
 
+    const activeFileId = activeFile?.fileId ?? null;
+
     useEffect(() => {
-        if (!activeFile) {
+        if (!activeFileId) {
             setPaginatedRows([]);
             setTotalFilteredRows(0);
             setIsListLoading(false);
@@ -114,7 +117,7 @@ export const useListView = ({
                     filters: serializedFilters,
                 });
                 const response = await fetch(
-                    `/api/files/${encodeURIComponent(activeFile.fileId)}/rows?${params.toString()}`,
+                    `/api/files/${encodeURIComponent(activeFileId)}/rows?${params.toString()}`,
                     { signal: controller.signal },
                 );
                 if (!response.ok) {
@@ -157,7 +160,7 @@ export const useListView = ({
         void loadRows();
         return () => controller.abort();
     }, [
-        activeFile,
+        activeFileId,
         listPage,
         listPageSize,
         serializedFilters,
@@ -165,7 +168,7 @@ export const useListView = ({
     ]);
 
     useEffect(() => {
-        if (!activeFile || !selectedRowId) {
+        if (!activeFileId || !selectedRowId) {
             setSelectedRow(null);
             setPreviousRowId(null);
             setNextRowId(null);
@@ -182,7 +185,7 @@ export const useListView = ({
                     filters: serializedFilters,
                 });
                 const response = await fetch(
-                    `/api/files/${encodeURIComponent(activeFile.fileId)}/rows/${encodeURIComponent(selectedRowId)}?${params.toString()}`,
+                    `/api/files/${encodeURIComponent(activeFileId)}/rows/${encodeURIComponent(selectedRowId)}?${params.toString()}`,
                     { signal: controller.signal },
                 );
                 if (response.status === 404) {
@@ -230,7 +233,7 @@ export const useListView = ({
         void loadDetail();
         return () => controller.abort();
     }, [
-        activeFile,
+        activeFileId,
         selectedRowId,
         serializedFilters,
         setErrorMessage,
@@ -255,7 +258,10 @@ export const useListView = ({
         if (!activeFile) {
             return;
         }
-        if (batchSelectedRowIds.length === totalFilteredRows && totalFilteredRows > 0) {
+        if (
+            batchSelectedRowIds.length === totalFilteredRows &&
+            totalFilteredRows > 0
+        ) {
             setBatchSelectedRowIds([]);
             return;
         }
@@ -276,9 +282,7 @@ export const useListView = ({
             setBatchSelectedRowIds(rowIds);
         } catch (error) {
             setErrorMessage(
-                error instanceof Error
-                    ? error.message
-                    : "加载筛选结果失败",
+                error instanceof Error ? error.message : "加载筛选结果失败",
             );
         }
     };
@@ -293,7 +297,9 @@ export const useListView = ({
 
     const replaceRowInCaches = (nextRow: ParsedRow) => {
         setPaginatedRows((previous) =>
-            previous.map((row) => (row.rowId === nextRow.rowId ? nextRow : row)),
+            previous.map((row) =>
+                row.rowId === nextRow.rowId ? nextRow : row,
+            ),
         );
         setSelectedRow((previous) =>
             previous?.rowId === nextRow.rowId ? nextRow : previous,
