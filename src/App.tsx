@@ -347,7 +347,7 @@ function App() {
     };
 
     const updateRowCleaningResult = (
-        fileId: string,
+        _fileId: string,
         rowId: string,
         toolKey:
             | "generate_level3_tags"
@@ -403,7 +403,7 @@ function App() {
     };
 
     const updateRowEvaluationResults = (
-        fileId: string,
+        _fileId: string,
         rowId: string,
         taskId: string,
         results: Array<{
