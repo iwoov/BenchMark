@@ -306,6 +306,18 @@ export const useListView = ({
         );
     };
 
+    const mergeRowInCaches = (
+        rowId: string,
+        updater: (row: ParsedRow) => ParsedRow,
+    ) => {
+        setPaginatedRows((previous) =>
+            previous.map((row) => (row.rowId === rowId ? updater(row) : row)),
+        );
+        setSelectedRow((previous) =>
+            previous?.rowId === rowId ? updater(previous) : previous,
+        );
+    };
+
     const loadFilterOptions = async (columnKey: string): Promise<string[]> => {
         if (!activeFile || columnKey.trim().length === 0) {
             return [];
@@ -354,6 +366,7 @@ export const useListView = ({
         onSelectCurrentPageBatchRows,
         onClearBatchRows,
         replaceRowInCaches,
+        mergeRowInCaches,
         filterOptionsByColumn,
         loadFilterOptions,
         isListLoading,

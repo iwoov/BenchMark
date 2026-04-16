@@ -149,6 +149,7 @@ function App() {
         onSelectCurrentPageBatchRows,
         onClearBatchRows,
         replaceRowInCaches,
+        mergeRowInCaches,
         filterOptionsByColumn,
         loadFilterOptions,
         isListLoading,
@@ -336,20 +337,13 @@ function App() {
         resultText: string,
     ) => {
         persistRowAIResult(fileId, rowId, stageKey, resultText);
-        if (!activeFile || activeFile.fileId !== fileId) {
-            return;
-        }
-        const currentRow = findCachedRow(rowId);
-        if (!currentRow) {
-            return;
-        }
-        replaceRowInProjectCache({
-            ...currentRow,
+        mergeRowInCaches(rowId, (row) => ({
+            ...row,
             aiResults: {
-                ...(currentRow.aiResults ?? {}),
+                ...(row.aiResults ?? {}),
                 [stageKey]: resultText,
             },
-        });
+        }));
     };
 
     const updateRowCleaningResult = (
@@ -366,46 +360,45 @@ function App() {
         },
         mappedFieldValues?: Record<string, string>,
     ) => {
-        if (!activeFile || activeFile.fileId !== fileId) {
-            return;
-        }
-        const currentRow = findCachedRow(rowId);
-        if (!currentRow) {
-            return;
-        }
-        const nextValues = { ...currentRow.values };
-        Object.entries(mappedFieldValues ?? {}).forEach(
-            ([columnKey, value]) => {
-                const currentCell = currentRow.values[columnKey];
-                nextValues[columnKey] =
-                    currentCell?.type === "image" && currentCell.src
-                        ? {
-                              type: "image",
-                              src: currentCell.src,
-                              srcList: currentCell.srcList,
-                              value,
-                          }
-                        : {
-                              type: "text",
-                              value,
-                          };
-            },
-        );
-        const nextRow: ParsedRow = {
-            ...currentRow,
-            values: nextValues,
-            cleaningResults: {
-                ...(currentRow.cleaningResults ?? {}),
-                [toolKey]: result,
-            },
-        };
-        replaceRowInProjectCache(nextRow);
+        mergeRowInCaches(rowId, (row) => {
+            const nextValues = { ...row.values };
+            Object.entries(mappedFieldValues ?? {}).forEach(
+                ([columnKey, value]) => {
+                    const currentCell = row.values[columnKey];
+                    nextValues[columnKey] =
+                        currentCell?.type === "image" && currentCell.src
+                            ? {
+                                  type: "image",
+                                  src: currentCell.src,
+                                  srcList: currentCell.srcList,
+                                  value,
+                              }
+                            : {
+                                  type: "text",
+                                  value,
+                              };
+                },
+            );
+            return {
+                ...row,
+                values: nextValues,
+                cleaningResults: {
+                    ...(row.cleaningResults ?? {}),
+                    [toolKey]: result,
+                },
+            };
+        });
         if (Object.keys(mappedFieldValues ?? {}).length > 0) {
-            void persistRowRecord(nextRow).catch((error) => {
-                setErrorMessage(
-                    error instanceof Error ? error.message : "保存行数据失败",
-                );
-            });
+            const currentRow = findCachedRow(rowId);
+            if (currentRow) {
+                void persistRowRecord(currentRow).catch((error) => {
+                    setErrorMessage(
+                        error instanceof Error
+                            ? error.message
+                            : "保存行数据失败",
+                    );
+                });
+            }
         }
     };
 
@@ -423,20 +416,13 @@ function App() {
             updatedAt?: string;
         }>,
     ) => {
-        if (!activeFile || activeFile.fileId !== fileId) {
-            return;
-        }
-        const currentRow = findCachedRow(rowId);
-        if (!currentRow) {
-            return;
-        }
-        replaceRowInProjectCache({
-            ...currentRow,
+        mergeRowInCaches(rowId, (row) => ({
+            ...row,
             evaluationResults: {
-                ...(currentRow.evaluationResults ?? {}),
+                ...(row.evaluationResults ?? {}),
                 [taskId]: results,
             },
-        });
+        }));
     };
 
     const {
