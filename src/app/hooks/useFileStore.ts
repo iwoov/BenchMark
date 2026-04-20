@@ -31,8 +31,8 @@ type NavigateToSection = (
 ) => void;
 
 type PendingConfigMode = "import" | "edit";
-type UploadMode = "create" | "merge";
-type ProjectNameDialogMode = "create" | "rename";
+type UploadMode = "create" | "merge" | "add-datasource";
+type ProjectNameDialogMode = "create" | "rename" | "add-datasource";
 const LAST_ACTIVE_FILE_ID_STORAGE_KEY = "benchmark:last-active-file-id";
 const FILTER_CONDITIONS_STORAGE_PREFIX = "benchmark:filters:";
 
@@ -112,6 +112,8 @@ export const useFileStore = ({
     const [projectNameTargetFileId, setProjectNameTargetFileId] = useState<
         string | null
     >(null);
+    const [pendingDataSourceNameDraft, setPendingDataSourceNameDraft] =
+        useState("");
     const [removingFileId, setRemovingFileId] = useState<string | null>(null);
 
     const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -122,6 +124,8 @@ export const useFileStore = ({
     const stateVersionRef = useRef<Record<string, number>>({});
     const pendingUploadModeRef = useRef<UploadMode>("create");
     const pendingCreateProjectNameRef = useRef("");
+    const pendingDataSourceNameRef = useRef("");
+    const pendingDataSourceGroupIdRef = useRef<string | null>(null);
     const pendingMergeTargetFileIdRef = useRef<string | null>(null);
 
     const activeFile = useMemo(
@@ -454,6 +458,7 @@ export const useFileStore = ({
         setProjectNameDraft("");
         setProjectNameDialogError("");
         setProjectNameTargetFileId(null);
+        setPendingDataSourceNameDraft("");
     };
 
     const patchActiveFile = (
@@ -931,6 +936,7 @@ export const useFileStore = ({
         setErrorMessage("");
         setProjectNameDialogError("");
         setProjectNameDraft("");
+        setPendingDataSourceNameDraft("");
         setProjectNameTargetFileId(null);
         setProjectNameDialogMode("create");
     };
@@ -944,8 +950,23 @@ export const useFileStore = ({
         setErrorMessage("");
         setProjectNameDialogError("");
         setProjectNameDraft(targetFile.fileName);
+        setPendingDataSourceNameDraft("");
         setProjectNameTargetFileId(targetFile.fileId);
         setProjectNameDialogMode("rename");
+    };
+
+    const onOpenAddDatasourceDialog = (fileId: string) => {
+        const targetFile =
+            files.find((file) => file.fileId === fileId) ?? activeFile;
+        if (!targetFile) {
+            return;
+        }
+        setErrorMessage("");
+        setProjectNameDialogError("");
+        setProjectNameDraft(targetFile.fileName);
+        setPendingDataSourceNameDraft("");
+        setProjectNameTargetFileId(fileId);
+        setProjectNameDialogMode("add-datasource");
     };
 
     const onCancelProjectNameDialog = () => {
@@ -972,7 +993,30 @@ export const useFileStore = ({
 
         if (projectNameDialogMode === "create") {
             pendingCreateProjectNameRef.current = nextProjectName;
+            pendingDataSourceNameRef.current =
+                pendingDataSourceNameDraft.trim();
+            pendingDataSourceGroupIdRef.current = null;
             pendingUploadModeRef.current = "create";
+            pendingMergeTargetFileIdRef.current = null;
+            resetProjectNameDialog();
+            uploadInputRef.current?.click();
+            return;
+        }
+
+        if (projectNameDialogMode === "add-datasource") {
+            const targetFileId = projectNameTargetFileId;
+            const targetFile = targetFileId
+                ? (files.find((f) => f.fileId === targetFileId) ?? activeFile)
+                : activeFile;
+            if (!targetFile) {
+                return;
+            }
+            const projectGroupId = targetFile.projectId ?? targetFile.fileId;
+            pendingCreateProjectNameRef.current = targetFile.fileName;
+            pendingDataSourceNameRef.current =
+                pendingDataSourceNameDraft.trim();
+            pendingDataSourceGroupIdRef.current = projectGroupId;
+            pendingUploadModeRef.current = "add-datasource";
             pendingMergeTargetFileIdRef.current = null;
             resetProjectNameDialog();
             uploadInputRef.current?.click();
@@ -999,17 +1043,30 @@ export const useFileStore = ({
                 throw new Error(payload.message ?? "项目重命名失败");
             }
 
-            const payload = (await response.json()) as { file?: unknown };
-            const renamedFile = normalizeLoadedFileState(payload.file);
-            if (!renamedFile) {
+            const payload = (await response.json()) as {
+                file?: unknown;
+                files?: unknown[];
+            };
+            const allRaw =
+                Array.isArray(payload.files) && payload.files.length > 0
+                    ? payload.files
+                    : [payload.file];
+            const renamedFiles = allRaw
+                .map((item) => normalizeLoadedFileState(item))
+                .filter((f): f is FileViewState => f !== null);
+            if (renamedFiles.length === 0) {
                 throw new Error("项目重命名结果无效");
             }
 
-            upsertFileState(renamedFile);
-            if (pendingFile?.fileId === renamedFile.fileId) {
-                setPendingFile(renamedFile);
+            renamedFiles.forEach(upsertFileState);
+            const primaryFile =
+                renamedFiles.find(
+                    (f) => f.fileId === projectNameTargetFileId,
+                ) ?? renamedFiles[0];
+            if (pendingFile?.fileId === primaryFile.fileId) {
+                setPendingFile(primaryFile);
             }
-            setActiveFileId(renamedFile.fileId);
+            setActiveFileId(primaryFile.fileId);
             resetProjectNameDialog();
         } catch (error) {
             const message =
@@ -1047,6 +1104,12 @@ export const useFileStore = ({
             ) {
                 throw new Error("缺少项目名称");
             }
+            if (
+                uploadMode === "add-datasource" &&
+                !pendingDataSourceGroupIdRef.current
+            ) {
+                throw new Error("缺少项目标识");
+            }
 
             if (uploadMode === "merge" && mergeTargetFile) {
                 cancelScheduledPersist(mergeTargetFile.fileId);
@@ -1062,9 +1125,31 @@ export const useFileStore = ({
                     "projectName",
                     pendingCreateProjectNameRef.current,
                 );
+                if (pendingDataSourceNameRef.current) {
+                    formData.append(
+                        "dataSourceName",
+                        pendingDataSourceNameRef.current,
+                    );
+                }
             }
             if (uploadMode === "merge" && mergeTargetFile) {
                 formData.append("targetFileId", mergeTargetFile.fileId);
+            }
+            if (uploadMode === "add-datasource") {
+                formData.append(
+                    "projectName",
+                    pendingCreateProjectNameRef.current,
+                );
+                formData.append(
+                    "dataSourceGroupId",
+                    pendingDataSourceGroupIdRef.current ?? "",
+                );
+                if (pendingDataSourceNameRef.current) {
+                    formData.append(
+                        "dataSourceName",
+                        pendingDataSourceNameRef.current,
+                    );
+                }
             }
             const response = await fetch("/api/files/upload", {
                 method: "POST",
@@ -1087,7 +1172,7 @@ export const useFileStore = ({
                 };
             };
             const parsed = payload.file ?? (payload as ParsedFile);
-            if (uploadMode === "merge") {
+            if (uploadMode === "merge" || uploadMode === "add-datasource") {
                 const mergedFile = normalizeLoadedFileState(parsed);
                 if (!mergedFile) {
                     throw new Error("项目导入结果无效");
@@ -1200,9 +1285,42 @@ export const useFileStore = ({
             setErrorMessage(message);
         } finally {
             pendingCreateProjectNameRef.current = "";
+            pendingDataSourceNameRef.current = "";
+            pendingDataSourceGroupIdRef.current = null;
             pendingMergeTargetFileIdRef.current = null;
             setIsUploading(false);
             event.target.value = "";
+        }
+    };
+
+    const onRenameDataSource = async (
+        fileId: string,
+        newName: string,
+    ): Promise<void> => {
+        try {
+            const response = await fetch(
+                `/api/files/${encodeURIComponent(fileId)}/datasource-name`,
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ dataSourceName: newName }),
+                },
+            );
+            if (!response.ok) {
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
+                throw new Error(payload.message ?? "保存数据源名称失败");
+            }
+            const payload = (await response.json()) as { file?: unknown };
+            const updated = normalizeLoadedFileState(payload.file);
+            if (updated) {
+                upsertFileState(updated);
+            }
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "保存数据源名称失败";
+            setErrorMessage(message);
         }
     };
 
@@ -1283,6 +1401,8 @@ export const useFileStore = ({
         setProjectNameDraft,
         projectNameDialogError,
         projectNameTargetFileId,
+        pendingDataSourceNameDraft,
+        setPendingDataSourceNameDraft,
         removingFileId,
         persistFileState,
         schedulePersistFileState,
@@ -1310,11 +1430,13 @@ export const useFileStore = ({
         onConfirmPendingFile,
         onOpenCreateProjectDialog,
         onOpenRenameProjectDialog,
+        onOpenAddDatasourceDialog,
         onCancelProjectNameDialog,
         onConfirmProjectNameDialog,
         onStartMergeUpload,
         onUploadFile,
         onExportFile,
+        onRenameDataSource,
         onRemoveFile,
     };
 };

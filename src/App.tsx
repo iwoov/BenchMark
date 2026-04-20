@@ -103,6 +103,8 @@ function App() {
         setProjectNameDraft,
         projectNameDialogError,
         projectNameTargetFileId,
+        pendingDataSourceNameDraft,
+        setPendingDataSourceNameDraft,
         removingFileId,
         flushPendingAIResults,
         updateRowAIResult: persistRowAIResult,
@@ -121,11 +123,13 @@ function App() {
         onConfirmPendingFile,
         onOpenCreateProjectDialog,
         onOpenRenameProjectDialog,
+        onOpenAddDatasourceDialog,
         onCancelProjectNameDialog,
         onConfirmProjectNameDialog,
         onStartMergeUpload,
         onUploadFile,
         onExportFile,
+        onRenameDataSource,
         onRemoveFile,
     } = useFileStore({ navigateToSection, setErrorMessage });
 
@@ -866,10 +870,14 @@ function App() {
                                     onOpenCreateProjectDialog={
                                         onOpenCreateProjectDialog
                                     }
+                                    onOpenAddDatasourceDialog={
+                                        onOpenAddDatasourceDialog
+                                    }
                                     onStartMergeUpload={onStartMergeUpload}
                                     onOpenRenameProjectDialog={
                                         onOpenRenameProjectDialog
                                     }
+                                    onRenameDataSource={onRenameDataSource}
                                     onRemoveFile={onRemoveFile}
                                     removingFileId={removingFileId}
                                 />
@@ -995,6 +1003,31 @@ function App() {
                                                                         ),
                                                                     )}
                                                                 </optgroup>
+                                                                {aiConfig
+                                                                    .evaluationTasks
+                                                                    .length >
+                                                                0 ? (
+                                                                    <optgroup label="数据质检">
+                                                                        {aiConfig.evaluationTasks.map(
+                                                                            (
+                                                                                task,
+                                                                            ) => (
+                                                                                <option
+                                                                                    key={
+                                                                                        task.id
+                                                                                    }
+                                                                                    value={
+                                                                                        task.id
+                                                                                    }
+                                                                                >
+                                                                                    {
+                                                                                        task.name
+                                                                                    }
+                                                                                </option>
+                                                                            ),
+                                                                        )}
+                                                                    </optgroup>
+                                                                ) : null}
                                                             </select>
                                                         </label>
                                                         <label className="batch-control">
@@ -1421,9 +1454,11 @@ function App() {
             <ProjectNameDialog
                 mode={projectNameDialogMode}
                 value={projectNameDraft}
+                dataSourceNameValue={pendingDataSourceNameDraft}
                 errorMessage={projectNameDialogError}
                 targetProjectName={projectNameDialogTargetFile?.fileName}
                 onChange={setProjectNameDraft}
+                onChangeDataSourceName={setPendingDataSourceNameDraft}
                 onCancel={onCancelProjectNameDialog}
                 onConfirm={onConfirmProjectNameDialog}
             />

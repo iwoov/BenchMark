@@ -1110,9 +1110,9 @@ export const useAIManager = ({
             if (aiBatchAbortRef.current === controller) {
                 aiBatchAbortRef.current = null;
             }
-                resetRowStreamProgress();
-            }
-        };
+            resetRowStreamProgress();
+        }
+    };
 
     const syncActiveAIConfigState = (nextConfig: AIDetectConfig) => {
         setAIConfig(nextConfig);
@@ -3054,7 +3054,10 @@ export const useAIManager = ({
             ? Array.from(
                   new Set(
                       rowIds
-                          .filter((rowId): rowId is string => typeof rowId === "string")
+                          .filter(
+                              (rowId): rowId is string =>
+                                  typeof rowId === "string",
+                          )
                           .map((rowId) => rowId.trim())
                           .filter((rowId) => rowId.length > 0),
                   ),
@@ -3289,6 +3292,297 @@ export const useAIManager = ({
                     error instanceof Error
                         ? error.message
                         : "批量数据清洗任务执行失败";
+                setAIBatchTask((previous) => ({
+                    ...previous,
+                    status: "completed",
+                    message,
+                }));
+                setErrorMessage(message);
+            } finally {
+                if (aiBatchAbortRef.current === controller) {
+                    aiBatchAbortRef.current = null;
+                }
+                resetRowStreamProgress();
+            }
+            return;
+        }
+
+        // Check if activeAIRunKey is an evaluation task ID
+        const evaluationBatchTask = normalizedConfig.evaluationTasks.find(
+            (task) => task.id === activeAIRunKey,
+        );
+
+        if (evaluationBatchTask) {
+            const task = evaluationBatchTask;
+            const generationRoute =
+                normalizedConfig.routes.find(
+                    (item) => item.name === task.answerGeneration.routeName,
+                ) ?? null;
+            const judgmentRoute =
+                normalizedConfig.routes.find(
+                    (item) => item.name === task.answerJudgment.routeName,
+                ) ?? null;
+
+            if (!generationRoute || !judgmentRoute) {
+                setErrorMessage(
+                    `【${task.name}】模型路由未配置完整，请先在 AI 配置中完成数据质检路由设置`,
+                );
+                return;
+            }
+            if (!task.enabled) {
+                setErrorMessage(`【${task.name}】当前任务未启用`);
+                return;
+            }
+            if (task.answerGeneration.questionFieldKeys.length === 0) {
+                setErrorMessage(`【${task.name}】请先在 AI 配置中选择题目字段`);
+                return;
+            }
+            if (task.answerJudgment.answerFieldKeys.length === 0) {
+                setErrorMessage(`【${task.name}】请先在 AI 配置中选择答案字段`);
+                return;
+            }
+
+            let nextCursor = 0;
+            const requestedConcurrency =
+                normalizeAIBatchConcurrency(aiBatchConcurrency);
+            const workerCount = Math.min(
+                requestedConcurrency,
+                targetRows.length,
+            );
+
+            aiBatchAbortRef.current?.abort();
+            const controller = new AbortController();
+            aiBatchAbortRef.current = controller;
+            resetRowStreamProgress();
+            resetRowBatchStatuses();
+            setAIBatchTask({
+                status: "running",
+                fileId: targetFileId,
+                fileName: targetFileName,
+                total: targetRows.length,
+                completed: 0,
+                success: 0,
+                failed: 0,
+                message:
+                    normalizedTargetRowIds && normalizedTargetRowIds.length > 0
+                        ? `已选择 ${targetRows.length} 条，批量执行数据质检【${task.name}】，并发 ${workerCount} 线程`
+                        : `批量执行数据质检【${task.name}】，并发 ${workerCount} 线程`,
+            });
+            setErrorMessage("");
+            setAIResultMessage("");
+
+            const runWorker = async () => {
+                while (!controller.signal.aborted) {
+                    const currentIndex = nextCursor;
+                    nextCursor += 1;
+                    if (currentIndex >= targetRows.length) {
+                        return;
+                    }
+
+                    const row = targetRows[currentIndex];
+                    let rowFailed = false;
+                    try {
+                        const questionFields = buildAIDetectFieldsForRow(
+                            targetColumns,
+                            row,
+                            task.answerGeneration.questionFieldKeys,
+                        );
+                        const answerFields = buildAIDetectFieldsForRow(
+                            targetColumns,
+                            row,
+                            task.answerJudgment.answerFieldKeys,
+                        );
+                        if (
+                            questionFields.length === 0 ||
+                            answerFields.length === 0
+                        ) {
+                            throw new Error(
+                                `【${task.name}】没有可提交的题目或答案字段`,
+                            );
+                        }
+
+                        const previousResults =
+                            row.evaluationResults?.[task.id] ?? [];
+                        const resultMap = new Map(
+                            previousResults.map((item) => [
+                                item.attemptIndex,
+                                item,
+                            ]),
+                        );
+
+                        const attemptIndexes = Array.from(
+                            { length: task.attemptCount },
+                            (_, i) => i + 1,
+                        );
+                        let nextAttemptCursor = 0;
+
+                        const runAttempt = async (attemptIndex: number) => {
+                            const generationStream =
+                                await requestAIDetectResult(
+                                    {
+                                        routeName: generationRoute.name,
+                                        prompt: task.answerGeneration.prompt,
+                                        fields: questionFields,
+                                    },
+                                    { signal: controller.signal },
+                                );
+                            const generationText =
+                                generationStream.answerText.trim();
+                            if (generationText.length === 0) {
+                                throw new Error(
+                                    `【${task.name}】第 ${attemptIndex} 次作答返回为空`,
+                                );
+                            }
+                            const generationParsed =
+                                parseAIResultJSON(generationText);
+                            const generationParsedJsonText = generationParsed
+                                ? JSON.stringify(generationParsed)
+                                : undefined;
+
+                            const judgmentStream = await requestAIDetectResult(
+                                {
+                                    routeName: judgmentRoute.name,
+                                    prompt: task.answerJudgment.prompt,
+                                    fields: [
+                                        ...questionFields,
+                                        {
+                                            title: "第一步模型结果",
+                                            type: "text" as const,
+                                            value: generationText,
+                                        },
+                                        ...answerFields,
+                                    ],
+                                },
+                                { signal: controller.signal },
+                            );
+                            const judgmentText =
+                                judgmentStream.answerText.trim();
+                            if (judgmentText.length === 0) {
+                                throw new Error(
+                                    `【${task.name}】第 ${attemptIndex} 次判定返回为空`,
+                                );
+                            }
+                            const judgmentParsed =
+                                parseAIResultJSON(judgmentText);
+                            const judgmentParsedJsonText = judgmentParsed
+                                ? JSON.stringify(judgmentParsed)
+                                : undefined;
+                            const finalVerdict =
+                                extractEvaluationVerdict(judgmentText);
+
+                            const saveResponse = await fetch(
+                                `/api/files/${encodeURIComponent(targetFileId)}/evaluation-results/${encodeURIComponent(task.id)}`,
+                                {
+                                    method: "PUT",
+                                    headers: {
+                                        "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                        rowId: row.rowId,
+                                        fileName: targetFileName,
+                                        attemptIndex,
+                                        generationResponseText: generationText,
+                                        generationParsedJsonText,
+                                        judgmentResponseText: judgmentText,
+                                        judgmentParsedJsonText,
+                                        finalVerdict,
+                                    }),
+                                },
+                            );
+                            if (!saveResponse.ok) {
+                                const payload = (await saveResponse
+                                    .json()
+                                    .catch(() => ({}))) as {
+                                    message?: string;
+                                };
+                                throw new Error(
+                                    payload.message ?? "保存数据质检结果失败",
+                                );
+                            }
+
+                            const nextResult: AIEvaluationAttemptResult = {
+                                attemptIndex,
+                                generationResponseText: generationText,
+                                generationParsedJsonText,
+                                judgmentResponseText: judgmentText,
+                                judgmentParsedJsonText,
+                                finalVerdict,
+                                updatedAt: new Date().toISOString(),
+                            };
+                            resultMap.set(attemptIndex, nextResult);
+                            const nextResults = Array.from(
+                                resultMap.values(),
+                            ).sort((a, b) => a.attemptIndex - b.attemptIndex);
+                            updateRowEvaluationResults(
+                                targetFileId,
+                                row.rowId,
+                                task.id,
+                                nextResults,
+                            );
+                        };
+
+                        const innerWorkerCount = Math.min(
+                            task.maxConcurrency,
+                            task.attemptCount,
+                        );
+                        const runInnerWorker = async () => {
+                            while (nextAttemptCursor < attemptIndexes.length) {
+                                const cursor = nextAttemptCursor;
+                                nextAttemptCursor += 1;
+                                const idx = attemptIndexes[cursor];
+                                if (idx === undefined) return;
+                                await runAttempt(idx);
+                            }
+                        };
+                        await Promise.all(
+                            Array.from({ length: innerWorkerCount }, () =>
+                                runInnerWorker(),
+                            ),
+                        );
+                    } catch {
+                        rowFailed = true;
+                    }
+
+                    if (controller.signal.aborted) {
+                        return;
+                    }
+                    markRowBatchStatus(
+                        row.rowId,
+                        rowFailed ? "failed" : "success",
+                    );
+                    setAIBatchTask((previous) => ({
+                        ...previous,
+                        completed: previous.completed + 1,
+                        success: previous.success + (rowFailed ? 0 : 1),
+                        failed: previous.failed + (rowFailed ? 1 : 0),
+                    }));
+                }
+            };
+
+            try {
+                await Promise.all(
+                    Array.from({ length: workerCount }, () => runWorker()),
+                );
+
+                if (controller.signal.aborted) {
+                    return;
+                }
+
+                setAIBatchTask((previous) => ({
+                    ...previous,
+                    status: "completed",
+                    message: `数据质检【${task.name}】已完成`,
+                }));
+                setErrorMessage("");
+            } catch (error) {
+                if (controller.signal.aborted) {
+                    return;
+                }
+
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "批量数据质检任务执行失败";
                 setAIBatchTask((previous) => ({
                     ...previous,
                     status: "completed",

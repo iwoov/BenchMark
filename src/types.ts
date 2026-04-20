@@ -28,6 +28,10 @@ export interface ParsedFile {
     fileName: string;
     sourceFileName?: string;
     updatedAt?: string;
+    /** UUID shared by all data sources that belong to the same project. */
+    projectId?: string;
+    /** Display name for this specific data source, e.g. "version1.1". */
+    dataSourceName?: string;
     columns: ParsedColumn[];
     rows: ParsedRow[];
     level1Options: string[];
@@ -160,7 +164,7 @@ export type AICleaningConfigMap = Record<
     AICleaningToolConfig
 >;
 
-export type AIBatchToolKey = AIDetectRunKey | AICleaningToolKey;
+export type AIBatchToolKey = AIDetectRunKey | AICleaningToolKey | (string & {});
 
 export type AIDetectStageConfigMap = Record<
     AIDetectStageKey,

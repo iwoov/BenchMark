@@ -37,6 +37,14 @@ export function HeaderBar({
     isExporting,
     activeFile,
 }: HeaderBarProps) {
+    // Determine data sources that share the same project as activeFile
+    const activeProjectId = activeFile?.projectId ?? activeFile?.fileId ?? null;
+    const siblingDataSources =
+        activeProjectId !== null
+            ? files.filter((f) => (f.projectId ?? f.fileId) === activeProjectId)
+            : [];
+    const showDataSourcePicker = siblingDataSources.length > 1;
+
     return (
         <header className="header-bar">
             <div className="header-inner">
@@ -53,19 +61,55 @@ export function HeaderBar({
                 <div className="header-project-picker">
                     <select
                         className="header-project-select"
-                        value={activeFileId ?? ""}
-                        onChange={(event) => onSelectFile(event.target.value)}
+                        value={activeProjectId ?? ""}
+                        onChange={(event) => {
+                            // Switch to the first datasource of the selected project
+                            const targetProjectId = event.target.value;
+                            const first = files.find(
+                                (f) =>
+                                    (f.projectId ?? f.fileId) ===
+                                    targetProjectId,
+                            );
+                            if (first) {
+                                onSelectFile(first.fileId);
+                            }
+                        }}
                         disabled={files.length === 0}
                     >
                         <option value="" disabled>
                             {files.length === 0 ? "暂无项目" : "请选择项目"}
                         </option>
-                        {files.map((file) => (
-                            <option key={file.fileId} value={file.fileId}>
-                                {file.fileName}
+                        {/* Deduplicate by projectId */}
+                        {Array.from(
+                            new Map(
+                                files.map((f) => [f.projectId ?? f.fileId, f]),
+                            ).values(),
+                        ).map((f) => (
+                            <option
+                                key={f.projectId ?? f.fileId}
+                                value={f.projectId ?? f.fileId}
+                            >
+                                {f.fileName}
                             </option>
                         ))}
                     </select>
+                    {showDataSourcePicker ? (
+                        <select
+                            className="header-project-select header-datasource-select"
+                            value={activeFileId ?? ""}
+                            onChange={(event) =>
+                                onSelectFile(event.target.value)
+                            }
+                        >
+                            {siblingDataSources.map((f) => (
+                                <option key={f.fileId} value={f.fileId}>
+                                    {f.dataSourceName
+                                        ? f.dataSourceName
+                                        : `数据源 ${f.fileId.slice(0, 6)}`}
+                                </option>
+                            ))}
+                        </select>
+                    ) : null}
                 </div>
 
                 <div className="header-actions">

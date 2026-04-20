@@ -27,6 +27,10 @@ type MergeImportOptions = {
     projectId: string;
     projectName: string;
     sourceFileName: string;
+    /** UUID that groups multiple data sources under one project. */
+    dataSourceGroupId?: string;
+    /** Display name for this specific data source, e.g. "version1.1". */
+    dataSourceName?: string;
 };
 
 export type MergeImportSummary = {
@@ -668,6 +672,12 @@ export function mergeImportedFileState(
         fileId: options.projectId,
         fileName: options.projectName,
         sourceFileName: options.sourceFileName,
+        ...(options.dataSourceGroupId
+            ? { projectId: options.dataSourceGroupId }
+            : {}),
+        ...(options.dataSourceName
+            ? { dataSourceName: options.dataSourceName }
+            : {}),
         columns: mergedColumns,
         rows: mergedRows,
         level1Options: getDistinctOptions(mergedRows, level1Key),

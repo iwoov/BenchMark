@@ -16,6 +16,7 @@ import {
     getColumnPrefs,
     isProjectNameInUse,
     listFileStateSummaries,
+    patchDataSourceName,
     renameProject,
     saveColumnPrefs,
     saveFileAICleaningToolResult,
@@ -101,8 +102,12 @@ function normalizeUploadedFileName(fileName: string): string {
     return trimmed.replace(/^"+|"+$/g, "");
 }
 
-function normalizeUploadMode(value: unknown): "create" | "merge" {
-    return value === "merge" ? "merge" : "create";
+function normalizeUploadMode(
+    value: unknown,
+): "create" | "merge" | "add-datasource" {
+    if (value === "merge") return "merge";
+    if (value === "add-datasource") return "add-datasource";
+    return "create";
 }
 
 function normalizeProjectName(value: unknown): string {
@@ -424,7 +429,9 @@ function normalizeFilterConditionsFromUnknown(
         );
 }
 
-function parseFilterConditionsQuery(value: unknown): NormalizedFilterCondition[] {
+function parseFilterConditionsQuery(
+    value: unknown,
+): NormalizedFilterCondition[] {
     return normalizeFilterConditionsFromUnknown(parseJsonQueryValue(value));
 }
 
@@ -468,12 +475,13 @@ function extractStateRows(state: unknown): Array<Record<string, unknown>> {
 
 function getRowIdFromRecord(row: Record<string, unknown>): string | null {
     const rowId = row.rowId;
-    return typeof rowId === "string" && rowId.trim().length > 0
-        ? rowId
-        : null;
+    return typeof rowId === "string" && rowId.trim().length > 0 ? rowId : null;
 }
 
-function getRowCellTextValue(row: Record<string, unknown>, columnKey: string): string {
+function getRowCellTextValue(
+    row: Record<string, unknown>,
+    columnKey: string,
+): string {
     const values = row.values;
     if (!values || typeof values !== "object") {
         return "";
@@ -555,9 +563,7 @@ function getDistinctOptionsForColumn(
     return options;
 }
 
-function buildFilterOptionsMap(
-    state: unknown,
-): Record<string, string[]> {
+function buildFilterOptionsMap(state: unknown): Record<string, string[]> {
     if (!state || typeof state !== "object") {
         return {};
     }
@@ -697,7 +703,10 @@ function replaceStateRow(
     });
 
     if (!updated) {
-        return { nextState: current as Record<string, unknown>, updated: false };
+        return {
+            nextState: current as Record<string, unknown>,
+            updated: false,
+        };
     }
 
     const currentVersion =
@@ -757,9 +766,7 @@ function toListCell(cell: unknown): unknown {
     };
 }
 
-function toListAIResults(
-    value: unknown,
-): Record<string, string> | undefined {
+function toListAIResults(value: unknown): Record<string, string> | undefined {
     if (!value || typeof value !== "object") {
         return undefined;
     }
@@ -785,8 +792,12 @@ function toListCleaningResults(
             if (!item || typeof item !== "object") {
                 return false;
             }
-            const responseText = (item as { responseText?: unknown }).responseText;
-            return typeof responseText === "string" && responseText.trim().length > 0;
+            const responseText = (item as { responseText?: unknown })
+                .responseText;
+            return (
+                typeof responseText === "string" &&
+                responseText.trim().length > 0
+            );
         })
         .map(([key]) => [key, { responseText: "1" }] as const);
     if (entries.length === 0) {
@@ -835,12 +846,19 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             const requestedProjectName = normalizeProjectName(
                 req.body?.projectName,
             );
+            const requestedDataSourceName =
+                typeof req.body?.dataSourceName === "string"
+                    ? req.body.dataSourceName.trim()
+                    : "";
             const requestedTargetFileId =
                 typeof req.body?.targetFileId === "string"
                     ? req.body.targetFileId.trim()
                     : "";
+
+            // For "merge" and "add-datasource" we need the existing target file.
             const persistedState =
-                uploadMode === "merge" && requestedTargetFileId
+                (uploadMode === "merge" || uploadMode === "add-datasource") &&
+                requestedTargetFileId
                     ? getFileState(requestedTargetFileId)
                     : null;
 
@@ -855,35 +873,104 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                         message: "目标项目不存在",
                     });
                 }
-            } else if (!requestedProjectName) {
-                return res.status(400).json({
-                    message: "缺少项目名称",
-                });
-            } else if (isProjectNameInUse(requestedProjectName)) {
-                return res.status(409).json({
-                    message: "项目名称已存在，请使用其他名称",
-                });
+            } else if (uploadMode === "add-datasource") {
+                if (!requestedTargetFileId) {
+                    return res.status(400).json({
+                        message: "缺少目标项目 ID",
+                    });
+                }
+                if (!persistedState) {
+                    return res.status(404).json({
+                        message: "目标项目不存在",
+                    });
+                }
+                if (!requestedDataSourceName) {
+                    return res.status(400).json({
+                        message: "缺少数据源名称",
+                    });
+                }
+            } else {
+                // "create" mode
+                if (!requestedProjectName) {
+                    return res.status(400).json({
+                        message: "缺少项目名称",
+                    });
+                } else if (isProjectNameInUse(requestedProjectName)) {
+                    return res.status(409).json({
+                        message: "项目名称已存在，请使用其他名称",
+                    });
+                }
             }
 
-            const projectId = persistedState?.fileId ?? randomUUID();
-            const projectName =
-                persistedState?.fileName ?? requestedProjectName;
+            let fileId: string;
+            let projectName: string;
+            let dataSourceGroupId: string | undefined;
+            let dataSourceName: string | undefined;
+            let existingStateForMerge: unknown;
+
+            if (uploadMode === "merge") {
+                // Continue import into the same data source.
+                fileId = persistedState!.fileId;
+                projectName = persistedState!.fileName;
+                const existingStateRaw = persistedState!.state as Record<
+                    string,
+                    unknown
+                >;
+                dataSourceGroupId =
+                    typeof existingStateRaw.projectId === "string"
+                        ? existingStateRaw.projectId
+                        : undefined;
+                dataSourceName =
+                    typeof existingStateRaw.dataSourceName === "string"
+                        ? existingStateRaw.dataSourceName
+                        : undefined;
+                existingStateForMerge = persistedState!.state;
+            } else if (uploadMode === "add-datasource") {
+                // New data source in existing project.
+                fileId = randomUUID();
+                const existingStateRaw = persistedState!.state as Record<
+                    string,
+                    unknown
+                >;
+                projectName = persistedState!.fileName;
+                // The group ID is either an explicit projectId stored in state,
+                // or falls back to the target file's own fileId.
+                dataSourceGroupId =
+                    typeof existingStateRaw.projectId === "string"
+                        ? existingStateRaw.projectId
+                        : persistedState!.fileId;
+                dataSourceName = requestedDataSourceName;
+                existingStateForMerge = undefined; // fresh data source
+            } else {
+                // "create" — brand new project.
+                fileId = randomUUID();
+                projectName = requestedProjectName;
+                // For first data source use fileId as the group anchor.
+                dataSourceGroupId = fileId;
+                dataSourceName = requestedDataSourceName || undefined;
+                existingStateForMerge = undefined;
+            }
+
             const parsed = await parseUploadedFile(
                 file,
                 normalizedFileName,
-                projectId,
+                fileId,
             );
             const { state, summary } = mergeImportedFileState(parsed, {
-                existingState: persistedState?.state,
-                projectId,
+                existingState: existingStateForMerge,
+                projectId: fileId,
                 projectName,
                 sourceFileName: normalizedFileName,
+                dataSourceGroupId,
+                dataSourceName,
             });
 
             const backupLabel =
                 uploadMode === "merge"
                     ? `merge-${projectName}`
-                    : `upload-${normalizedFileName}`;
+                    : uploadMode === "add-datasource"
+                      ? `add-ds-${projectName}-${requestedDataSourceName}`
+                      : `upload-${normalizedFileName}`;
             const backupPath = await createDatabaseBackup(backupLabel);
             // eslint-disable-next-line no-console
             console.log(
@@ -891,14 +978,14 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             );
 
             const versionedState = attachClientStateVersion(state);
-            saveFileState(projectId, projectName, versionedState);
+            saveFileState(fileId, projectName, versionedState);
             const responseState = attachPersistedMetadataToState(
                 attachEvaluationResultsToState(
                     attachCleaningResultsToState(
                         versionedState,
-                        listFileAICleaningResults(projectId),
+                        listFileAICleaningResults(fileId),
                     ),
-                    listFileAIEvaluationResults(projectId),
+                    listFileAIEvaluationResults(fileId),
                 ),
                 new Date().toISOString(),
             );
@@ -1008,12 +1095,17 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         }
         const rowIds = Array.isArray(req.body?.rowIds)
             ? req.body.rowIds
-                  .filter((value: unknown): value is string => typeof value === "string")
+                  .filter(
+                      (value: unknown): value is string =>
+                          typeof value === "string",
+                  )
                   .map((value: string) => value.trim())
                   .filter((value: string) => value.length > 0)
             : [];
         if (rowIds.length === 0) {
-            return res.status(400).json({ message: "rowIds must be a string array" });
+            return res
+                .status(400)
+                .json({ message: "rowIds must be a string array" });
         }
 
         const rowMap = new Map<string, Record<string, unknown>>();
@@ -1029,8 +1121,9 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                     rowMap.get(rowId) ?? null,
             )
             .filter(
-                (row: Record<string, unknown> | null): row is Record<string, unknown> =>
-                    row !== null,
+                (
+                    row: Record<string, unknown> | null,
+                ): row is Record<string, unknown> => row !== null,
             );
         const rowsWithResults = attachResultsToRows(fileId, rows, {
             includeCleaning: true,
@@ -1122,31 +1215,70 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             return res.status(404).json({ message: "file state not found" });
         }
 
+        // Use projectId from state (falls back to fileId for legacy single-datasource projects)
+        const currentState = current.state as Record<string, unknown>;
+        const projectId =
+            typeof currentState.projectId === "string"
+                ? currentState.projectId
+                : fileId;
+
         if (
             nextFileName !== current.fileName &&
-            isProjectNameInUse(nextFileName, fileId)
+            isProjectNameInUse(nextFileName, projectId)
         ) {
             return res.status(409).json({
                 message: "项目名称已存在，请使用其他名称",
             });
         }
 
-        const renamed = renameProject(fileId, nextFileName);
-        if (!renamed) {
+        const renamedFiles = renameProject(fileId, nextFileName);
+        if (!renamedFiles) {
+            return res.status(404).json({ message: "file state not found" });
+        }
+
+        const files = renamedFiles.map((renamed) => {
+            const fid = (renamed.state as Record<string, unknown>)
+                .fileId as string;
+            return attachPersistedMetadataToState(
+                attachEvaluationResultsToState(
+                    attachCleaningResultsToState(
+                        renamed.state,
+                        listFileAICleaningResults(fid),
+                    ),
+                    listFileAIEvaluationResults(fid),
+                ),
+                renamed.updatedAt,
+            );
+        });
+
+        // Return the requested file as primary, plus all sibling datasources
+        const primaryFile = files.find(
+            (f) => (f as Record<string, unknown>).fileId === fileId,
+        );
+        return res.json({ file: primaryFile ?? files[0], files });
+    });
+
+    app.put("/api/files/:fileId/datasource-name", (req, res) => {
+        const { fileId } = req.params;
+        const rawName = req.body?.dataSourceName;
+        const dataSourceName =
+            typeof rawName === "string" ? rawName.trim() : "";
+
+        const updated = patchDataSourceName(fileId, dataSourceName);
+        if (!updated) {
             return res.status(404).json({ message: "file state not found" });
         }
 
         const responseState = attachPersistedMetadataToState(
             attachEvaluationResultsToState(
                 attachCleaningResultsToState(
-                    renamed.state,
+                    updated.state,
                     listFileAICleaningResults(fileId),
                 ),
                 listFileAIEvaluationResults(fileId),
             ),
-            renamed.updatedAt,
+            updated.updatedAt,
         );
-
         return res.json({ file: responseState });
     });
 
@@ -1233,10 +1365,14 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             return res.status(400).json({ message: "row must be an object" });
         }
         if ((row as { rowId?: unknown }).rowId !== rowId) {
-            return res.status(400).json({ message: "row.rowId must match route rowId" });
+            return res
+                .status(400)
+                .json({ message: "row.rowId must match route rowId" });
         }
 
-        const sanitizedRow = sanitizeRowForState(row as Record<string, unknown>);
+        const sanitizedRow = sanitizeRowForState(
+            row as Record<string, unknown>,
+        );
         const { nextState, updated } = replaceStateRow(
             item.state,
             rowId,

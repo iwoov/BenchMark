@@ -503,6 +503,41 @@ body::before {
     flex-shrink: 0;
 }
 
+.btn-sm {
+    padding: 5px 10px;
+    font-size: 12px;
+    gap: 4px;
+}
+
+.btn-sm svg {
+    width: 13px;
+    height: 13px;
+}
+
+.btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.btn-icon:hover {
+    color: var(--text-primary);
+    background: var(--bg-glass);
+}
+
+.btn-icon svg {
+    width: 13px;
+    height: 13px;
+}
+
 .hidden-input {
     display: none;
 }

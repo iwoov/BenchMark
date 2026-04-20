@@ -3797,3 +3797,111 @@
 .project-empty-state p {
     color: var(--text-secondary);
 }
+
+/* ── Datasource list inside project cards ── */
+
+.project-datasource-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+
+.project-datasource-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+    transition: background var(--transition-fast);
+}
+
+.project-datasource-item:last-child {
+    border-bottom: none;
+}
+
+.project-datasource-item.active {
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+}
+
+.project-datasource-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.project-datasource-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.project-datasource-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.project-datasource-metrics {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.project-datasource-metrics span {
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-glass);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+.project-datasource-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    align-items: center;
+}
+
+/* Datasource name inline editor */
+
+.project-datasource-name-editor {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.project-datasource-name-input {
+    flex: 1;
+    min-width: 120px;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    outline: none;
+}
+
+.project-datasource-name-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}

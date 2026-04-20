@@ -806,6 +806,16 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
     const rawRowCount =
         typeof candidate.rowCount === "number" ? candidate.rowCount : undefined;
     const hasRows = rows.length > 0;
+    const projectId =
+        typeof candidate.projectId === "string" &&
+        candidate.projectId.trim().length > 0
+            ? candidate.projectId.trim()
+            : undefined;
+    const dataSourceName =
+        typeof candidate.dataSourceName === "string" &&
+        candidate.dataSourceName.trim().length > 0
+            ? candidate.dataSourceName.trim()
+            : undefined;
     return {
         ...normalized,
         filterConditions: [],
@@ -815,5 +825,7 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
         ),
         rowCount: rawRowCount ?? rows.length,
         detailLoaded: hasRows,
+        ...(projectId ? { projectId } : {}),
+        ...(dataSourceName ? { dataSourceName } : {}),
     };
 }

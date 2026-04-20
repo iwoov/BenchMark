@@ -1438,10 +1438,24 @@ function readFileStateJson(fileId: string): unknown {
 
 export function isProjectNameInUse(
     fileName: string,
-    excludeFileId?: string,
+    excludeProjectId?: string,
 ): boolean {
+    if (excludeProjectId) {
+        // Name is in use if another *project* (different projectId) already uses it.
+        // We derive projectId from state_json; fall back to file_id for legacy rows.
+        const row = db
+            .prepare(
+                `SELECT 1 FROM file_states
+                 WHERE file_name = ?
+                   AND COALESCE(json_extract(state_json, '$.projectId'), file_id) != ?
+                 LIMIT 1`,
+            )
+            .get(fileName, excludeProjectId);
+        return Boolean(row);
+    }
+
     const owner = getFileStateByName(fileName);
-    if (owner && owner.fileId !== excludeFileId) {
+    if (owner) {
         return true;
     }
 
@@ -1475,25 +1489,77 @@ function renameProjectReferences(
     previousFileName: string,
     nextFileName: string,
 ): PersistedFileState | null {
-    const existingState = readFileStateJson(fileId);
-    if (!existingState || typeof existingState !== "object") {
+    // Determine the project group so we can rename ALL data sources in the project.
+    const existingStateRaw = readFileStateJson(fileId);
+    const projectGroupId =
+        existingStateRaw &&
+        typeof existingStateRaw === "object" &&
+        typeof (existingStateRaw as Record<string, unknown>).projectId ===
+            "string"
+            ? ((existingStateRaw as Record<string, unknown>)
+                  .projectId as string)
+            : fileId;
+
+    // Collect all files belonging to this project group.
+    const allProjectFiles = db
+        .prepare(
+            `SELECT file_id, state_json FROM file_states
+             WHERE file_name = ?
+               AND COALESCE(json_extract(state_json, '$.projectId'), file_id) = ?`,
+        )
+        .all(previousFileName, projectGroupId) as Array<{
+        file_id: string;
+        state_json: string;
+    }>;
+
+    // Fallback: if no results via group (e.g. legacy row), just use the single fileId.
+    const filesToRename =
+        allProjectFiles.length > 0
+            ? allProjectFiles
+            : (() => {
+                  const single = readFileStateJson(fileId);
+                  if (!single) return [];
+                  return [
+                      { file_id: fileId, state_json: JSON.stringify(single) },
+                  ];
+              })();
+
+    if (filesToRename.length === 0) {
         return null;
     }
 
-    const nextState = {
-        ...(existingState as Record<string, unknown>),
-        fileName: nextFileName,
-    };
-
     const tx = db.transaction(() => {
-        db.prepare(
-            `UPDATE file_states
-             SET file_name = ?,
-                 state_json = ?,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE file_id = ?`,
-        ).run(nextFileName, JSON.stringify(nextState), fileId);
+        for (const row of filesToRename) {
+            let parsedState: Record<string, unknown> = {};
+            try {
+                parsedState = JSON.parse(row.state_json) as Record<
+                    string,
+                    unknown
+                >;
+            } catch {
+                /* ignore */
+            }
+            const nextState = { ...parsedState, fileName: nextFileName };
+            db.prepare(
+                `UPDATE file_states
+                 SET file_name = ?,
+                     state_json = ?,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE file_id = ?`,
+            ).run(nextFileName, JSON.stringify(nextState), row.file_id);
 
+            AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
+                db.prepare(
+                    `UPDATE ${getAICleaningResultTableName(toolKey)}
+                     SET file_name = ?,
+                         updated_at = CURRENT_TIMESTAMP
+                     WHERE file_id = ?`,
+                ).run(nextFileName, row.file_id);
+            });
+        }
+
+        // AI configs and stage configs are keyed by file_name (project name),
+        // so update once for the whole project.
         db.prepare(
             "UPDATE ai_configs SET file_name = ? WHERE file_name = ?",
         ).run(nextFileName, previousFileName);
@@ -1504,15 +1570,6 @@ function renameProjectReferences(
                  updated_at = CURRENT_TIMESTAMP
              WHERE file_name = ?`,
         ).run(nextFileName, previousFileName);
-
-        AI_CLEANING_TOOL_ORDER.forEach((toolKey) => {
-            db.prepare(
-                `UPDATE ${getAICleaningResultTableName(toolKey)}
-                 SET file_name = ?,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE file_id = ?`,
-            ).run(nextFileName, fileId);
-        });
     });
 
     tx();
@@ -1537,17 +1594,54 @@ export function saveFileState(
 export function renameProject(
     fileId: string,
     nextFileName: string,
-): PersistedFileState | null {
+): PersistedFileState[] | null {
     const existing = getFileState(fileId);
     if (!existing) {
         return null;
     }
 
     if (existing.fileName === nextFileName) {
-        return existing;
+        return [existing];
     }
 
-    return renameProjectReferences(fileId, existing.fileName, nextFileName);
+    renameProjectReferences(fileId, existing.fileName, nextFileName);
+
+    // Return all updated data sources in the same project.
+    const stateRaw = readFileStateJson(fileId);
+    const projectGroupId =
+        stateRaw &&
+        typeof stateRaw === "object" &&
+        typeof (stateRaw as Record<string, unknown>).projectId === "string"
+            ? ((stateRaw as Record<string, unknown>).projectId as string)
+            : fileId;
+
+    const updatedFiles = db
+        .prepare(
+            `SELECT file_id, file_name, state_json, updated_at FROM file_states
+             WHERE file_name = ?
+               AND COALESCE(json_extract(state_json, '$.projectId'), file_id) = ?`,
+        )
+        .all(nextFileName, projectGroupId) as Array<{
+        file_id: string;
+        file_name: string;
+        state_json: string;
+        updated_at: string;
+    }>;
+
+    return updatedFiles
+        .map((row) => {
+            try {
+                return {
+                    fileId: row.file_id,
+                    fileName: row.file_name,
+                    state: JSON.parse(row.state_json) as unknown,
+                    updatedAt: row.updated_at,
+                };
+            } catch {
+                return null;
+            }
+        })
+        .filter((item): item is PersistedFileState => item !== null);
 }
 
 export function updateFileStateAIResults(
@@ -1621,6 +1715,26 @@ export function updateFileStateAIResults(
     ).run(JSON.stringify(state), fileId);
 
     return updatedCount;
+}
+
+export function patchDataSourceName(
+    fileId: string,
+    dataSourceName: string,
+): PersistedFileState | null {
+    const existing = getFileState(fileId);
+    if (!existing) {
+        return null;
+    }
+    const state = existing.state as Record<string, unknown>;
+    if (dataSourceName.trim().length > 0) {
+        state.dataSourceName = dataSourceName.trim();
+    } else {
+        delete state.dataSourceName;
+    }
+    db.prepare(
+        "UPDATE file_states SET state_json = ?, updated_at = CURRENT_TIMESTAMP WHERE file_id = ?",
+    ).run(JSON.stringify(state), fileId);
+    return getFileState(fileId);
 }
 
 export function deleteFileState(fileId: string): void {
