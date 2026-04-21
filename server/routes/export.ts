@@ -221,10 +221,12 @@ export const registerExportRoute = (app: Express) => {
                     generation_model: genRoute?.model ?? null,
                     generation_provider: genProvider?.name ?? null,
                     generation_provider_api_type: genProvider?.apiType ?? null,
+                    generation_provider_api_url: genProvider?.apiUrl ?? null,
                     judgment_route_name: judgeRouteName ?? null,
                     judgment_model: judgeRoute?.model ?? null,
                     judgment_provider: judgeProvider?.name ?? null,
                     judgment_provider_api_type: judgeProvider?.apiType ?? null,
+                    judgment_provider_api_url: judgeProvider?.apiUrl ?? null,
 
                     generation_system_prompt:
                         taskConfig?.answerGeneration.prompt ?? null,
