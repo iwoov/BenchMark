@@ -127,6 +127,14 @@ export interface AIEvaluationAttemptResult {
     judgmentParsedJsonText?: string;
     finalVerdict: string;
     updatedAt?: string;
+    generationLatencyMs?: number;
+    judgmentLatencyMs?: number;
+    generationInputTokens?: number;
+    generationOutputTokens?: number;
+    judgmentInputTokens?: number;
+    judgmentOutputTokens?: number;
+    generationFinishReason?: string;
+    judgmentFinishReason?: string;
 }
 
 export interface AIChatConfig {

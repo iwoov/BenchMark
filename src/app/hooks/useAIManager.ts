@@ -2175,6 +2175,16 @@ export const useAIManager = ({
                             judgmentResponseText: judgmentText,
                             judgmentParsedJsonText,
                             finalVerdict,
+                            generationLatencyMs: generationStream.latencyMs,
+                            judgmentLatencyMs: judgmentStream.latencyMs,
+                            generationInputTokens: generationStream.inputTokens,
+                            generationOutputTokens:
+                                generationStream.outputTokens,
+                            judgmentInputTokens: judgmentStream.inputTokens,
+                            judgmentOutputTokens: judgmentStream.outputTokens,
+                            generationFinishReason:
+                                generationStream.finishReason,
+                            judgmentFinishReason: judgmentStream.finishReason,
                         }),
                     },
                 );
@@ -2193,6 +2203,14 @@ export const useAIManager = ({
                     judgmentParsedJsonText,
                     finalVerdict,
                     updatedAt: new Date().toISOString(),
+                    generationLatencyMs: generationStream.latencyMs,
+                    judgmentLatencyMs: judgmentStream.latencyMs,
+                    generationInputTokens: generationStream.inputTokens,
+                    generationOutputTokens: generationStream.outputTokens,
+                    judgmentInputTokens: judgmentStream.inputTokens,
+                    judgmentOutputTokens: judgmentStream.outputTokens,
+                    generationFinishReason: generationStream.finishReason,
+                    judgmentFinishReason: judgmentStream.finishReason,
                 };
                 resultMap.set(attemptIndex, nextResult);
                 completedCount += 1;
@@ -3486,6 +3504,22 @@ export const useAIManager = ({
                                         judgmentResponseText: judgmentText,
                                         judgmentParsedJsonText,
                                         finalVerdict,
+                                        generationLatencyMs:
+                                            generationStream.latencyMs,
+                                        judgmentLatencyMs:
+                                            judgmentStream.latencyMs,
+                                        generationInputTokens:
+                                            generationStream.inputTokens,
+                                        generationOutputTokens:
+                                            generationStream.outputTokens,
+                                        judgmentInputTokens:
+                                            judgmentStream.inputTokens,
+                                        judgmentOutputTokens:
+                                            judgmentStream.outputTokens,
+                                        generationFinishReason:
+                                            generationStream.finishReason,
+                                        judgmentFinishReason:
+                                            judgmentStream.finishReason,
                                     }),
                                 },
                             );
@@ -3508,6 +3542,19 @@ export const useAIManager = ({
                                 judgmentParsedJsonText,
                                 finalVerdict,
                                 updatedAt: new Date().toISOString(),
+                                generationLatencyMs: generationStream.latencyMs,
+                                judgmentLatencyMs: judgmentStream.latencyMs,
+                                generationInputTokens:
+                                    generationStream.inputTokens,
+                                generationOutputTokens:
+                                    generationStream.outputTokens,
+                                judgmentInputTokens: judgmentStream.inputTokens,
+                                judgmentOutputTokens:
+                                    judgmentStream.outputTokens,
+                                generationFinishReason:
+                                    generationStream.finishReason,
+                                judgmentFinishReason:
+                                    judgmentStream.finishReason,
                             };
                             resultMap.set(attemptIndex, nextResult);
                             const nextResults = Array.from(

@@ -619,6 +619,9 @@ type AIClientStreamEvent =
       }
     | {
           type: "done";
+          inputTokens?: number;
+          outputTokens?: number;
+          finishReason?: string;
       };
 
 function writeAIClientStreamEvent(
@@ -891,6 +894,68 @@ function extractStreamTextPayload(payload: unknown): {
         answerText: answerChunks.join(""),
         thinkingText: thinkingChunks.join(""),
     };
+}
+
+function extractOpenAIStreamMeta(payload: unknown): {
+    finishReason?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+} {
+    const root = asRecord(payload);
+    if (!root) return {};
+    const result: {
+        finishReason?: string;
+        inputTokens?: number;
+        outputTokens?: number;
+    } = {};
+    const choices = Array.isArray(root.choices) ? root.choices : [];
+    const firstChoice = asRecord(choices[0]);
+    if (
+        firstChoice &&
+        typeof firstChoice.finish_reason === "string" &&
+        firstChoice.finish_reason.length > 0
+    ) {
+        result.finishReason = firstChoice.finish_reason;
+    }
+    const usage = asRecord(root.usage);
+    if (usage) {
+        if (typeof usage.prompt_tokens === "number")
+            result.inputTokens = usage.prompt_tokens;
+        if (typeof usage.completion_tokens === "number")
+            result.outputTokens = usage.completion_tokens;
+    }
+    return result;
+}
+
+function extractGeminiStreamMeta(payload: unknown): {
+    finishReason?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+} {
+    const root = asRecord(payload);
+    if (!root) return {};
+    const result: {
+        finishReason?: string;
+        inputTokens?: number;
+        outputTokens?: number;
+    } = {};
+    const candidates = Array.isArray(root.candidates) ? root.candidates : [];
+    const firstCandidate = asRecord(candidates[0]);
+    if (
+        firstCandidate &&
+        typeof firstCandidate.finishReason === "string" &&
+        firstCandidate.finishReason.length > 0
+    ) {
+        result.finishReason = firstCandidate.finishReason;
+    }
+    const usage = asRecord(root.usageMetadata);
+    if (usage) {
+        if (typeof usage.promptTokenCount === "number")
+            result.inputTokens = usage.promptTokenCount;
+        if (typeof usage.candidatesTokenCount === "number")
+            result.outputTokens = usage.candidatesTokenCount;
+    }
+    return result;
 }
 
 type AIDetectField = {
@@ -1314,7 +1379,10 @@ function buildOpenAIUserContent(
     ];
 }
 
-function buildChatSystemPrompt(prompt: string, fields: AIDetectField[]): string {
+function buildChatSystemPrompt(
+    prompt: string,
+    fields: AIDetectField[],
+): string {
     if (
         !prompt.includes("{{fields_json}}") &&
         !prompt.includes("{{fields_text}}") &&
@@ -1525,6 +1593,15 @@ type AttemptError = Error & {
     emitted: boolean;
 };
 
+interface AIRouteStepResult {
+    answerText: string;
+    thinkingText: string;
+    emittedAny: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
+    finishReason?: string;
+}
+
 function createAttemptError(
     message: string,
     status: number,
@@ -1553,13 +1630,19 @@ function validateProviderPayload(
         return { message: "provider name must be a non-empty string" };
     }
     if (!isAIProviderApiType(candidate.apiType)) {
-        return { message: `【${candidate.name}】apiType must be openai, gemini or anthropic` };
+        return {
+            message: `【${candidate.name}】apiType must be openai, gemini or anthropic`,
+        };
     }
     if (!isNonEmptyString(candidate.apiUrl)) {
-        return { message: `【${candidate.name}】apiUrl must be a non-empty string` };
+        return {
+            message: `【${candidate.name}】apiUrl must be a non-empty string`,
+        };
     }
     if (!isNonEmptyString(candidate.apiKey)) {
-        return { message: `【${candidate.name}】apiKey must be a non-empty string` };
+        return {
+            message: `【${candidate.name}】apiKey must be a non-empty string`,
+        };
     }
     return {
         provider: {
@@ -1590,7 +1673,9 @@ function validateRoutePayload(
         return { message: "route name must be a non-empty string" };
     }
     if (!isNonEmptyString(candidate.model)) {
-        return { message: `【${candidate.name}】model must be a non-empty string` };
+        return {
+            message: `【${candidate.name}】model must be a non-empty string`,
+        };
     }
     if (
         candidate.reasoningEffort !== undefined &&
@@ -1609,7 +1694,9 @@ function validateRoutePayload(
         };
     }
     if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
-        return { message: `【${candidate.name}】steps must be a non-empty array` };
+        return {
+            message: `【${candidate.name}】steps must be a non-empty array`,
+        };
     }
     const steps: AIRouteStep[] = [];
     let routeApiType: AIProviderApiType | null = null;
@@ -1685,9 +1772,13 @@ function validateChatPayload(
     }
     if (
         !Array.isArray(candidate.defaultSubmitFieldKeys) ||
-        !candidate.defaultSubmitFieldKeys.every((entry) => typeof entry === "string")
+        !candidate.defaultSubmitFieldKeys.every(
+            (entry) => typeof entry === "string",
+        )
     ) {
-        return { message: "chat defaultSubmitFieldKeys must be a string array" };
+        return {
+            message: "chat defaultSubmitFieldKeys must be a string array",
+        };
     }
     return {
         chat: {
@@ -1746,7 +1837,9 @@ function validateCleaningPayload(
         }
         if (
             !Array.isArray(candidate.submitFieldKeys) ||
-            !candidate.submitFieldKeys.every((entry) => typeof entry === "string")
+            !candidate.submitFieldKeys.every(
+                (entry) => typeof entry === "string",
+            )
         ) {
             return {
                 message: `${AI_CLEANING_TOOL_LABELS[toolKey]} submitFieldKeys must be a string array`,
@@ -1762,7 +1855,9 @@ function validateCleaningPayload(
                 message: `${AI_CLEANING_TOOL_LABELS[toolKey]} outputMappings must be an array`,
             };
         }
-        const allowedOutputKeys = new Set(AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey]);
+        const allowedOutputKeys = new Set(
+            AI_CLEANING_TOOL_OUTPUT_KEYS[toolKey],
+        );
         const mappingMap = new Map<string, AICleaningOutputMapping>();
         for (const mapping of candidate.outputMappings) {
             if (!mapping || typeof mapping !== "object") {
@@ -1844,13 +1939,19 @@ function validateEvaluationTask(
         answerJudgment?: unknown;
     };
     if (!isNonEmptyString(candidate.id)) {
-        return { message: `evaluationTasks[${index}].id must be a non-empty string` };
+        return {
+            message: `evaluationTasks[${index}].id must be a non-empty string`,
+        };
     }
     if (!isNonEmptyString(candidate.name)) {
-        return { message: `evaluationTasks[${index}].name must be a non-empty string` };
+        return {
+            message: `evaluationTasks[${index}].name must be a non-empty string`,
+        };
     }
     if (typeof candidate.enabled !== "boolean") {
-        return { message: `evaluationTasks[${index}].enabled must be a boolean` };
+        return {
+            message: `evaluationTasks[${index}].enabled must be a boolean`,
+        };
     }
     if (!isValidAIEvaluationAttemptCount(candidate.attemptCount)) {
         return {
@@ -1862,11 +1963,21 @@ function validateEvaluationTask(
             message: `evaluationTasks[${index}].maxConcurrency must be an integer between ${MIN_AI_EVALUATION_MAX_CONCURRENCY} and ${MAX_AI_EVALUATION_MAX_CONCURRENCY}`,
         };
     }
-    if (!candidate.answerGeneration || typeof candidate.answerGeneration !== "object") {
-        return { message: `evaluationTasks[${index}].answerGeneration must be an object` };
+    if (
+        !candidate.answerGeneration ||
+        typeof candidate.answerGeneration !== "object"
+    ) {
+        return {
+            message: `evaluationTasks[${index}].answerGeneration must be an object`,
+        };
     }
-    if (!candidate.answerJudgment || typeof candidate.answerJudgment !== "object") {
-        return { message: `evaluationTasks[${index}].answerJudgment must be an object` };
+    if (
+        !candidate.answerJudgment ||
+        typeof candidate.answerJudgment !== "object"
+    ) {
+        return {
+            message: `evaluationTasks[${index}].answerJudgment must be an object`,
+        };
     }
 
     const validateStepRoute = (label: string, routeName: unknown) => {
@@ -1920,28 +2031,36 @@ function validateEvaluationTask(
     }
     if (!isNonEmptyString(answerGeneration.prompt)) {
         return {
-            message: "evaluation answerGeneration prompt must be a non-empty string",
+            message:
+                "evaluation answerGeneration prompt must be a non-empty string",
         };
     }
     if (!isNonEmptyString(answerJudgment.prompt)) {
         return {
-            message: "evaluation answerJudgment prompt must be a non-empty string",
+            message:
+                "evaluation answerJudgment prompt must be a non-empty string",
         };
     }
     if (
         !Array.isArray(answerGeneration.questionFieldKeys) ||
-        !answerGeneration.questionFieldKeys.every((entry) => typeof entry === "string")
+        !answerGeneration.questionFieldKeys.every(
+            (entry) => typeof entry === "string",
+        )
     ) {
         return {
-            message: "evaluation answerGeneration questionFieldKeys must be a string array",
+            message:
+                "evaluation answerGeneration questionFieldKeys must be a string array",
         };
     }
     if (
         !Array.isArray(answerJudgment.answerFieldKeys) ||
-        !answerJudgment.answerFieldKeys.every((entry) => typeof entry === "string")
+        !answerJudgment.answerFieldKeys.every(
+            (entry) => typeof entry === "string",
+        )
     ) {
         return {
-            message: "evaluation answerJudgment answerFieldKeys must be a string array",
+            message:
+                "evaluation answerJudgment answerFieldKeys must be a string array",
         };
     }
 
@@ -1950,18 +2069,24 @@ function validateEvaluationTask(
             id: candidate.id.trim(),
             name: candidate.name.trim(),
             enabled: candidate.enabled,
-            attemptCount: normalizeAIEvaluationAttemptCount(candidate.attemptCount),
+            attemptCount: normalizeAIEvaluationAttemptCount(
+                candidate.attemptCount,
+            ),
             maxConcurrency: normalizeAIEvaluationMaxConcurrency(
                 candidate.maxConcurrency,
             ),
             answerGeneration: {
                 routeName: generationRoute.routeName,
-                prompt: answerGeneration.prompt ?? DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
+                prompt:
+                    answerGeneration.prompt ??
+                    DEFAULT_AI_EVALUATION_GENERATION_PROMPT,
                 questionFieldKeys: answerGeneration.questionFieldKeys,
             },
             answerJudgment: {
                 routeName: judgmentRoute.routeName,
-                prompt: answerJudgment.prompt ?? DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT,
+                prompt:
+                    answerJudgment.prompt ??
+                    DEFAULT_AI_EVALUATION_JUDGMENT_PROMPT,
                 answerFieldKeys: answerJudgment.answerFieldKeys,
             },
         },
@@ -1992,7 +2117,9 @@ function validateEvaluationPayload(
             return { message: validation.message };
         }
         if (idSet.has(validation.task.id)) {
-            return { message: `evaluationTasks[${index}].id duplicated: ${validation.task.id}` };
+            return {
+                message: `evaluationTasks[${index}].id duplicated: ${validation.task.id}`,
+            };
         }
         idSet.add(validation.task.id);
         tasks.push(validation.task);
@@ -2046,7 +2173,9 @@ function resolveRouteSteps(route: AIModelRouteConfig): {
                 model: route.model,
                 reasoningEffort: route.reasoningEffort,
                 retryCount: route.retryCount,
-                steps: route.steps.map((item) => ({ providerName: item.providerName })),
+                steps: route.steps.map((item) => ({
+                    providerName: item.providerName,
+                })),
             },
         });
     }
@@ -2106,7 +2235,7 @@ async function runOpenAIProviderAttempt({
     requestId: string;
     onAnswerChunk?: (chunk: string) => void;
     onThinkingChunk?: (chunk: string) => void;
-}): Promise<{ answerText: string; thinkingText: string; emittedAny: boolean }> {
+}): Promise<AIRouteStepResult> {
     const normalizedModel = normalizeModelName(route.model);
     const normalizedOpenAIUrl = normalizeOpenAIUrl(provider.apiUrl);
     try {
@@ -2143,6 +2272,7 @@ async function runOpenAIProviderAttempt({
                 body: JSON.stringify({
                     model: normalizedModel,
                     stream: true,
+                    stream_options: { include_usage: true },
                     messages: requestMessages,
                     reasoning: {
                         effort: route.reasoningEffort,
@@ -2177,6 +2307,9 @@ async function runOpenAIProviderAttempt({
         let answerText = "";
         let thinkingText = "";
         let emittedAny = false;
+        let extractedFinishReason: string | undefined;
+        let extractedInputTokens: number | undefined;
+        let extractedOutputTokens: number | undefined;
         const reader = upstream.body.getReader();
 
         while (true) {
@@ -2208,7 +2341,14 @@ async function runOpenAIProviderAttempt({
                     if (thinkingText.trim().length > 0) {
                         logAIThinkingById(requestId, thinkingText);
                     }
-                    return { answerText, thinkingText, emittedAny };
+                    return {
+                        answerText,
+                        thinkingText,
+                        emittedAny,
+                        inputTokens: extractedInputTokens,
+                        outputTokens: extractedOutputTokens,
+                        finishReason: extractedFinishReason,
+                    };
                 }
                 if (data.length === 0) {
                     continue;
@@ -2226,6 +2366,13 @@ async function runOpenAIProviderAttempt({
                         emittedAny = true;
                         onAnswerChunk?.(extracted.answerText);
                     }
+                    const meta = extractOpenAIStreamMeta(payload);
+                    if (meta.finishReason)
+                        extractedFinishReason = meta.finishReason;
+                    if (meta.inputTokens !== undefined)
+                        extractedInputTokens = meta.inputTokens;
+                    if (meta.outputTokens !== undefined)
+                        extractedOutputTokens = meta.outputTokens;
                 } catch {
                     // Ignore non-JSON chunks.
                 }
@@ -2253,6 +2400,13 @@ async function runOpenAIProviderAttempt({
                         emittedAny = true;
                         onAnswerChunk?.(extracted.answerText);
                     }
+                    const trailingMeta = extractOpenAIStreamMeta(payload);
+                    if (trailingMeta.finishReason)
+                        extractedFinishReason = trailingMeta.finishReason;
+                    if (trailingMeta.inputTokens !== undefined)
+                        extractedInputTokens = trailingMeta.inputTokens;
+                    if (trailingMeta.outputTokens !== undefined)
+                        extractedOutputTokens = trailingMeta.outputTokens;
                 } catch {
                     // Ignore trailing invalid chunk.
                 }
@@ -2263,10 +2417,20 @@ async function runOpenAIProviderAttempt({
         if (thinkingText.trim().length > 0) {
             logAIThinkingById(requestId, thinkingText);
         }
-        if (answerText.trim().length === 0 && rawStreamPreview.trim().length > 0) {
+        if (
+            answerText.trim().length === 0 &&
+            rawStreamPreview.trim().length > 0
+        ) {
             logAIRawResponseById(requestId, rawStreamPreview);
         }
-        return { answerText, thinkingText, emittedAny };
+        return {
+            answerText,
+            thinkingText,
+            emittedAny,
+            inputTokens: extractedInputTokens,
+            outputTokens: extractedOutputTokens,
+            finishReason: extractedFinishReason,
+        };
     }
 
     throw createAttemptError(lastFailedMessage, lastFailedStatus);
@@ -2292,7 +2456,7 @@ async function runGeminiProviderAttempt({
     requestId: string;
     onAnswerChunk?: (chunk: string) => void;
     onThinkingChunk?: (chunk: string) => void;
-}): Promise<{ answerText: string; thinkingText: string; emittedAny: boolean }> {
+}): Promise<AIRouteStepResult> {
     const normalizedModel = normalizeModelName(route.model);
     const normalizedGeminiUrl = normalizeGeminiEndpoint(
         provider.apiUrl,
@@ -2382,6 +2546,9 @@ async function runGeminiProviderAttempt({
         let emittedAny = false;
         let shouldRetry = false;
         let shouldFail = false;
+        let extractedFinishReason: string | undefined;
+        let extractedInputTokens: number | undefined;
+        let extractedOutputTokens: number | undefined;
 
         const handleGeminiData = (
             data: string,
@@ -2420,6 +2587,13 @@ async function runGeminiProviderAttempt({
                     emittedAny = true;
                     onAnswerChunk?.(extracted.answerText);
                 }
+                const meta = extractGeminiStreamMeta(payload);
+                if (meta.finishReason)
+                    extractedFinishReason = meta.finishReason;
+                if (meta.inputTokens !== undefined)
+                    extractedInputTokens = meta.inputTokens;
+                if (meta.outputTokens !== undefined)
+                    extractedOutputTokens = meta.outputTokens;
             } catch {
                 // Ignore invalid chunks.
             }
@@ -2472,7 +2646,14 @@ async function runGeminiProviderAttempt({
                     if (thinkingText.trim().length > 0) {
                         logAIThinkingById(requestId, thinkingText);
                     }
-                    return { answerText, thinkingText, emittedAny };
+                    return {
+                        answerText,
+                        thinkingText,
+                        emittedAny,
+                        inputTokens: extractedInputTokens,
+                        outputTokens: extractedOutputTokens,
+                        finishReason: extractedFinishReason,
+                    };
                 }
             }
 
@@ -2513,10 +2694,20 @@ async function runGeminiProviderAttempt({
         if (thinkingText.trim().length > 0) {
             logAIThinkingById(requestId, thinkingText);
         }
-        if (answerText.trim().length === 0 && rawStreamPreview.trim().length > 0) {
+        if (
+            answerText.trim().length === 0 &&
+            rawStreamPreview.trim().length > 0
+        ) {
             logAIRawResponseById(requestId, rawStreamPreview);
         }
-        return { answerText, thinkingText, emittedAny };
+        return {
+            answerText,
+            thinkingText,
+            emittedAny,
+            inputTokens: extractedInputTokens,
+            outputTokens: extractedOutputTokens,
+            finishReason: extractedFinishReason,
+        };
     }
 
     throw createAttemptError(lastFailedMessage, lastFailedStatus);
@@ -2618,7 +2809,12 @@ async function streamAIRouteResponse({
                 }
 
                 ensureHeaders();
-                writeAIClientStreamEvent(res, { type: "done" });
+                writeAIClientStreamEvent(res, {
+                    type: "done",
+                    inputTokens: result.inputTokens,
+                    outputTokens: result.outputTokens,
+                    finishReason: result.finishReason,
+                });
                 res.end();
                 return;
             } catch (error) {
@@ -2721,7 +2917,9 @@ export const registerAIRoutes = (app: express.Express) => {
     app.put("/api/ai-config/providers", (req, res) => {
         const { providers } = req.body as { providers?: unknown };
         if (!Array.isArray(providers)) {
-            return res.status(400).json({ message: "providers must be an array" });
+            return res
+                .status(400)
+                .json({ message: "providers must be an array" });
         }
 
         const nextProviders: AIProviderEndpointConfig[] = [];
@@ -2740,7 +2938,9 @@ export const registerAIRoutes = (app: express.Express) => {
             nextProviders.push(validation.provider);
         }
         if (nextProviders.length === 0) {
-            return res.status(400).json({ message: "providers must not be empty" });
+            return res
+                .status(400)
+                .json({ message: "providers must not be empty" });
         }
 
         saveAIProviderEndpoints(nextProviders);
@@ -2754,16 +2954,25 @@ export const registerAIRoutes = (app: express.Express) => {
         }
 
         const providersByName = new Map(
-            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+            listAIProviderEndpoints().map((provider) => [
+                provider.name,
+                provider,
+            ]),
         );
         if (providersByName.size === 0) {
-            return res.status(400).json({ message: "providers is required before routes" });
+            return res
+                .status(400)
+                .json({ message: "providers is required before routes" });
         }
 
         const nextRoutes: AIModelRouteConfig[] = [];
         const nameSet = new Set<string>();
         for (const [index, item] of routes.entries()) {
-            const validation = validateRoutePayload(item, index, providersByName);
+            const validation = validateRoutePayload(
+                item,
+                index,
+                providersByName,
+            );
             if (!validation.route) {
                 return res.status(400).json({ message: validation.message });
             }
@@ -2776,7 +2985,9 @@ export const registerAIRoutes = (app: express.Express) => {
             nextRoutes.push(validation.route);
         }
         if (nextRoutes.length === 0) {
-            return res.status(400).json({ message: "routes must not be empty" });
+            return res
+                .status(400)
+                .json({ message: "routes must not be empty" });
         }
 
         saveAIModelRoutes(nextRoutes);
@@ -2787,14 +2998,21 @@ export const registerAIRoutes = (app: express.Express) => {
         const fileName = decodeURIComponent(req.params.fileName);
         const { stages } = req.body as { stages?: unknown };
         if (!stages || typeof stages !== "object") {
-            return res.status(400).json({ message: "stages must be an object" });
+            return res
+                .status(400)
+                .json({ message: "stages must be an object" });
         }
 
         const routes = listAIModelRoutes();
         const providersByName = new Map(
-            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+            listAIProviderEndpoints().map((provider) => [
+                provider.name,
+                provider,
+            ]),
         );
-        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const routesByName = new Map(
+            routes.map((route) => [route.name, route]),
+        );
 
         const stageMap = {} as Record<AIDetectStageKey, FileAIStageConfig>;
         for (const stageKey of AI_STAGE_ORDER) {
@@ -2860,9 +3078,14 @@ export const registerAIRoutes = (app: express.Express) => {
         const { chat } = req.body as { chat?: unknown };
         const routes = listAIModelRoutes();
         const providersByName = new Map(
-            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+            listAIProviderEndpoints().map((provider) => [
+                provider.name,
+                provider,
+            ]),
         );
-        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const routesByName = new Map(
+            routes.map((route) => [route.name, route]),
+        );
         const validation = validateChatPayload(
             chat,
             routesByName,
@@ -2881,9 +3104,14 @@ export const registerAIRoutes = (app: express.Express) => {
         const { evaluationTasks } = req.body as { evaluationTasks?: unknown };
         const routes = listAIModelRoutes();
         const providersByName = new Map(
-            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+            listAIProviderEndpoints().map((provider) => [
+                provider.name,
+                provider,
+            ]),
         );
-        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const routesByName = new Map(
+            routes.map((route) => [route.name, route]),
+        );
         const validation = validateEvaluationPayload(
             evaluationTasks,
             routesByName,
@@ -2902,9 +3130,14 @@ export const registerAIRoutes = (app: express.Express) => {
         const { cleaning } = req.body as { cleaning?: unknown };
         const routes = listAIModelRoutes();
         const providersByName = new Map(
-            listAIProviderEndpoints().map((provider) => [provider.name, provider]),
+            listAIProviderEndpoints().map((provider) => [
+                provider.name,
+                provider,
+            ]),
         );
-        const routesByName = new Map(routes.map((route) => [route.name, route]));
+        const routesByName = new Map(
+            routes.map((route) => [route.name, route]),
+        );
         const validation = validateCleaningPayload(
             cleaning,
             routesByName,
@@ -2926,9 +3159,13 @@ export const registerAIRoutes = (app: express.Express) => {
         };
         const providerValidation = validateProviderPayload(provider, 0);
         if (!providerValidation.provider) {
-            return res.status(400).json({ message: providerValidation.message });
+            return res
+                .status(400)
+                .json({ message: providerValidation.message });
         }
-        const providerMap = new Map([[providerValidation.provider.name, providerValidation.provider]]);
+        const providerMap = new Map([
+            [providerValidation.provider.name, providerValidation.provider],
+        ]);
         const routeValidation = validateRoutePayload(route, 0, providerMap);
         if (!routeValidation.route) {
             return res.status(400).json({ message: routeValidation.message });
@@ -2962,7 +3199,10 @@ export const registerAIRoutes = (app: express.Express) => {
                 fields: [{ title: "测试消息", type: "text", value: "你好" }],
                 requestId: `route-test-${randomUUID().slice(0, 8)}`,
             });
-            const preview = [result.thinkingText.trim(), result.answerText.trim()]
+            const preview = [
+                result.thinkingText.trim(),
+                result.answerText.trim(),
+            ]
                 .filter((item) => item.length > 0)
                 .join("\n\n")
                 .slice(0, 300);
@@ -2988,14 +3228,20 @@ export const registerAIRoutes = (app: express.Express) => {
             fields?: unknown;
         };
         if (!isNonEmptyString(routeName)) {
-            return res.status(400).json({ message: "routeName must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "routeName must be a non-empty string" });
         }
         if (!isNonEmptyString(prompt)) {
-            return res.status(400).json({ message: "prompt must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "prompt must be a non-empty string" });
         }
         const fieldPayload = toAIDetectFields(fields);
         if (!fieldPayload || fieldPayload.length === 0) {
-            return res.status(400).json({ message: "fields must be a non-empty array" });
+            return res
+                .status(400)
+                .json({ message: "fields must be a non-empty array" });
         }
 
         const route = findAIModelRouteByName(routeName.trim());
@@ -3004,10 +3250,14 @@ export const registerAIRoutes = (app: express.Express) => {
         }
         const resolvedRoute = resolveRouteSteps(route);
         if (!resolvedRoute) {
-            return res.status(400).json({ message: "模型路由引用的提供商无效" });
+            return res
+                .status(400)
+                .json({ message: "模型路由引用的提供商无效" });
         }
         if (resolvedRoute.apiType === "anthropic") {
-            return res.status(400).json({ message: "Anthropic 暂不支持正式调用" });
+            return res
+                .status(400)
+                .json({ message: "Anthropic 暂不支持正式调用" });
         }
 
         return streamAIRouteResponse({
@@ -3027,10 +3277,14 @@ export const registerAIRoutes = (app: express.Express) => {
             messages?: unknown;
         };
         if (!isNonEmptyString(routeName)) {
-            return res.status(400).json({ message: "routeName must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "routeName must be a non-empty string" });
         }
         if (!isNonEmptyString(prompt)) {
-            return res.status(400).json({ message: "prompt must be a non-empty string" });
+            return res
+                .status(400)
+                .json({ message: "prompt must be a non-empty string" });
         }
         const fieldPayload = toAIDetectFields(fields);
         if (!fieldPayload) {
@@ -3038,7 +3292,9 @@ export const registerAIRoutes = (app: express.Express) => {
         }
         const messagePayload = toAIChatMessages(messages);
         if (!messagePayload || messagePayload.length === 0) {
-            return res.status(400).json({ message: "messages must be a non-empty array" });
+            return res
+                .status(400)
+                .json({ message: "messages must be a non-empty array" });
         }
 
         const route = findAIModelRouteByName(routeName.trim());
@@ -3047,10 +3303,14 @@ export const registerAIRoutes = (app: express.Express) => {
         }
         const resolvedRoute = resolveRouteSteps(route);
         if (!resolvedRoute) {
-            return res.status(400).json({ message: "模型路由引用的提供商无效" });
+            return res
+                .status(400)
+                .json({ message: "模型路由引用的提供商无效" });
         }
         if (resolvedRoute.apiType === "anthropic") {
-            return res.status(400).json({ message: "Anthropic 暂不支持正式调用" });
+            return res
+                .status(400)
+                .json({ message: "Anthropic 暂不支持正式调用" });
         }
 
         return streamAIRouteResponse({

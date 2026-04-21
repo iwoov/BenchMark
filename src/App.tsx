@@ -91,6 +91,7 @@ function App() {
         activeFile,
         isUploading,
         isExporting,
+        isExportingEvaluation,
         uploadInputRef,
         pendingFile,
         pendingSelectedDisplayKeys,
@@ -129,6 +130,7 @@ function App() {
         onStartMergeUpload,
         onUploadFile,
         onExportFile,
+        onExportEvaluation,
         onRenameDataSource,
         onRemoveFile,
     } = useFileStore({ navigateToSection, setErrorMessage });
@@ -824,9 +826,17 @@ function App() {
                 theme={theme}
                 onToggleTheme={toggleTheme}
                 onExportFile={onExportFile}
+                onExportEvaluation={() =>
+                    onExportEvaluation(
+                        batchSelectedRowIds.length > 0
+                            ? batchSelectedRowIds
+                            : undefined,
+                    )
+                }
                 uploadInputRef={uploadInputRef}
                 onUploadFile={onUploadFile}
                 isExporting={isExporting}
+                isExportingEvaluation={isExportingEvaluation}
                 activeFile={activeFile}
             />
 

@@ -95,6 +95,7 @@ export const useFileStore = ({
     });
     const [isUploading, setIsUploading] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
+    const [isExportingEvaluation, setIsExportingEvaluation] = useState(false);
     const [pendingFile, setPendingFile] = useState<ParsedFile | null>(null);
     const [pendingSelectedDisplayKeys, setPendingSelectedDisplayKeys] =
         useState<string[]>([]);
@@ -932,6 +933,46 @@ export const useFileStore = ({
         }
     };
 
+    const onExportEvaluation = async (rowIds?: string[]) => {
+        if (!activeFile) {
+            return;
+        }
+
+        setIsExportingEvaluation(true);
+        setErrorMessage("");
+
+        try {
+            const response = await fetch(
+                `/api/files/${encodeURIComponent(activeFile.fileId)}/export-evaluation`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ rowIds: rowIds ?? [] }),
+                },
+            );
+
+            if (!response.ok) {
+                const payload = (await response.json().catch(() => ({}))) as {
+                    message?: string;
+                };
+                throw new Error(payload.message ?? "导出评测结果失败");
+            }
+
+            const blob = await response.blob();
+            const headerFileName = getFileNameFromDisposition(
+                response.headers.get("Content-Disposition"),
+            );
+            const fallbackFileName = `${activeFile.fileName.replace(/\.[^.]+$/, "")}-评测结果.json`;
+            downloadBlob(blob, headerFileName ?? fallbackFileName);
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : "导出评测结果失败";
+            setErrorMessage(message);
+        } finally {
+            setIsExportingEvaluation(false);
+        }
+    };
+
     const onOpenCreateProjectDialog = () => {
         setErrorMessage("");
         setProjectNameDialogError("");
@@ -1389,6 +1430,7 @@ export const useFileStore = ({
         activeFile,
         isUploading,
         isExporting,
+        isExportingEvaluation,
         uploadInputRef,
         pendingFile,
         pendingSelectedDisplayKeys,
@@ -1436,6 +1478,7 @@ export const useFileStore = ({
         onStartMergeUpload,
         onUploadFile,
         onExportFile,
+        onExportEvaluation,
         onRenameDataSource,
         onRemoveFile,
     };

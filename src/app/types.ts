@@ -42,6 +42,10 @@ export interface AIChatMessagePayload {
 export interface AIDetectStreamResult {
     answerText: string;
     thinkingText: string;
+    latencyMs?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    finishReason?: string;
 }
 
 export type AIBatchTaskStatus = "idle" | "running" | "completed";

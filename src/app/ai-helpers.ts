@@ -1407,6 +1407,7 @@ async function requestAIStreamResult(
     },
 ): Promise<AIDetectStreamResult> {
     options?.onPhaseChange?.("requesting");
+    const streamStartedAt = Date.now();
 
     const response = await fetch(endpoint, {
         method: "POST",
@@ -1434,6 +1435,9 @@ async function requestAIStreamResult(
     let answerText = "";
     let thinkingText = "";
     let currentPhase: AIStreamPhase = "requesting";
+    let streamInputTokens: number | undefined;
+    let streamOutputTokens: number | undefined;
+    let streamFinishReason: string | undefined;
 
     const advancePhase = (nextPhase: AIStreamPhase) => {
         if (currentPhase !== nextPhase) {
@@ -1468,6 +1472,9 @@ async function requestAIStreamResult(
                     const event = JSON.parse(line) as {
                         type?: string;
                         text?: string;
+                        inputTokens?: number;
+                        outputTokens?: number;
+                        finishReason?: string;
                     };
                     if (
                         event.type === "answer" &&
@@ -1489,6 +1496,15 @@ async function requestAIStreamResult(
                         continue;
                     }
                     if (event.type === "done") {
+                        if (typeof event.inputTokens === "number")
+                            streamInputTokens = event.inputTokens;
+                        if (typeof event.outputTokens === "number")
+                            streamOutputTokens = event.outputTokens;
+                        if (
+                            typeof event.finishReason === "string" &&
+                            event.finishReason.length > 0
+                        )
+                            streamFinishReason = event.finishReason;
                         continue;
                     }
                 } catch {
@@ -1506,6 +1522,9 @@ async function requestAIStreamResult(
                 const event = JSON.parse(rest) as {
                     type?: string;
                     text?: string;
+                    inputTokens?: number;
+                    outputTokens?: number;
+                    finishReason?: string;
                 };
                 if (event.type === "answer" && typeof event.text === "string") {
                     advancePhase("outputting");
@@ -1519,6 +1538,16 @@ async function requestAIStreamResult(
                     advancePhase("thinking");
                     thinkingText += event.text;
                     options?.onThinkingChunk?.(event.text);
+                } else if (event.type === "done") {
+                    if (typeof event.inputTokens === "number")
+                        streamInputTokens = event.inputTokens;
+                    if (typeof event.outputTokens === "number")
+                        streamOutputTokens = event.outputTokens;
+                    if (
+                        typeof event.finishReason === "string" &&
+                        event.finishReason.length > 0
+                    )
+                        streamFinishReason = event.finishReason;
                 }
             } catch {
                 advancePhase("outputting");
@@ -1558,6 +1587,10 @@ async function requestAIStreamResult(
     return {
         answerText,
         thinkingText,
+        latencyMs: Date.now() - streamStartedAt,
+        inputTokens: streamInputTokens,
+        outputTokens: streamOutputTokens,
+        finishReason: streamFinishReason,
     };
 }
 

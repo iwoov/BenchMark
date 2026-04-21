@@ -557,6 +557,26 @@ function ensureAIRoutingTables(): void {
         createAICleaningResultTable(toolKey);
     });
     createAIEvaluationResultTable();
+    const evalColumns = new Set(
+        getTableColumns(getAIEvaluationResultTableName()),
+    );
+    const evalMigrationColumns: Array<{ name: string; def: string }> = [
+        { name: "generation_latency_ms", def: "INTEGER" },
+        { name: "judgment_latency_ms", def: "INTEGER" },
+        { name: "generation_input_tokens", def: "INTEGER" },
+        { name: "generation_output_tokens", def: "INTEGER" },
+        { name: "judgment_input_tokens", def: "INTEGER" },
+        { name: "judgment_output_tokens", def: "INTEGER" },
+        { name: "generation_finish_reason", def: "TEXT" },
+        { name: "judgment_finish_reason", def: "TEXT" },
+    ];
+    for (const col of evalMigrationColumns) {
+        if (!evalColumns.has(col.name)) {
+            db.exec(
+                `ALTER TABLE ${getAIEvaluationResultTableName()} ADD COLUMN ${col.name} ${col.def}`,
+            );
+        }
+    }
     const columns = new Set(getTableColumns("file_ai_stage_configs"));
     if (!columns.has("chat_json")) {
         db.exec("ALTER TABLE file_ai_stage_configs ADD COLUMN chat_json TEXT");
@@ -761,6 +781,14 @@ export interface FileAIEvaluationAttemptResult {
     judgmentParsedJsonText?: string;
     finalVerdict: string;
     updatedAt?: string;
+    generationLatencyMs?: number;
+    judgmentLatencyMs?: number;
+    generationInputTokens?: number;
+    generationOutputTokens?: number;
+    judgmentInputTokens?: number;
+    judgmentOutputTokens?: number;
+    generationFinishReason?: string;
+    judgmentFinishReason?: string;
 }
 
 function parseJsonStringArray(value: string | null | undefined): string[] {
@@ -2887,6 +2915,14 @@ function normalizeFileAIEvaluationAttemptResult(value: {
     judgment_parsed_json_text?: unknown;
     final_verdict?: unknown;
     updated_at?: unknown;
+    generation_latency_ms?: unknown;
+    judgment_latency_ms?: unknown;
+    generation_input_tokens?: unknown;
+    generation_output_tokens?: unknown;
+    judgment_input_tokens?: unknown;
+    judgment_output_tokens?: unknown;
+    generation_finish_reason?: unknown;
+    judgment_finish_reason?: unknown;
 }): FileAIEvaluationAttemptResult | null {
     if (
         typeof value.attempt_index !== "number" ||
@@ -2911,6 +2947,38 @@ function normalizeFileAIEvaluationAttemptResult(value: {
         finalVerdict: value.final_verdict,
         updatedAt:
             typeof value.updated_at === "string" ? value.updated_at : undefined,
+        generationLatencyMs:
+            typeof value.generation_latency_ms === "number"
+                ? value.generation_latency_ms
+                : undefined,
+        judgmentLatencyMs:
+            typeof value.judgment_latency_ms === "number"
+                ? value.judgment_latency_ms
+                : undefined,
+        generationInputTokens:
+            typeof value.generation_input_tokens === "number"
+                ? value.generation_input_tokens
+                : undefined,
+        generationOutputTokens:
+            typeof value.generation_output_tokens === "number"
+                ? value.generation_output_tokens
+                : undefined,
+        judgmentInputTokens:
+            typeof value.judgment_input_tokens === "number"
+                ? value.judgment_input_tokens
+                : undefined,
+        judgmentOutputTokens:
+            typeof value.judgment_output_tokens === "number"
+                ? value.judgment_output_tokens
+                : undefined,
+        generationFinishReason:
+            typeof value.generation_finish_reason === "string"
+                ? value.generation_finish_reason
+                : undefined,
+        judgmentFinishReason:
+            typeof value.judgment_finish_reason === "string"
+                ? value.judgment_finish_reason
+                : undefined,
     };
 }
 
@@ -2958,7 +3026,7 @@ export function listFileAIEvaluationResults(
 ): Record<string, Record<string, FileAIEvaluationAttemptResult[]>> {
     const rows = db
         .prepare(
-            `SELECT row_id, task_id, attempt_index, generation_response_text, generation_parsed_json_text, judgment_response_text, judgment_parsed_json_text, final_verdict, updated_at
+            `SELECT row_id, task_id, attempt_index, generation_response_text, generation_parsed_json_text, judgment_response_text, judgment_parsed_json_text, final_verdict, updated_at, generation_latency_ms, judgment_latency_ms, generation_input_tokens, generation_output_tokens, judgment_input_tokens, judgment_output_tokens, generation_finish_reason, judgment_finish_reason
              FROM ${getAIEvaluationResultTableName()}
              WHERE file_id = ?
              ORDER BY task_id ASC, row_id ASC, attempt_index ASC`,
@@ -2973,6 +3041,14 @@ export function listFileAIEvaluationResults(
         judgment_parsed_json_text: string | null;
         final_verdict: string;
         updated_at: string;
+        generation_latency_ms: number | null;
+        judgment_latency_ms: number | null;
+        generation_input_tokens: number | null;
+        generation_output_tokens: number | null;
+        judgment_input_tokens: number | null;
+        judgment_output_tokens: number | null;
+        generation_finish_reason: string | null;
+        judgment_finish_reason: string | null;
     }>;
     const result: Record<
         string,
@@ -3027,6 +3103,14 @@ export function saveFileAIEvaluationAttemptResult(
     judgmentResponseText: string,
     judgmentParsedJsonText: string | undefined,
     finalVerdict: string,
+    generationLatencyMs?: number,
+    judgmentLatencyMs?: number,
+    generationInputTokens?: number,
+    generationOutputTokens?: number,
+    judgmentInputTokens?: number,
+    judgmentOutputTokens?: number,
+    generationFinishReason?: string,
+    judgmentFinishReason?: string,
 ): void {
     db.prepare(
         `INSERT INTO ${getAIEvaluationResultTableName()} (
@@ -3040,9 +3124,17 @@ export function saveFileAIEvaluationAttemptResult(
              judgment_response_text,
              judgment_parsed_json_text,
              final_verdict,
+             generation_latency_ms,
+             judgment_latency_ms,
+             generation_input_tokens,
+             generation_output_tokens,
+             judgment_input_tokens,
+             judgment_output_tokens,
+             generation_finish_reason,
+             judgment_finish_reason,
              updated_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(file_id, row_id, task_id, attempt_index) DO UPDATE SET
            file_name = excluded.file_name,
            generation_response_text = excluded.generation_response_text,
@@ -3050,6 +3142,14 @@ export function saveFileAIEvaluationAttemptResult(
            judgment_response_text = excluded.judgment_response_text,
            judgment_parsed_json_text = excluded.judgment_parsed_json_text,
            final_verdict = excluded.final_verdict,
+           generation_latency_ms = excluded.generation_latency_ms,
+           judgment_latency_ms = excluded.judgment_latency_ms,
+           generation_input_tokens = excluded.generation_input_tokens,
+           generation_output_tokens = excluded.generation_output_tokens,
+           judgment_input_tokens = excluded.judgment_input_tokens,
+           judgment_output_tokens = excluded.judgment_output_tokens,
+           generation_finish_reason = excluded.generation_finish_reason,
+           judgment_finish_reason = excluded.judgment_finish_reason,
            updated_at = CURRENT_TIMESTAMP`,
     ).run(
         fileId,
@@ -3062,6 +3162,14 @@ export function saveFileAIEvaluationAttemptResult(
         judgmentResponseText,
         judgmentParsedJsonText ?? null,
         finalVerdict,
+        generationLatencyMs ?? null,
+        judgmentLatencyMs ?? null,
+        generationInputTokens ?? null,
+        generationOutputTokens ?? null,
+        judgmentInputTokens ?? null,
+        judgmentOutputTokens ?? null,
+        generationFinishReason ?? null,
+        judgmentFinishReason ?? null,
     );
 }
 

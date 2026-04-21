@@ -15,9 +15,11 @@ interface HeaderBarProps {
     theme: "dark" | "light";
     onToggleTheme: () => void;
     onExportFile: () => void;
+    onExportEvaluation: () => void;
     uploadInputRef: RefObject<HTMLInputElement>;
     onUploadFile: (event: ChangeEvent<HTMLInputElement>) => void;
     isExporting: boolean;
+    isExportingEvaluation: boolean;
     activeFile: FileViewState | null;
 }
 
@@ -32,9 +34,11 @@ export function HeaderBar({
     theme,
     onToggleTheme,
     onExportFile,
+    onExportEvaluation,
     uploadInputRef,
     onUploadFile,
     isExporting,
+    isExportingEvaluation,
     activeFile,
 }: HeaderBarProps) {
     // Determine data sources that share the same project as activeFile
@@ -178,6 +182,15 @@ export function HeaderBar({
                     >
                         <IconDownload />
                         {isExporting ? "导出中..." : "导出 Excel"}
+                    </button>
+                    <button
+                        type="button"
+                        className="btn"
+                        onClick={onExportEvaluation}
+                        disabled={isExportingEvaluation || !activeFile}
+                    >
+                        <IconDownload />
+                        {isExportingEvaluation ? "导出中..." : "导出评测 JSON"}
                     </button>
                     <input
                         ref={uploadInputRef}

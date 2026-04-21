@@ -1547,6 +1547,14 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             judgmentResponseText,
             judgmentParsedJsonText,
             finalVerdict,
+            generationLatencyMs,
+            judgmentLatencyMs,
+            generationInputTokens,
+            generationOutputTokens,
+            judgmentInputTokens,
+            judgmentOutputTokens,
+            generationFinishReason,
+            judgmentFinishReason,
         } = req.body as {
             rowId?: unknown;
             fileName?: unknown;
@@ -1556,6 +1564,14 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
             judgmentResponseText?: unknown;
             judgmentParsedJsonText?: unknown;
             finalVerdict?: unknown;
+            generationLatencyMs?: unknown;
+            judgmentLatencyMs?: unknown;
+            generationInputTokens?: unknown;
+            generationOutputTokens?: unknown;
+            judgmentInputTokens?: unknown;
+            judgmentOutputTokens?: unknown;
+            generationFinishReason?: unknown;
+            judgmentFinishReason?: unknown;
         };
         if (typeof rowId !== "string" || rowId.trim().length === 0) {
             return res
@@ -1634,6 +1650,30 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                 ? judgmentParsedJsonText
                 : undefined,
             finalVerdict.trim(),
+            typeof generationLatencyMs === "number"
+                ? generationLatencyMs
+                : undefined,
+            typeof judgmentLatencyMs === "number"
+                ? judgmentLatencyMs
+                : undefined,
+            typeof generationInputTokens === "number"
+                ? generationInputTokens
+                : undefined,
+            typeof generationOutputTokens === "number"
+                ? generationOutputTokens
+                : undefined,
+            typeof judgmentInputTokens === "number"
+                ? judgmentInputTokens
+                : undefined,
+            typeof judgmentOutputTokens === "number"
+                ? judgmentOutputTokens
+                : undefined,
+            typeof generationFinishReason === "string"
+                ? generationFinishReason
+                : undefined,
+            typeof judgmentFinishReason === "string"
+                ? judgmentFinishReason
+                : undefined,
         );
         return res.json({ ok: true });
     });
