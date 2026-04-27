@@ -21,7 +21,10 @@ import {
     normalizeAIBatchConcurrency,
     parseAIResultJSON,
 } from "./app/ai-helpers";
-import { getLevelColumnKey } from "./app/file-helpers";
+import {
+    getLevelColumnKey,
+    isQualifiedColumnTitle,
+} from "./app/file-helpers";
 import { HeaderBar } from "./app/components/HeaderBar";
 import { WorkspaceSidebar } from "./app/components/WorkspaceSidebar";
 import { DashboardPage } from "./app/components/DashboardPage";
@@ -261,9 +264,9 @@ function App() {
         );
     };
 
-    const persistRowRecord = async (nextRow: ParsedRow) => {
+    const persistRowRecord = async (nextRow: ParsedRow): Promise<ParsedRow> => {
         if (!activeFile) {
-            return;
+            return nextRow;
         }
         const response = await fetch(
             `/api/files/${encodeURIComponent(activeFile.fileId)}/rows/${encodeURIComponent(nextRow.rowId)}`,
@@ -281,6 +284,10 @@ function App() {
             };
             throw new Error(payload.message ?? "保存行数据失败");
         }
+        const payload = (await response.json().catch(() => ({}))) as {
+            row?: ParsedRow;
+        };
+        return payload.row ?? nextRow;
     };
 
     const onEditCell = (rowId: string, columnKey: string, value: string) => {
@@ -288,6 +295,12 @@ function App() {
         if (!currentRow) {
             return;
         }
+        const isQualifiedEdit =
+            activeFile?.columns.some(
+                (column) =>
+                    column.key === columnKey &&
+                    isQualifiedColumnTitle(column.title),
+            ) ?? false;
         const currentCell = currentRow.values[columnKey];
         const nextRow: ParsedRow = {
             ...currentRow,
@@ -308,11 +321,18 @@ function App() {
             },
         };
         replaceRowInProjectCache(nextRow);
-        void persistRowRecord(nextRow).catch((error) => {
-            setErrorMessage(
-                error instanceof Error ? error.message : "保存行数据失败",
-            );
-        });
+        void persistRowRecord(nextRow)
+            .then((savedRow) => {
+                replaceRowInProjectCache(savedRow);
+            })
+            .catch((error) => {
+                if (isQualifiedEdit) {
+                    replaceRowInProjectCache(currentRow);
+                }
+                setErrorMessage(
+                    error instanceof Error ? error.message : "保存行数据失败",
+                );
+            });
     };
 
     const onToggleRowEnabled = (rowId: string, enabled: boolean) => {
@@ -325,11 +345,15 @@ function App() {
             enabled,
         };
         replaceRowInProjectCache(nextRow);
-        void persistRowRecord(nextRow).catch((error) => {
-            setErrorMessage(
-                error instanceof Error ? error.message : "保存行数据失败",
-            );
-        });
+        void persistRowRecord(nextRow)
+            .then((savedRow) => {
+                replaceRowInProjectCache(savedRow);
+            })
+            .catch((error) => {
+                setErrorMessage(
+                    error instanceof Error ? error.message : "保存行数据失败",
+                );
+            });
     };
 
     const updateRowAIResult = (

@@ -17,6 +17,7 @@ export interface ParsedColumn {
 export interface ParsedRow {
     rowId: string;
     enabled: boolean;
+    reviewCount?: number;
     values: Record<string, ParsedCell>;
     aiResults?: Record<string, string>;
     cleaningResults?: Record<

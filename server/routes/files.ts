@@ -6,6 +6,11 @@ import { mergeImportedFileState } from "../importState.js";
 import { parseWorkbook } from "../excelParser.js";
 import { parseJsonWorkbook } from "../jsonParser.js";
 import {
+    MAX_ROW_REVIEW_COUNT,
+    evaluateRowReviewSubmission,
+    withRowReviewCount,
+} from "../reviewLimit.js";
+import {
     deleteFileAICleaningResults,
     deleteFileAIEvaluationResults,
     createDatabaseBackup,
@@ -1373,10 +1378,32 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         const sanitizedRow = sanitizeRowForState(
             row as Record<string, unknown>,
         );
+        const existingRow = extractStateRows(item.state).find(
+            (candidate) => getRowIdFromRecord(candidate) === rowId,
+        );
+        if (!existingRow) {
+            return res.status(404).json({ message: "row not found" });
+        }
+
+        const reviewSubmission = evaluateRowReviewSubmission({
+            columns: (item.state as { columns?: unknown }).columns,
+            previousRow: existingRow,
+            nextRow: sanitizedRow,
+        });
+        if (reviewSubmission.blocked) {
+            return res.status(409).json({
+                message: `该题目已经审核${MAX_ROW_REVIEW_COUNT}次，无法继续提交审核`,
+            });
+        }
+
+        const rowWithReviewCount = withRowReviewCount(
+            sanitizedRow,
+            reviewSubmission.nextReviewCount,
+        );
         const { nextState, updated } = replaceStateRow(
             item.state,
             rowId,
-            sanitizedRow,
+            rowWithReviewCount,
         );
         if (!nextState) {
             return res.status(404).json({ message: "file state not found" });
@@ -1386,7 +1413,7 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         }
 
         saveFileState(fileId, item.fileName, nextState);
-        const savedRow = attachResultsToRows(fileId, [sanitizedRow], {
+        const savedRow = attachResultsToRows(fileId, [rowWithReviewCount], {
             includeCleaning: true,
             includeEvaluation: true,
         })[0];

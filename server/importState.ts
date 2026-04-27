@@ -306,17 +306,20 @@ function normalizeFileState(value: unknown): ImportableFileState | null {
             const aiResults = normalizeRowAIResults(
                 row.aiResults ?? legacyAIResults,
             );
+            const reviewCount = normalizeRowReviewCount(row.reviewCount);
 
             return Object.keys(aiResults).length > 0
                 ? {
                       rowId: row.rowId,
                       enabled: normalizeRowEnabled(row.enabled),
+                      ...(reviewCount !== undefined ? { reviewCount } : {}),
                       values,
                       aiResults,
                   }
                 : {
                       rowId: row.rowId,
                       enabled: normalizeRowEnabled(row.enabled),
+                      ...(reviewCount !== undefined ? { reviewCount } : {}),
                       values,
                   };
         })
@@ -483,6 +486,10 @@ function transformRows(
             enabled: normalizeRowEnabled(row.enabled),
             values,
         };
+        const reviewCount = normalizeRowReviewCount(row.reviewCount);
+        if (reviewCount !== undefined) {
+            nextRow.reviewCount = reviewCount;
+        }
 
         if (row.aiResults && Object.keys(row.aiResults).length > 0) {
             nextRow.aiResults = { ...row.aiResults };
@@ -534,6 +541,19 @@ function normalizeRowEnabled(value: unknown): boolean {
     return value !== false;
 }
 
+function normalizeRowReviewCount(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.max(0, Math.trunc(value));
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+            return Math.max(0, Math.trunc(parsed));
+        }
+    }
+    return undefined;
+}
+
 function normalizeImportedRows(
     rows: ParsedRow[],
     idColumnKey: string,
@@ -548,11 +568,16 @@ function normalizeImportedRows(
             throw new Error(`导入数据存在重复 id/uuid: ${recordId}`);
         }
         seenIds.add(recordId);
-        return {
+        const nextRow: ParsedRow = {
             rowId: recordId,
             enabled: normalizeRowEnabled(row.enabled),
             values: row.values,
         };
+        const reviewCount = normalizeRowReviewCount(row.reviewCount);
+        if (reviewCount !== undefined) {
+            nextRow.reviewCount = reviewCount;
+        }
+        return nextRow;
     });
 }
 
@@ -637,18 +662,23 @@ export function mergeImportedFileState(
             return;
         }
         const existingRow = mergedRows[existingIndex];
-        mergedRows[existingIndex] =
+        const nextMergedRow: ParsedRow = {
+            ...row,
+            enabled: normalizeRowEnabled(existingRow?.enabled),
+        };
+        const existingReviewCount = normalizeRowReviewCount(
+            existingRow?.reviewCount,
+        );
+        if (existingReviewCount !== undefined) {
+            nextMergedRow.reviewCount = existingReviewCount;
+        }
+        if (
             existingRow?.aiResults &&
             Object.keys(existingRow.aiResults).length > 0
-                ? {
-                      ...row,
-                      enabled: normalizeRowEnabled(existingRow.enabled),
-                      aiResults: { ...existingRow.aiResults },
-                  }
-                : {
-                      ...row,
-                      enabled: normalizeRowEnabled(existingRow?.enabled),
-                  };
+        ) {
+            nextMergedRow.aiResults = { ...existingRow.aiResults };
+        }
+        mergedRows[existingIndex] = nextMergedRow;
         updatedCount += 1;
     });
 
