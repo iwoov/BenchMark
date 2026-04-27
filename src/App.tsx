@@ -44,6 +44,10 @@ import { AIEvaluationConfigModal } from "./app/components/AIEvaluationConfigModa
 import { AIChatSidebar } from "./app/components/AIChatSidebar";
 import { ImageLightbox } from "./app/components/ImageLightbox";
 import { FilterConfigModal } from "./app/components/FilterConfigModal";
+import {
+    ToastViewport,
+    type ToastItem,
+} from "./app/components/ToastViewport";
 import { IconFile, IconMessageSquare } from "./app/icons";
 import { useTheme } from "./app/hooks/useTheme";
 import { getInitialRoute, useRouteState } from "./app/hooks/useRouteState";
@@ -52,6 +56,9 @@ import { useListView } from "./app/hooks/useListView";
 import { useAIManager } from "./app/hooks/useAIManager";
 import { useCellRenderers } from "./app/hooks/useCellRenderers";
 import type { ParsedRow } from "./types";
+
+const SAVE_TOAST_SUCCESS_DELAY_MS = 500;
+const TOAST_AUTO_DISMISS_MS = 2600;
 
 function App() {
     const initialRoute = getInitialRoute();
@@ -69,6 +76,7 @@ function App() {
         Record<string, boolean>
     >({});
     const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+    const [toastItems, setToastItems] = useState<ToastItem[]>([]);
     const detailChatResizeRef = useRef<{
         active: boolean;
         startX: number;
@@ -78,6 +86,8 @@ function App() {
         startX: 0,
         startWidth: 360,
     });
+    const toastTimeoutsRef = useRef<Record<string, number>>({});
+    const pendingSaveSuccessTimeoutRef = useRef<number | null>(null);
 
     const { theme, toggleTheme } = useTheme();
     const { activeSection, activeSettingsSection, navigateToSection } =
@@ -214,10 +224,61 @@ function App() {
         };
     }, []);
 
+    useEffect(() => {
+        return () => {
+            Object.values(toastTimeoutsRef.current).forEach((timeoutId) => {
+                window.clearTimeout(timeoutId);
+            });
+            if (pendingSaveSuccessTimeoutRef.current !== null) {
+                window.clearTimeout(pendingSaveSuccessTimeoutRef.current);
+            }
+        };
+    }, []);
+
     const aiSubmitFieldColumns = useMemo(
         () => (activeFile ? activeFile.columns : []),
         [activeFile],
     );
+
+    const dismissToast = (toastId: string) => {
+        const timeoutId = toastTimeoutsRef.current[toastId];
+        if (timeoutId !== undefined) {
+            window.clearTimeout(timeoutId);
+            delete toastTimeoutsRef.current[toastId];
+        }
+        setToastItems((previous) =>
+            previous.filter((item) => item.id !== toastId),
+        );
+    };
+
+    const showToast = (kind: "success" | "error", message: string) => {
+        const toastId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        setToastItems((previous) => [
+            ...previous.slice(-2),
+            { id: toastId, kind, message },
+        ]);
+        toastTimeoutsRef.current[toastId] = window.setTimeout(() => {
+            dismissToast(toastId);
+        }, TOAST_AUTO_DISMISS_MS);
+    };
+
+    const scheduleSaveSuccessToast = (message = "字段修改已自动保存") => {
+        if (pendingSaveSuccessTimeoutRef.current !== null) {
+            window.clearTimeout(pendingSaveSuccessTimeoutRef.current);
+        }
+        pendingSaveSuccessTimeoutRef.current = window.setTimeout(() => {
+            pendingSaveSuccessTimeoutRef.current = null;
+            showToast("success", message);
+        }, SAVE_TOAST_SUCCESS_DELAY_MS);
+    };
+
+    const showSaveFailureToast = (message: string) => {
+        if (pendingSaveSuccessTimeoutRef.current !== null) {
+            window.clearTimeout(pendingSaveSuccessTimeoutRef.current);
+            pendingSaveSuccessTimeoutRef.current = null;
+        }
+        showToast("error", message);
+    };
 
     const openRowDetail = (rowId: string) => {
         setSelectedRowId(rowId);
@@ -324,14 +385,17 @@ function App() {
         void persistRowRecord(nextRow)
             .then((savedRow) => {
                 replaceRowInProjectCache(savedRow);
+                setErrorMessage("");
+                scheduleSaveSuccessToast();
             })
             .catch((error) => {
                 if (isQualifiedEdit) {
                     replaceRowInProjectCache(currentRow);
                 }
-                setErrorMessage(
-                    error instanceof Error ? error.message : "保存行数据失败",
-                );
+                const message =
+                    error instanceof Error ? error.message : "保存行数据失败";
+                setErrorMessage(message);
+                showSaveFailureToast(message);
             });
     };
 
@@ -348,11 +412,15 @@ function App() {
         void persistRowRecord(nextRow)
             .then((savedRow) => {
                 replaceRowInProjectCache(savedRow);
+                setErrorMessage("");
+                scheduleSaveSuccessToast("题目状态已自动保存");
             })
             .catch((error) => {
-                setErrorMessage(
-                    error instanceof Error ? error.message : "保存行数据失败",
-                );
+                replaceRowInProjectCache(currentRow);
+                const message =
+                    error instanceof Error ? error.message : "保存行数据失败";
+                setErrorMessage(message);
+                showSaveFailureToast(message);
             });
     };
 
@@ -421,13 +489,20 @@ function App() {
         if (Object.keys(mappedFieldValues ?? {}).length > 0) {
             const currentRow = findCachedRow(rowId);
             if (currentRow) {
-                void persistRowRecord(currentRow).catch((error) => {
-                    setErrorMessage(
-                        error instanceof Error
-                            ? error.message
-                            : "保存行数据失败",
-                    );
-                });
+                void persistRowRecord(currentRow)
+                    .then((savedRow) => {
+                        replaceRowInProjectCache(savedRow);
+                        setErrorMessage("");
+                        scheduleSaveSuccessToast("字段修改已自动保存");
+                    })
+                    .catch((error) => {
+                        const message =
+                            error instanceof Error
+                                ? error.message
+                                : "保存行数据失败";
+                        setErrorMessage(message);
+                        showSaveFailureToast(message);
+                    });
             }
         }
     };
@@ -1624,6 +1699,7 @@ function App() {
                 src={previewImageSrc}
                 onClose={() => setPreviewImageSrc(null)}
             />
+            <ToastViewport items={toastItems} onDismiss={dismissToast} />
         </div>
     );
 }

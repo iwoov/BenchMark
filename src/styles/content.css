@@ -759,6 +759,13 @@
     gap: 4px;
 }
 
+.record-detail-status-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+}
+
 .record-detail-status-copy strong {
     font-size: 14px;
     color: var(--text-primary);
@@ -769,9 +776,131 @@
     color: var(--text-secondary);
 }
 
+.record-detail-review-copy {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-surface) 78%, white);
+    border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+}
+
+.record-detail-review-copy span {
+    font-size: 12px;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+}
+
 .record-detail-enabled-switch {
     font-size: 13px;
     color: var(--text-primary);
+}
+
+.toast-viewport {
+    position: fixed;
+    top: 92px;
+    right: 20px;
+    z-index: 1200;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+    pointer-events: none;
+}
+
+@media (max-width: 768px) {
+    .toast-viewport {
+        top: 84px;
+        right: 12px;
+        left: 12px;
+        align-items: stretch;
+    }
+
+    .toast-card {
+        max-width: 100%;
+        min-width: 0;
+    }
+}
+
+.toast-card {
+    min-width: 280px;
+    max-width: min(420px, calc(100vw - 32px));
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+    padding: 14px 14px 14px 12px;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-surface) 88%, white);
+    box-shadow: var(--shadow-lg);
+    backdrop-filter: var(--blur);
+    pointer-events: auto;
+    animation: toast-enter var(--transition-normal);
+}
+
+.toast-card-indicator {
+    width: 10px;
+    border-radius: 999px;
+    align-self: stretch;
+    background: var(--accent);
+}
+
+.toast-success .toast-card-indicator {
+    background: var(--success);
+}
+
+.toast-error .toast-card-indicator {
+    background: var(--warning);
+}
+
+.toast-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.toast-card-body strong {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.toast-card-body span {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.toast-card-close {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition:
+        background-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+.toast-card-close:hover {
+    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+    color: var(--text-primary);
+}
+
+@keyframes toast-enter {
+    from {
+        opacity: 0;
+        transform: translate3d(0, -10px, 0) scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+    }
 }
 
 .record-detail-ai-toolbar {

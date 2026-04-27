@@ -28,6 +28,7 @@ import {
     AI_CLEANING_TOOL_LABELS,
     AI_CLEANING_TOOL_ORDER,
     AI_RUN_ALL_LABEL,
+    MAX_ROW_REVIEW_COUNT,
     AI_STAGE_LABELS,
     AI_STAGE_ORDER,
 } from "../constants";
@@ -1401,6 +1402,7 @@ export function DetailPage({
     ]);
     const hasHeroLayout =
         problemTextColumns.length > 0 || imageColumns.length > 0;
+    const reviewCount = selectedRow?.reviewCount ?? 0;
 
     useEffect(() => {
         setDetailImageZoom(100);
@@ -1564,13 +1566,18 @@ export function DetailPage({
         <>
             <section className="record-detail standalone-record-detail">
                 <div className="record-detail-status-bar">
-                    <div className="record-detail-status-copy">
-                        <strong>题目状态</strong>
-                        <span>
-                            {selectedRow.enabled
-                                ? "当前题目已启用"
-                                : "当前题目已停用"}
-                        </span>
+                    <div className="record-detail-status-group">
+                        <div className="record-detail-status-copy">
+                            <strong>题目状态</strong>
+                            <span>
+                                {selectedRow.enabled
+                                    ? "当前题目已启用"
+                                    : "当前题目已停用"}
+                            </span>
+                        </div>
+                        <div className="record-detail-review-copy">
+                            <span>{`审核次数：已审核 ${reviewCount} / ${MAX_ROW_REVIEW_COUNT} 次`}</span>
+                        </div>
                     </div>
                     <label className="column-config-switch record-detail-enabled-switch">
                         <input

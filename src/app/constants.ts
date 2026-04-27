@@ -19,6 +19,7 @@ export const EMPTY_FILTER_LABEL = "空值";
 export const NON_EMPTY_FILTER_VALUE = "__NON_EMPTY_FILTER__";
 export const NON_EMPTY_FILTER_LABEL = "非空值";
 export const QUALIFIED_TITLE_ALIASES = ["是否合格"] as const;
+export const MAX_ROW_REVIEW_COUNT = 3;
 export const TIME_TITLE_ALIASES = ["创建时间"] as const;
 export const CREATOR_TITLE_ALIASES = ["创建人"] as const;
 export const INSPECTOR_TITLE_ALIASES = ["质检员"] as const;
