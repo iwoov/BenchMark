@@ -70,6 +70,19 @@
     min-height: 0;
 }
 
+.list-page-panel {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.list-page-shell {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 .detail-page-panel {
     min-height: 0;
     overflow: visible;
@@ -87,6 +100,8 @@
 }
 
 .list-table-wrap {
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);

@@ -60,7 +60,7 @@ export function ListPage({
     }
 
     return (
-        <>
+        <div className="list-page-shell">
             <div className="list-table-wrap">
                 <table className="list-table">
                     <thead>
@@ -270,6 +270,6 @@ export function ListPage({
                     </button>
                 </div>
             </div>
-        </>
+        </div>
     );
 }

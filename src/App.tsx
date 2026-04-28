@@ -1583,7 +1583,7 @@ function App() {
                                 ) : null}
 
                                 {activeSection === "list" && !isDetailView ? (
-                                    <section className="page-panel">
+                                    <section className="page-panel list-page-panel">
                                         <ListPage
                                             activeFile={activeFile}
                                             paginatedRows={paginatedRows}
