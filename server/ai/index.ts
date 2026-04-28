@@ -72,12 +72,16 @@ const AI_STAGE_LABELS: Record<AIDetectStageKey, string> = {
 };
 const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
     "generate_level3_tags",
+    "level1_tag_classification",
     "biochem_level1_refine",
+    "knowledge_point_tag_classification",
     "question_formatting",
 ];
 const AI_CLEANING_TOOL_LABELS: Record<AICleaningToolKey, string> = {
     generate_level3_tags: "生成 level3 标签",
+    level1_tag_classification: "Level1 标签分类",
     biochem_level1_refine: "细分生化 level1",
+    knowledge_point_tag_classification: "知识点标签分类",
     question_formatting: "题目格式化",
 };
 const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
@@ -86,7 +90,9 @@ const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
         "representation_type",
         "tags",
     ],
+    level1_tag_classification: ["level1", "confidence", "reason"],
     biochem_level1_refine: ["discipline", "confidence", "reason"],
+    knowledge_point_tag_classification: ["knowledge_points", "reason"],
     question_formatting: ["question_text", "options", "answer"],
 };
 const DEFAULT_AI_RETRY_COUNT = 5;

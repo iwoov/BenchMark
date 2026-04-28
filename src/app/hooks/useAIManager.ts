@@ -2463,6 +2463,9 @@ export const useAIManager = ({
                 aiCleaningStartedAtRef.current = null;
             }
             setIsAICleaning(false);
+            setActiveAICleaningToolKey((previous) =>
+                previous === toolKey ? null : previous,
+            );
         }
     };
 

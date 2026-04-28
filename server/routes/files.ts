@@ -39,7 +39,9 @@ type AIDetectStageKey =
     | "final_verdict";
 const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
     "generate_level3_tags",
+    "level1_tag_classification",
     "biochem_level1_refine",
+    "knowledge_point_tag_classification",
     "question_formatting",
 ];
 

@@ -146,7 +146,9 @@ export interface AIChatConfig {
 
 export type AICleaningToolKey =
     | "generate_level3_tags"
+    | "level1_tag_classification"
     | "biochem_level1_refine"
+    | "knowledge_point_tag_classification"
     | "question_formatting";
 
 export interface AICleaningOutputMapping {

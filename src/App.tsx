@@ -55,7 +55,7 @@ import { useFileStore } from "./app/hooks/useFileStore";
 import { useListView } from "./app/hooks/useListView";
 import { useAIManager } from "./app/hooks/useAIManager";
 import { useCellRenderers } from "./app/hooks/useCellRenderers";
-import type { ParsedRow } from "./types";
+import type { AICleaningToolKey, ParsedRow } from "./types";
 
 const SAVE_TOAST_SUCCESS_DELAY_MS = 500;
 const TOAST_AUTO_DISMISS_MS = 2600;
@@ -449,7 +449,9 @@ function App() {
         rowId: string,
         toolKey:
             | "generate_level3_tags"
+            | "level1_tag_classification"
             | "biochem_level1_refine"
+            | "knowledge_point_tag_classification"
             | "question_formatting",
         result: {
             responseText: string;
@@ -648,6 +650,124 @@ function App() {
             )?.targetFieldKey ?? "",
         [aiConfig.cleaning.generate_level3_tags.outputMappings],
     );
+    const level1TagsFieldKey = useMemo(
+        () =>
+            aiConfig.cleaning.level1_tag_classification.outputMappings.find(
+                (item) => item.outputKey === "level1",
+            )?.targetFieldKey ?? "",
+        [aiConfig.cleaning.level1_tag_classification.outputMappings],
+    );
+    const knowledgePointsFieldKey = useMemo(
+        () =>
+            aiConfig.cleaning.knowledge_point_tag_classification.outputMappings.find(
+                (item) => item.outputKey === "knowledge_points",
+            )?.targetFieldKey ?? "",
+        [aiConfig.cleaning.knowledge_point_tag_classification.outputMappings],
+    );
+
+    const normalizeTagListValue = (value: unknown): string[] => {
+        if (Array.isArray(value)) {
+            return value
+                .filter((item): item is string => typeof item === "string")
+                .map((item) => item.trim())
+                .filter((item) => item.length > 0);
+        }
+        if (typeof value !== "string") {
+            return [];
+        }
+        return value
+            .split(/[,，、\n]+/)
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0);
+    };
+
+    const readKnowledgePointTagList = (parsed: Record<string, unknown>) => {
+        const direct = normalizeTagListValue(parsed.knowledge_points);
+        if (direct.length > 0) {
+            return direct;
+        }
+        const grouped = Array.isArray(parsed.knowledge_points_by_subject)
+            ? parsed.knowledge_points_by_subject
+                  .flatMap((item) => {
+                      if (!item || typeof item !== "object") {
+                          return [];
+                      }
+                      const points = (item as { points?: unknown }).points;
+                      return normalizeTagListValue(points);
+                  })
+            : [];
+        return Array.from(new Set(grouped));
+    };
+
+    const saveCleaningTags = async ({
+        toolKey,
+        outputKey,
+        nextTags,
+        fieldKey,
+        valueFormat,
+    }: {
+        toolKey: AICleaningToolKey;
+        outputKey: string;
+        nextTags: string[];
+        fieldKey: string;
+        valueFormat: "string" | "array";
+    }) => {
+        if (!selectedRow || !activeFile) {
+            return;
+        }
+        const currentResult = selectedRow.cleaningResults?.[toolKey] ?? null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const nextParsed = {
+            ...(parsed && typeof parsed === "object" ? parsed : {}),
+            [outputKey]:
+                valueFormat === "string" ? nextTags.join(", ") : nextTags,
+        };
+        const nextParsedJsonText = JSON.stringify(nextParsed);
+        const nextResponseText = JSON.stringify(nextParsed, null, 2);
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(activeFile.fileId)}/cleaning-results/${toolKey}`,
+            {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    rowId: selectedRow.rowId,
+                    fileName: activeFile.fileName,
+                    responseText: nextResponseText,
+                    parsedJsonText: nextParsedJsonText,
+                }),
+            },
+        );
+        if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+                message?: string;
+            };
+            const message = payload.message ?? "保存标签失败";
+            setErrorMessage(message);
+            throw new Error(message);
+        }
+
+        const mappedFieldValues =
+            fieldKey.trim().length > 0
+                ? { [fieldKey]: nextTags.join(", ") }
+                : undefined;
+        updateRowCleaningResult(
+            activeFile.fileId,
+            selectedRow.rowId,
+            toolKey,
+            {
+                responseText: nextResponseText,
+                parsedJsonText: nextParsedJsonText,
+                updatedAt: new Date().toISOString(),
+            },
+            mappedFieldValues,
+        );
+    };
+
     const onRemoveLevel3Tag = async (tag: string) => {
         if (!selectedRow || !activeFile) {
             return;
@@ -778,6 +898,100 @@ function App() {
             },
             mappedFieldValues,
         );
+    };
+
+    const onRemoveLevel1Tag = async (tag: string) => {
+        if (!selectedRow || !activeFile) {
+            return;
+        }
+        const currentResult =
+            selectedRow.cleaningResults?.level1_tag_classification ?? null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const nextTags = normalizeTagListValue(parsed.level1).filter(
+            (item) => item !== tag,
+        );
+        await saveCleaningTags({
+            toolKey: "level1_tag_classification",
+            outputKey: "level1",
+            nextTags,
+            fieldKey: level1TagsFieldKey,
+            valueFormat: "string",
+        });
+    };
+
+    const onAddLevel1Tag = async (tag: string) => {
+        const nextTag = tag.trim();
+        if (!selectedRow || !activeFile || nextTag.length === 0) {
+            return;
+        }
+        const currentResult =
+            selectedRow.cleaningResults?.level1_tag_classification ?? null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const currentTags = normalizeTagListValue(parsed.level1);
+        if (currentTags.includes(nextTag)) {
+            return;
+        }
+        await saveCleaningTags({
+            toolKey: "level1_tag_classification",
+            outputKey: "level1",
+            nextTags: [...currentTags, nextTag],
+            fieldKey: level1TagsFieldKey,
+            valueFormat: "string",
+        });
+    };
+
+    const onRemoveKnowledgePointTag = async (tag: string) => {
+        if (!selectedRow || !activeFile) {
+            return;
+        }
+        const currentResult =
+            selectedRow.cleaningResults?.knowledge_point_tag_classification ??
+            null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const nextTags = readKnowledgePointTagList(parsed).filter(
+            (item) => item !== tag,
+        );
+        await saveCleaningTags({
+            toolKey: "knowledge_point_tag_classification",
+            outputKey: "knowledge_points",
+            nextTags,
+            fieldKey: knowledgePointsFieldKey,
+            valueFormat: "array",
+        });
+    };
+
+    const onAddKnowledgePointTag = async (tag: string) => {
+        const nextTag = tag.trim();
+        if (!selectedRow || !activeFile || nextTag.length === 0) {
+            return;
+        }
+        const currentResult =
+            selectedRow.cleaningResults?.knowledge_point_tag_classification ??
+            null;
+        const parsed =
+            parseAIResultJSON(currentResult?.parsedJsonText ?? "") ??
+            parseAIResultJSON(currentResult?.responseText ?? "") ??
+            {};
+        const currentTags = readKnowledgePointTagList(parsed);
+        if (currentTags.includes(nextTag)) {
+            return;
+        }
+        await saveCleaningTags({
+            toolKey: "knowledge_point_tag_classification",
+            outputKey: "knowledge_points",
+            nextTags: [...currentTags, nextTag],
+            fieldKey: knowledgePointsFieldKey,
+            valueFormat: "array",
+        });
     };
 
     const biochemLevel1FieldKey = useMemo(() => {
@@ -1472,6 +1686,16 @@ function App() {
                                             onAddLevel3Tag={onAddLevel3Tag}
                                             onRemoveLevel3Tag={
                                                 onRemoveLevel3Tag
+                                            }
+                                            onAddLevel1Tag={onAddLevel1Tag}
+                                            onRemoveLevel1Tag={
+                                                onRemoveLevel1Tag
+                                            }
+                                            onAddKnowledgePointTag={
+                                                onAddKnowledgePointTag
+                                            }
+                                            onRemoveKnowledgePointTag={
+                                                onRemoveKnowledgePointTag
                                             }
                                             onUpdateBiochemLevel1Discipline={
                                                 onUpdateBiochemLevel1Discipline

@@ -57,7 +57,9 @@ export type AIDetectStageKey =
     | "final_verdict";
 export type AICleaningToolKey =
     | "generate_level3_tags"
+    | "level1_tag_classification"
     | "biochem_level1_refine"
+    | "knowledge_point_tag_classification"
     | "question_formatting";
 const AI_STAGE_ORDER: AIDetectStageKey[] = [
     "precheck",
@@ -67,7 +69,9 @@ const AI_STAGE_ORDER: AIDetectStageKey[] = [
 ];
 const AI_CLEANING_TOOL_ORDER: AICleaningToolKey[] = [
     "generate_level3_tags",
+    "level1_tag_classification",
     "biochem_level1_refine",
+    "knowledge_point_tag_classification",
     "question_formatting",
 ];
 const LEGACY_STAGE_KEY: AIDetectStageKey = "independent_solving";
@@ -125,6 +129,60 @@ const DEFAULT_AI_CLEANING_PROMPTS: Record<AICleaningToolKey, string> = {
 
 字段内容如下：
 {{fields_json}}`,
+    level1_tag_classification: `你是一个跨学科题目标注专家。请基于用户提交的题目字段内容，对题目进行 level1 标签分类，但不要解答题目。
+
+你会看到题干、选项、图片说明或图片本身等信息。你的任务是判断这道题覆盖了哪些学科方向。
+
+你只能从以下学科列表中选择，不允许输出列表外的学科名称：
+- 分子生物学
+- 细胞生物学
+- 遗传学
+- 发育生物学
+- 生态学
+- 生理学
+- 神经生物学
+- 免疫学
+- 进化生物学
+- 结构生物学
+- 系统生物学
+- 生物物理学
+- 生物信息学
+- 无机化学
+- 分析化学
+- 有机化学
+- 物理化学
+- 金属材料
+- 无机非金属材料
+- 高分子材料
+- 复合材料
+- 半导体材料
+- 生物医用材料
+- 纳米材料
+- 电子信息材料
+- 新能源材料
+
+请遵守以下要求：
+1. 综合题干、选项、图片和上下文信息进行判断。
+2. 必须严格从上述列表中选择最匹配的 1-4 个学科标签。
+3. 不要输出“生物”“化学”“材料”等列表外或过于宽泛的大类。
+4. 多个学科请使用英文逗号加空格连接，例如 "分子生物学, 生物化学"。
+5. 只有在题目确实体现跨学科时才返回多个学科，不要为了凑多个标签而过度扩展。
+6. 若题目信息不足，也必须从列表中选择你认为最可能的 1 个学科，并在置信度中体现不确定性。
+7. 不要输出题目答案，不要输出与分类无关的分析。
+
+请严格按照以下 JSON 格式返回结果，不要包含 Markdown 标记或额外说明：
+{
+  "level1": "学科1, 学科2",
+  "confidence": "高/中/低",
+  "reason": "结合题干、选项、图片信息给出的简要分类依据"
+}
+
+补充说明：
+- 若只能确定一个学科，"level1" 只返回一个标签。
+- "level1" 中的每个标签都必须与上面的列表完全一致，不要改写名称，不要新增标签。
+
+字段内容如下：
+{{fields_json}}`,
     biochem_level1_refine: `你是一个专业的生物学科分类专家。请分析用户提交的生物方向题目，根据题目内容和图片判断该题目的学科研究方向。
 
 你的任务是：
@@ -141,6 +199,68 @@ const DEFAULT_AI_CLEANING_PROMPTS: Record<AICleaningToolKey, string> = {
   "confidence": "高/中/低",
   "reason": "判断依据的简要说明"
 }
+
+字段内容如下：
+{{fields_json}}`,
+    knowledge_point_tag_classification: `你是一个学科知识点标注专家。请基于用户提交的题目字段内容，分析该题在每个相关学科下考察了哪些知识点，但不要解答题目。
+
+你会看到题干、选项、图片说明或图片本身等信息。你的任务是提炼题目真正考察的知识点，重点面向生物、化学、材料相关题目。
+
+---
+
+【知识点的定义与描述规范】
+
+知识点是指：学生需要掌握的学科概念、原理或规律，是解题所依托的知识基础。
+
+知识点分为三个层次，请严格只提取"概念/原理层"：
+
+| 层次         | 说明                             | 示例                          |
+|--------------|----------------------------------|-------------------------------|
+| ✅ 概念/原理层 | 学科中的核心概念、定义、原理     | 细胞膜的流动性、氧化还原反应  |
+| ❌ 能力/行为层 | 描述考生需要做什么操作或判断     | 判断物质运输方式、分析实验结果 |
+| ❌ 情境/应用层 | 题目包装的场景、实验或具体案例   | 某药物的跨膜运输过程          |
+
+描述要求：
+- 使用简洁名词或短语，不超过10个字
+- 不使用"判断""分析""比较""计算"等动词开头
+- 不描述题目的具体情境或实验名称
+- 不写成完整句子
+
+正确示例：\`跨膜运输方式\` \`酶的专一性\` \`共价键极性\` \`氧化还原反应\`
+错误示例：\`判断物质运输方式\` \`分析酶的作用\` \`某实验中的氧化还原过程\`
+
+---
+
+【标注要求】
+
+1. 先识别题目涉及的学科，再提炼每个学科下的核心知识点。
+2. 每个学科知识点数量控制在 1-3 个。
+3. 只保留题目明确涉及、能够从题干/选项/图片中得到支撑的知识点，不要过度联想。
+4. "knowledge_points" 对所有学科知识点去重后平铺汇总，总数不超过 5 个。
+5. 不要输出题目答案，不要输出与知识点分类无关的内容。
+
+---
+
+【输出格式】
+
+请严格按照以下 JSON 格式返回结果，不要包含 Markdown 标记或额外说明：
+
+{
+  "knowledge_points_by_subject": [
+    {
+      "subject": "学科名称",
+      "points": ["知识点1", "知识点2"]
+    }
+  ],
+  "knowledge_points": ["知识点1", "知识点2"],
+  "reason": "概括说明这些知识点为何与该题相关"
+}
+
+补充说明：
+- 若信息不足，请返回空数组，并在 "reason" 中说明缺失了哪些关键信息。
+- 学科名称应尽量与题目所属的 level1/二级学科表达保持一致。
+
+---
 
 字段内容如下：
 {{fields_json}}`,
@@ -197,7 +317,9 @@ const AI_CLEANING_TOOL_OUTPUT_KEYS: Record<AICleaningToolKey, string[]> = {
         "representation_type",
         "tags",
     ],
+    level1_tag_classification: ["level1", "confidence", "reason"],
     biochem_level1_refine: ["discipline", "confidence", "reason"],
+    knowledge_point_tag_classification: ["knowledge_points", "reason"],
     question_formatting: ["question_text", "options", "answer"],
 };
 

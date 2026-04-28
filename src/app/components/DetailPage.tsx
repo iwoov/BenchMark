@@ -154,7 +154,10 @@ function renderMultilineInfoBlock(
     );
 }
 
-function renderTagLine(tags: string[], onRemoveTag?: (tag: string) => void) {
+function renderTagLine(
+    tags: string[],
+    onRemoveTag?: (tag: string) => void | Promise<void>,
+) {
     if (tags.length === 0) {
         return null;
     }
@@ -184,26 +187,99 @@ function renderTagLine(tags: string[], onRemoveTag?: (tag: string) => void) {
     );
 }
 
-function GenerateLevel3TagsResult({
+function readTextArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+}
+
+function normalizeLevel1Labels(value: unknown): string[] {
+    const fromArray = readTextArray(value);
+    if (fromArray.length > 0) {
+        return fromArray;
+    }
+    const text = readTextValue(value);
+    if (!text) {
+        return [];
+    }
+    return text
+        .split(/[,，、\n]+/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+}
+
+function normalizeKnowledgePointsBySubject(
+    value: unknown,
+): Array<{ subject: string; points: string[] }> {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .map((item) => {
+            if (!item || typeof item !== "object") {
+                return null;
+            }
+            const candidate = item as {
+                subject?: unknown;
+                discipline?: unknown;
+                level1?: unknown;
+                points?: unknown;
+                knowledge_points?: unknown;
+            };
+            const subject =
+                readTextValue(candidate.subject) ||
+                readTextValue(candidate.discipline) ||
+                readTextValue(candidate.level1);
+            const points =
+                readTextArray(candidate.points).length > 0
+                    ? readTextArray(candidate.points)
+                    : readTextArray(candidate.knowledge_points);
+            if (!subject || points.length === 0) {
+                return null;
+            }
+            return { subject, points };
+        })
+        .filter(
+            (item): item is { subject: string; points: string[] } =>
+                item !== null,
+        );
+}
+
+function getKnowledgePointTags(parsed: Record<string, unknown>): string[] {
+    const directPoints = readTextArray(parsed.knowledge_points);
+    if (directPoints.length > 0) {
+        return directPoints;
+    }
+
+    const legacyGroupedPoints = normalizeKnowledgePointsBySubject(
+        parsed.knowledge_points_by_subject,
+    );
+    if (legacyGroupedPoints.length === 0) {
+        return [];
+    }
+
+    return Array.from(
+        new Set(legacyGroupedPoints.flatMap(({ points }) => points)),
+    );
+}
+
+function EditableTagList({
     rowId,
-    content,
+    tags,
     onRemoveTag,
     onAddTag,
+    inputPlaceholder = "新标签",
 }: {
     rowId: string;
-    content: string;
-    onRemoveTag?: (tag: string) => void;
+    tags: string[];
+    onRemoveTag?: (tag: string) => void | Promise<void>;
     onAddTag?: (tag: string) => Promise<void>;
+    inputPlaceholder?: string;
 }) {
-    const parsed = parseAIResultJSON(content);
-    const representationMethod = readTextValue(parsed?.representation_method);
-    const representationType = readTextValue(parsed?.representation_type);
-    const parsedTags = Array.isArray(parsed?.tags)
-        ? parsed.tags
-              .filter((item): item is string => typeof item === "string")
-              .map((item) => item.trim())
-              .filter((item) => item.length > 0)
-        : [];
     const [isAdding, setIsAdding] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [pendingTag, setPendingTag] = useState("");
@@ -215,7 +291,7 @@ function GenerateLevel3TagsResult({
         setIsSaving(false);
         setPendingTag("");
         setSaveMessage("");
-    }, [content, rowId]);
+    }, [rowId, tags.join("||")]);
 
     useEffect(() => {
         if (isAdding) {
@@ -228,7 +304,7 @@ function GenerateLevel3TagsResult({
         if (nextTag.length === 0) {
             return;
         }
-        if (parsedTags.includes(nextTag)) {
+        if (tags.includes(nextTag)) {
             setSaveMessage("标签已存在");
             return;
         }
@@ -253,18 +329,11 @@ function GenerateLevel3TagsResult({
     };
 
     return (
-        <div className="ai-result-formatted">
-            <div className="ai-result-status-row">
-                {hasMeaningfulText(representationType) ? (
-                    <span className="ai-result-badge badge-valid">
-                        {representationType}
-                    </span>
-                ) : null}
-            </div>
+        <>
             <div className="ai-inline-tag-row">
                 <strong>标签：</strong>
                 <div className="ai-inline-tag-list">
-                    {parsedTags.map((tag) => (
+                    {tags.map((tag) => (
                         <span key={tag} className="ai-inline-tag">
                             <span>{tag}</span>
                             {onRemoveTag ? (
@@ -305,7 +374,7 @@ function GenerateLevel3TagsResult({
                                         setSaveMessage("");
                                     }
                                 }}
-                                placeholder="新标签"
+                                placeholder={inputPlaceholder}
                                 disabled={isSaving}
                             />
                         </span>
@@ -330,7 +399,116 @@ function GenerateLevel3TagsResult({
                     {saveMessage}
                 </div>
             ) : null}
+        </>
+    );
+}
+
+function GenerateLevel3TagsResult({
+    rowId,
+    content,
+    onRemoveTag,
+    onAddTag,
+}: {
+    rowId: string;
+    content: string;
+    onRemoveTag?: (tag: string) => void | Promise<void>;
+    onAddTag?: (tag: string) => Promise<void>;
+}) {
+    const parsed = parseAIResultJSON(content);
+    const representationMethod = readTextValue(parsed?.representation_method);
+    const representationType = readTextValue(parsed?.representation_type);
+    const parsedTags = Array.isArray(parsed?.tags)
+        ? parsed.tags
+              .filter((item): item is string => typeof item === "string")
+              .map((item) => item.trim())
+              .filter((item) => item.length > 0)
+        : [];
+
+    return (
+        <div className="ai-result-formatted">
+            <div className="ai-result-status-row">
+                {hasMeaningfulText(representationType) ? (
+                    <span className="ai-result-badge badge-valid">
+                        {representationType}
+                    </span>
+                ) : null}
+            </div>
+            <EditableTagList
+                rowId={rowId}
+                tags={parsedTags}
+                onAddTag={onAddTag}
+                onRemoveTag={onRemoveTag}
+            />
             {renderInfoBlock("表征方法", representationMethod, "neutral")}
+        </div>
+    );
+}
+
+function Level1TagClassificationResult({
+    rowId,
+    content,
+    onRemoveTag,
+    onAddTag,
+}: {
+    rowId: string;
+    content: string;
+    onRemoveTag?: (tag: string) => void | Promise<void>;
+    onAddTag?: (tag: string) => Promise<void>;
+}) {
+    const parsed = parseAIResultJSON(content);
+    const level1Labels = normalizeLevel1Labels(parsed?.level1);
+    const confidence = readTextValue(parsed?.confidence);
+    const reason = readTextValue(parsed?.reason);
+
+    return (
+        <div className="ai-result-formatted">
+            <div className="ai-result-status-row">
+                {hasMeaningfulText(confidence) ? (
+                    <span
+                        className={`ai-result-badge ${getRiskBadgeClass(confidence)}`}
+                    >
+                        {`置信度：${confidence}`}
+                    </span>
+                ) : null}
+            </div>
+            <EditableTagList
+                rowId={rowId}
+                tags={level1Labels}
+                onAddTag={onAddTag}
+                onRemoveTag={onRemoveTag}
+                inputPlaceholder="新学科标签"
+            />
+            {renderInfoBlock("分类依据", reason, "neutral")}
+        </div>
+    );
+}
+
+function KnowledgePointTagClassificationResult({
+    rowId,
+    content,
+    onRemoveTag,
+    onAddTag,
+}: {
+    rowId: string;
+    content: string;
+    onRemoveTag?: (tag: string) => void | Promise<void>;
+    onAddTag?: (tag: string) => Promise<void>;
+}) {
+    const parsed = parseAIResultJSON(content);
+    const flatKnowledgePoints =
+        parsed && typeof parsed === "object" ? getKnowledgePointTags(parsed) : [];
+    const reason = readTextValue(parsed?.reason);
+
+    return (
+        <div className="ai-result-formatted">
+            <EditableTagList
+                rowId={rowId}
+                tags={flatKnowledgePoints}
+                onAddTag={onAddTag}
+                onRemoveTag={onRemoveTag}
+                inputPlaceholder="新知识点"
+            />
+            {renderInfoBlock("提炼依据", reason, "neutral")}
         </div>
     );
 }
@@ -808,7 +986,7 @@ function renderAICleaningResultContent(
     toolKey: AICleaningToolKey,
     content: string,
     options?: {
-        onRemoveLevel3Tag?: (tag: string) => void;
+        onRemoveLevel3Tag?: (tag: string) => void | Promise<void>;
     },
 ) {
     const trimmed = content.trim();
@@ -847,6 +1025,27 @@ function renderAICleaningResultContent(
         );
     }
 
+    if (toolKey === "level1_tag_classification") {
+        const level1Labels = normalizeLevel1Labels(parsed.level1);
+        const confidence = readTextValue(parsed.confidence);
+        const reason = readTextValue(parsed.reason);
+        return (
+            <div className="ai-result-formatted">
+                <div className="ai-result-status-row">
+                    {hasMeaningfulText(confidence) ? (
+                        <span
+                            className={`ai-result-badge ${getRiskBadgeClass(confidence)}`}
+                        >
+                            {`置信度：${confidence}`}
+                        </span>
+                    ) : null}
+                </div>
+                {renderTagLine(level1Labels)}
+                {renderInfoBlock("分类依据", reason, "neutral")}
+            </div>
+        );
+    }
+
     if (toolKey === "biochem_level1_refine") {
         const discipline = readTextValue(parsed.discipline);
         const confidence = readTextValue(parsed.confidence);
@@ -868,6 +1067,17 @@ function renderAICleaningResultContent(
                     ) : null}
                 </div>
                 {renderInfoBlock("判断依据", reason, "neutral")}
+            </div>
+        );
+    }
+
+    if (toolKey === "knowledge_point_tag_classification") {
+        const flatKnowledgePoints = getKnowledgePointTags(parsed);
+        const reason = readTextValue(parsed.reason);
+        return (
+            <div className="ai-result-formatted">
+                {renderTagLine(flatKnowledgePoints)}
+                {renderInfoBlock("提炼依据", reason, "neutral")}
             </div>
         );
     }
@@ -1237,7 +1447,11 @@ interface DetailPageProps {
     aiEvaluationStatusMessage: string;
     aiEvaluationAttemptPhases: Record<number, string>;
     onAddLevel3Tag?: (tag: string) => Promise<void>;
-    onRemoveLevel3Tag?: (tag: string) => void;
+    onRemoveLevel3Tag?: (tag: string) => void | Promise<void>;
+    onAddLevel1Tag?: (tag: string) => Promise<void>;
+    onRemoveLevel1Tag?: (tag: string) => void | Promise<void>;
+    onAddKnowledgePointTag?: (tag: string) => Promise<void>;
+    onRemoveKnowledgePointTag?: (tag: string) => void | Promise<void>;
     onUpdateBiochemLevel1Discipline?: (discipline: string) => Promise<void>;
     onRunAICleaning: (toolKey: AICleaningToolKey) => void;
     onRunAIEvaluation: (taskId: string) => void;
@@ -1273,6 +1487,10 @@ export function DetailPage({
     aiEvaluationAttemptPhases,
     onAddLevel3Tag,
     onRemoveLevel3Tag,
+    onAddLevel1Tag,
+    onRemoveLevel1Tag,
+    onAddKnowledgePointTag,
+    onRemoveKnowledgePointTag,
     onUpdateBiochemLevel1Discipline,
     onRunAICleaning,
     onRunAIEvaluation,
@@ -1942,6 +2160,22 @@ export function DetailPage({
                                                         }
                                                     />
                                                 ) : selectedCleaningToolKey ===
+                                                  "level1_tag_classification" ? (
+                                                    <Level1TagClassificationResult
+                                                        rowId={
+                                                            selectedRow.rowId
+                                                        }
+                                                        content={
+                                                            selectedCleaningContent
+                                                        }
+                                                        onAddTag={
+                                                            onAddLevel1Tag
+                                                        }
+                                                        onRemoveTag={
+                                                            onRemoveLevel1Tag
+                                                        }
+                                                    />
+                                                ) : selectedCleaningToolKey ===
                                                   "biochem_level1_refine" ? (
                                                     <BiochemLevel1Result
                                                         rowId={
@@ -1955,6 +2189,22 @@ export function DetailPage({
                                                         }
                                                         onSaveDiscipline={
                                                             onUpdateBiochemLevel1Discipline
+                                                        }
+                                                    />
+                                                ) : selectedCleaningToolKey ===
+                                                  "knowledge_point_tag_classification" ? (
+                                                    <KnowledgePointTagClassificationResult
+                                                        rowId={
+                                                            selectedRow.rowId
+                                                        }
+                                                        content={
+                                                            selectedCleaningContent
+                                                        }
+                                                        onAddTag={
+                                                            onAddKnowledgePointTag
+                                                        }
+                                                        onRemoveTag={
+                                                            onRemoveKnowledgePointTag
                                                         }
                                                     />
                                                 ) : (
