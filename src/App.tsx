@@ -21,10 +21,7 @@ import {
     normalizeAIBatchConcurrency,
     parseAIResultJSON,
 } from "./app/ai-helpers";
-import {
-    getLevelColumnKey,
-    isQualifiedColumnTitle,
-} from "./app/file-helpers";
+import { getLevelColumnKey, isQualifiedColumnTitle } from "./app/file-helpers";
 import { HeaderBar } from "./app/components/HeaderBar";
 import { WorkspaceSidebar } from "./app/components/WorkspaceSidebar";
 import { DashboardPage } from "./app/components/DashboardPage";
@@ -44,10 +41,7 @@ import { AIEvaluationConfigModal } from "./app/components/AIEvaluationConfigModa
 import { AIChatSidebar } from "./app/components/AIChatSidebar";
 import { ImageLightbox } from "./app/components/ImageLightbox";
 import { FilterConfigModal } from "./app/components/FilterConfigModal";
-import {
-    ToastViewport,
-    type ToastItem,
-} from "./app/components/ToastViewport";
+import { ToastViewport, type ToastItem } from "./app/components/ToastViewport";
 import { IconFile, IconMessageSquare } from "./app/icons";
 import { useTheme } from "./app/hooks/useTheme";
 import { getInitialRoute, useRouteState } from "./app/hooks/useRouteState";
@@ -76,6 +70,9 @@ function App() {
         Record<string, boolean>
     >({});
     const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+    const [previewImageSrcList, setPreviewImageSrcList] = useState<string[]>(
+        [],
+    );
     const [toastItems, setToastItems] = useState<ToastItem[]>([]);
     const detailChatResizeRef = useRef<{
         active: boolean;
@@ -687,14 +684,13 @@ function App() {
             return direct;
         }
         const grouped = Array.isArray(parsed.knowledge_points_by_subject)
-            ? parsed.knowledge_points_by_subject
-                  .flatMap((item) => {
-                      if (!item || typeof item !== "object") {
-                          return [];
-                      }
-                      const points = (item as { points?: unknown }).points;
-                      return normalizeTagListValue(points);
-                  })
+            ? parsed.knowledge_points_by_subject.flatMap((item) => {
+                  if (!item || typeof item !== "object") {
+                      return [];
+                  }
+                  const points = (item as { points?: unknown }).points;
+                  return normalizeTagListValue(points);
+              })
             : [];
         return Array.from(new Set(grouped));
     };
@@ -1102,6 +1098,7 @@ function App() {
             onEditCell,
             getLatexToggleKey,
             setPreviewImageSrc,
+            setPreviewImageSrcList,
         });
 
     const isDetailView = activeSection === "list" && selectedRowId !== null;
@@ -1921,7 +1918,11 @@ function App() {
             {/* ─── Image Lightbox ─── */}
             <ImageLightbox
                 src={previewImageSrc}
-                onClose={() => setPreviewImageSrc(null)}
+                srcList={previewImageSrcList}
+                onClose={() => {
+                    setPreviewImageSrc(null);
+                    setPreviewImageSrcList([]);
+                }}
             />
             <ToastViewport items={toastItems} onDismiss={dismissToast} />
         </div>

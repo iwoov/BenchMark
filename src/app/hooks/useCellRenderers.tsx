@@ -2,6 +2,7 @@ import { useEffect, type ReactNode, useState } from "react";
 import type { ParsedCell, ParsedColumn, ParsedRow } from "../../types";
 import {
     getCellText,
+    getCellImageSources,
     isFeedbackColumnTitle,
     isInspectorColumnTitle,
     isOpensourceColumnTitle,
@@ -90,6 +91,71 @@ function splitTagValues(value: string): string[] {
         .filter((item) => item.length > 0);
 }
 
+function MultiImageCell({
+    sources,
+    alt,
+    onPreview,
+    onError,
+    caption,
+}: {
+    sources: string[];
+    alt: string;
+    onPreview: (src: string) => void;
+    onError: (src: string) => void;
+    caption?: string;
+}) {
+    const [activeIndex, setActiveIndex] = useState(0);
+    const hasMultiple = sources.length > 1;
+    const activeSrc = sources[activeIndex] ?? sources[0];
+
+    if (sources.length === 0) {
+        return <span className="empty-text">-</span>;
+    }
+
+    return (
+        <div className="image-cell">
+            <img
+                src={activeSrc}
+                alt={alt}
+                onClick={() => onPreview(activeSrc)}
+                onError={() => onError(activeSrc)}
+            />
+            {hasMultiple ? (
+                <div className="image-cell-switcher">
+                    <button
+                        type="button"
+                        className="btn btn-ghost image-cell-nav"
+                        onClick={() =>
+                            setActiveIndex(
+                                (prev) =>
+                                    (prev - 1 + sources.length) %
+                                    sources.length,
+                            )
+                        }
+                        aria-label="上一张"
+                    >
+                        ‹
+                    </button>
+                    <span className="image-cell-counter">{`${activeIndex + 1} / ${sources.length}`}</span>
+                    <button
+                        type="button"
+                        className="btn btn-ghost image-cell-nav"
+                        onClick={() =>
+                            setActiveIndex(
+                                (prev) => (prev + 1) % sources.length,
+                            )
+                        }
+                        aria-label="下一张"
+                    >
+                        ›
+                    </button>
+                </div>
+            ) : null}
+            {caption ? <span>{caption}</span> : null}
+        </div>
+    );
+}
+
 export const useCellRenderers = ({
     selectedRow,
     level3TagsFieldKey,
@@ -99,6 +165,7 @@ export const useCellRenderers = ({
     onEditCell,
     getLatexToggleKey,
     setPreviewImageSrc,
+    setPreviewImageSrcList,
 }: {
     selectedRow: ParsedRow | null;
     level3TagsFieldKey?: string;
@@ -108,6 +175,7 @@ export const useCellRenderers = ({
     onEditCell: (rowId: string, columnKey: string, value: string) => void;
     getLatexToggleKey: (columnKey: string) => string;
     setPreviewImageSrc: (value: string | null) => void;
+    setPreviewImageSrcList: (value: string[]) => void;
 }) => {
     const [copiedFieldKey, setCopiedFieldKey] = useState<string | null>(null);
 
@@ -162,6 +230,11 @@ export const useCellRenderers = ({
         );
     };
 
+    const openImagePreview = (src: string, allSources: string[]) => {
+        setPreviewImageSrc(src);
+        setPreviewImageSrcList(allSources.length > 1 ? allSources : []);
+    };
+
     const renderReadonlyCell = (
         row: ParsedRow,
         column: ParsedColumn,
@@ -174,22 +247,17 @@ export const useCellRenderers = ({
         }
 
         if (cell.type === "image" && cell.src) {
+            const allSources = getCellImageSources(cell);
             return (
-                <div className="image-cell">
-                    <img
-                        src={cell.src}
-                        alt={cell.value || "Excel图片"}
-                        onClick={() => setPreviewImageSrc(cell.src!)}
-                        onError={() => {
-                            logUIImageRenderError(
-                                row.rowId,
-                                column.title,
-                                cell.src ?? "",
-                            );
-                        }}
-                    />
-                    {cell.value ? <span>{cell.value}</span> : null}
-                </div>
+                <MultiImageCell
+                    sources={allSources}
+                    alt={cell.value || "Excel图片"}
+                    onPreview={(src) => openImagePreview(src, allSources)}
+                    onError={(src) =>
+                        logUIImageRenderError(row.rowId, column.title, src)
+                    }
+                    caption={cell.value}
+                />
             );
         }
 
@@ -304,19 +372,16 @@ export const useCellRenderers = ({
         }
 
         if (cell?.type === "image" && cell.src) {
+            const allSources = getCellImageSources(cell);
             return (
                 <div className="image-cell">
-                    <img
-                        src={cell.src}
+                    <MultiImageCell
+                        sources={allSources}
                         alt={cell.value || "Excel图片"}
-                        onClick={() => setPreviewImageSrc(cell.src!)}
-                        onError={() => {
-                            logUIImageRenderError(
-                                row.rowId,
-                                column.title,
-                                cell.src ?? "",
-                            );
-                        }}
+                        onPreview={(src) => openImagePreview(src, allSources)}
+                        onError={(src) =>
+                            logUIImageRenderError(row.rowId, column.title, src)
+                        }
                     />
                     <input
                         className="editable-text-input"

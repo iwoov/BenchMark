@@ -2643,6 +2643,34 @@
     color: var(--text-muted);
 }
 
+/* ─── Image Cell Switcher ─── */
+.image-cell-switcher {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.image-cell-nav {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.image-cell-counter {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    min-width: 36px;
+    text-align: center;
+}
+
 /* ─── Lightbox ─── */
 .lightbox-mask {
     position: fixed;
@@ -2737,6 +2765,48 @@
 .lightbox-close:hover {
     background: rgba(255, 255, 255, 0.2);
     transform: scale(1.1);
+}
+
+/* ─── Lightbox Navigation ─── */
+.lightbox-nav {
+    position: fixed;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 28px;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 101;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+        background var(--transition-fast),
+        transform var(--transition-fast);
+}
+
+.lightbox-nav:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+.lightbox-nav-prev {
+    left: 16px;
+}
+
+.lightbox-nav-next {
+    right: 16px;
+}
+
+.lightbox-counter {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    margin-left: 8px;
+    opacity: 0.85;
 }
 
 /* ─── Error ─── */

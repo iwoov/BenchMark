@@ -969,6 +969,7 @@ type AIDetectField = {
     type: "text" | "image";
     value: string;
     imageUrl?: string;
+    imageUrls?: string[];
 };
 
 type AIChatMessage = {
@@ -988,7 +989,12 @@ type OpenAIMessageContentPart =
 
 type PromptBuildResult = {
     promptText: string;
-    imageFields: Array<{ title: string; value: string; imageUrl: string }>;
+    imageFields: Array<{
+        title: string;
+        value: string;
+        imageUrl: string;
+        imageUrls?: string[];
+    }>;
 };
 
 type GeminiContentPart =
@@ -1093,38 +1099,49 @@ function buildGeminiUserParts(
     ];
 
     for (const field of promptContent.imageFields) {
+        const allUrls =
+            field.imageUrls && field.imageUrls.length > 0
+                ? field.imageUrls
+                : [field.imageUrl];
         const imageLabel =
             field.value.trim().length > 0
                 ? `字段图片：${field.title}（说明：${field.value}）`
                 : `字段图片：${field.title}`;
-        parts.push({ text: imageLabel });
-
-        const imageUrl = field.imageUrl.trim();
-        const inlineData = parseBase64DataUrl(imageUrl);
-        if (inlineData) {
-            parts.push({
-                inlineData: {
-                    mimeType: inlineData.mimeType,
-                    data: inlineData.data,
-                },
-            });
-            continue;
-        }
-
-        if (imageUrl.startsWith("gs://")) {
-            const ext = getImageExtFromPathLike(imageUrl);
-            parts.push({
-                fileData: {
-                    fileUri: imageUrl,
-                    mimeType: ext ? getImageMimeType(ext) : undefined,
-                },
-            });
-            continue;
-        }
-
         parts.push({
-            text: `[图片地址（未转为 inlineData）: ${imageUrl}]`,
+            text:
+                allUrls.length > 1
+                    ? `${imageLabel}（共 ${allUrls.length} 张）`
+                    : imageLabel,
         });
+
+        for (const imageUrl of allUrls) {
+            const trimmedUrl = imageUrl.trim();
+            const inlineData = parseBase64DataUrl(trimmedUrl);
+            if (inlineData) {
+                parts.push({
+                    inlineData: {
+                        mimeType: inlineData.mimeType,
+                        data: inlineData.data,
+                    },
+                });
+                continue;
+            }
+
+            if (trimmedUrl.startsWith("gs://")) {
+                const ext = getImageExtFromPathLike(trimmedUrl);
+                parts.push({
+                    fileData: {
+                        fileUri: trimmedUrl,
+                        mimeType: ext ? getImageMimeType(ext) : undefined,
+                    },
+                });
+                continue;
+            }
+
+            parts.push({
+                text: `[图片地址（未转为 inlineData）: ${trimmedUrl}]`,
+            });
+        }
     }
 
     return parts;
@@ -1275,6 +1292,7 @@ function toAIDetectFields(value: unknown): AIDetectField[] | null {
             type?: unknown;
             value?: unknown;
             imageUrl?: unknown;
+            imageUrls?: unknown;
         };
 
         if (
@@ -1299,12 +1317,19 @@ function toAIDetectFields(value: unknown): AIDetectField[] | null {
             ) {
                 return null;
             }
+            const imageUrls = Array.isArray(candidate.imageUrls)
+                ? candidate.imageUrls.filter(
+                      (u): u is string =>
+                          typeof u === "string" && u.trim().length > 0,
+                  )
+                : [];
             result.push({
                 title: candidate.title.trim(),
                 type: "image",
                 value:
                     typeof candidate.value === "string" ? candidate.value : "",
                 imageUrl: candidate.imageUrl,
+                imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
             });
             continue;
         }
@@ -1365,22 +1390,30 @@ function buildOpenAIUserContent(
             text: promptContent.promptText,
         },
         ...promptContent.imageFields.flatMap((field) => {
+            const allUrls =
+                field.imageUrls && field.imageUrls.length > 0
+                    ? field.imageUrls
+                    : [field.imageUrl];
             const imageLabel =
                 field.value.trim().length > 0
                     ? `字段图片：${field.title}（说明：${field.value}）`
                     : `字段图片：${field.title}`;
-            return [
+            const parts: OpenAIMessageContentPart[] = [
                 {
                     type: "text" as const,
-                    text: imageLabel,
-                },
-                {
-                    type: "image_url" as const,
-                    image_url: {
-                        url: field.imageUrl,
-                    },
+                    text:
+                        allUrls.length > 1
+                            ? `${imageLabel}（共 ${allUrls.length} 张）`
+                            : imageLabel,
                 },
             ];
+            for (const url of allUrls) {
+                parts.push({
+                    type: "image_url" as const,
+                    image_url: { url },
+                });
+            }
+            return parts;
         }),
     ];
 }
@@ -1510,19 +1543,27 @@ function buildPromptContent(
         title: string;
         value: string;
         imageUrl: string;
+        imageUrls?: string[];
     }> = [];
 
     fields.forEach((field) => {
         if (field.type === "image" && field.imageUrl) {
+            const allUrls =
+                field.imageUrls && field.imageUrls.length > 0
+                    ? field.imageUrls
+                    : [field.imageUrl];
+            const imageCountHint =
+                allUrls.length > 1 ? `${allUrls.length}张图片` : "图片";
             const summary =
                 field.value.trim().length > 0
-                    ? `[图片] ${field.value}`
-                    : "[图片]";
+                    ? `[${imageCountHint}] ${field.value}`
+                    : `[${imageCountHint}]`;
             fieldSummary[field.title] = summary;
             imageFields.push({
                 title: field.title,
                 value: field.value,
                 imageUrl: field.imageUrl,
+                imageUrls: allUrls,
             });
             return;
         }
@@ -2201,22 +2242,37 @@ function normalizeFieldsForAI(fieldPayload: AIDetectField[]): AIDetectField[] {
             return field;
         }
 
-        const normalizedImageUrl = normalizeImageUrlForAI(field.imageUrl);
-        if (normalizedImageUrl) {
+        const allUrls =
+            field.imageUrls && field.imageUrls.length > 0
+                ? field.imageUrls
+                : [field.imageUrl];
+        const normalizedUrls: string[] = [];
+        const failedUrls: string[] = [];
+        for (const url of allUrls) {
+            const normalized = normalizeImageUrlForAI(url);
+            if (normalized) {
+                normalizedUrls.push(normalized);
+            } else {
+                failedUrls.push(url);
+            }
+        }
+
+        if (normalizedUrls.length === 0) {
+            const fallbackValue =
+                field.value.trim().length > 0
+                    ? `${field.value}\n[图片读取失败: ${allUrls.join(", ")}]`
+                    : `[图片读取失败: ${allUrls.join(", ")}]`;
             return {
-                ...field,
-                imageUrl: normalizedImageUrl,
+                title: field.title,
+                type: "text",
+                value: fallbackValue,
             };
         }
 
-        const fallbackValue =
-            field.value.trim().length > 0
-                ? `${field.value}\n[图片读取失败: ${field.imageUrl}]`
-                : `[图片读取失败: ${field.imageUrl}]`;
         return {
-            title: field.title,
-            type: "text",
-            value: fallbackValue,
+            ...field,
+            imageUrl: normalizedUrls[0],
+            imageUrls: normalizedUrls,
         };
     });
 }
