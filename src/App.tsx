@@ -177,7 +177,7 @@ function App() {
         activeFile,
         selectedRowId,
         setSelectedRowId,
-        defaultPageSize: LIST_PAGE_SIZE_OPTIONS[2],
+        defaultPageSize: LIST_PAGE_SIZE_OPTIONS[3],
         setErrorMessage,
     });
 

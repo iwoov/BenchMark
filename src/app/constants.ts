@@ -690,7 +690,7 @@ export const MAX_AI_EVALUATION_MAX_CONCURRENCY = 10;
 export const DEFAULT_AI_BATCH_CONCURRENCY = 4;
 export const MIN_AI_BATCH_CONCURRENCY = 1;
 export const MAX_AI_BATCH_CONCURRENCY = 32;
-export const LIST_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+export const LIST_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 
 export const INITIAL_AI_BATCH_TASK: AIBatchTaskState = {
     status: "idle",
