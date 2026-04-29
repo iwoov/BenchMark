@@ -294,45 +294,31 @@ export const useFileStore = ({
         };
     }, []);
 
-    const createVersionedStatePayload = (file: FileViewState) => {
+    const createVersionedPreferencesPayload = (file: FileViewState) => {
         const currentVersion = stateVersionRef.current[file.fileId] ?? 0;
         const nextVersion = Math.max(Date.now(), currentVersion + 1);
         stateVersionRef.current[file.fileId] = nextVersion;
-        const shouldPreserveRows =
-            file.detailLoaded !== true &&
-            (file.rowCount ?? 0) > 0 &&
-            file.rows.length === 0;
-        const sanitizedState: FileViewState = {
-            ...file,
-            filterConditions: [],
-            rows: shouldPreserveRows
-                ? []
-                : file.rows.map(
-                      ({ cleaningResults, evaluationResults, ...row }) => row,
-                  ),
-        };
         return {
-            state: {
-                ...sanitizedState,
-                ...(shouldPreserveRows ? { rows: undefined } : {}),
-                clientStateVersion: nextVersion,
+            preferences: {
+                selectedDisplayColumnKeys: file.selectedDisplayColumnKeys,
+                selectedEditableColumnKeys: file.selectedEditableColumnKeys,
+                statisticsConfig: file.statisticsConfig,
             },
-            preserveRows: shouldPreserveRows,
             clientStateVersion: nextVersion,
         };
     };
 
-    const persistFileState = async (file: FileViewState) => {
+    const persistFilePreferences = async (file: FileViewState) => {
         try {
-            const statePayload = createVersionedStatePayload(file);
+            const statePayload = createVersionedPreferencesPayload(file);
             const response = await fetch(
-                `/api/files/${encodeURIComponent(file.fileId)}/state`,
+                `/api/files/${encodeURIComponent(file.fileId)}/preferences`,
                 {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        state: statePayload.state,
-                        preserveRows: statePayload.preserveRows,
+                        preferences: statePayload.preferences,
+                        clientStateVersion: statePayload.clientStateVersion,
                     }),
                 },
             );
@@ -343,9 +329,9 @@ export const useFileStore = ({
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error(
-                "[PersistFileState] Failed to save file state:",
-                error,
-            );
+                    "[PersistFilePreferences] Failed to save file preferences:",
+                    error,
+                );
         }
     };
 
@@ -368,7 +354,7 @@ export const useFileStore = ({
                     error,
                 );
                 if (fallbackState) {
-                    void persistFileState(fallbackState);
+                    void persistFilePreferences(fallbackState);
                 }
             });
             persistAIResultsQueueRef.current[fileId] = next;
@@ -386,7 +372,7 @@ export const useFileStore = ({
                 return;
             }
             if (response.status === 404 && fallbackState) {
-                await persistFileState(fallbackState);
+                await persistFilePreferences(fallbackState);
                 const retryResponse = await fetch(endpoint, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
@@ -431,7 +417,7 @@ export const useFileStore = ({
         const timerId = window.setTimeout(() => {
             const latest = pendingPersistRef.current[file.fileId];
             if (latest) {
-                persistFileState(latest);
+                persistFilePreferences(latest);
             }
             delete pendingPersistRef.current[file.fileId];
             delete persistTimersRef.current[file.fileId];
@@ -780,7 +766,7 @@ export const useFileStore = ({
         upsertFileState(nextFile);
         setActiveFileId(nextFile.fileId);
         persistColumnPrefs(nextFile);
-        persistFileState(nextFile);
+        persistFilePreferences(nextFile);
         resetPendingConfigState();
     };
 
@@ -1154,7 +1140,7 @@ export const useFileStore = ({
 
             if (uploadMode === "merge" && mergeTargetFile) {
                 cancelScheduledPersist(mergeTargetFile.fileId);
-                await persistFileState(mergeTargetFile);
+                await persistFilePreferences(mergeTargetFile);
                 await flushPendingAIResults(mergeTargetFile.fileId);
             }
 
@@ -1300,7 +1286,7 @@ export const useFileStore = ({
                             );
                             upsertFileState(nextFile);
                             setActiveFileId(nextFile.fileId);
-                            persistFileState(nextFile);
+                            persistFilePreferences(nextFile);
                             shouldShowColumnModal = false;
                         } else {
                             nextPendingNotice =
@@ -1446,7 +1432,7 @@ export const useFileStore = ({
         pendingDataSourceNameDraft,
         setPendingDataSourceNameDraft,
         removingFileId,
-        persistFileState,
+        persistFilePreferences,
         schedulePersistFileState,
         cancelScheduledPersist,
         persistAIResults,

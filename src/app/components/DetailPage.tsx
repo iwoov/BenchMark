@@ -60,6 +60,37 @@ const DETAIL_WORKSPACE_PANELS: Array<{
     },
 ];
 
+const LEVEL1_TAG_OPTION_CATALOG = [
+    "生物化学",
+    "高分子化学和物理",
+    "分子生物学",
+    "细胞生物学",
+    "遗传学",
+    "发育生物学",
+    "生态学",
+    "生理学",
+    "神经生物学",
+    "免疫学",
+    "进化生物学",
+    "结构生物学",
+    "系统生物学",
+    "生物物理学",
+    "生物信息学",
+    "无机化学",
+    "分析化学",
+    "有机化学",
+    "物理化学",
+    "金属材料",
+    "无机非金属材料",
+    "高分子材料",
+    "复合材料",
+    "半导体材料",
+    "生物医用材料",
+    "纳米材料",
+    "电子信息材料",
+    "新能源材料",
+] as const;
+
 function isDetailWorkspacePanelKey(
     value: string,
 ): value is DetailWorkspacePanelKey {
@@ -273,18 +304,32 @@ function EditableTagList({
     onRemoveTag,
     onAddTag,
     inputPlaceholder = "新标签",
+    selectableOptions,
 }: {
     rowId: string;
     tags: string[];
     onRemoveTag?: (tag: string) => void | Promise<void>;
     onAddTag?: (tag: string) => Promise<void>;
     inputPlaceholder?: string;
+    selectableOptions?: string[];
 }) {
     const [isAdding, setIsAdding] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [pendingTag, setPendingTag] = useState("");
     const [saveMessage, setSaveMessage] = useState("");
     const inputRef = useRef<HTMLInputElement>(null);
+    const selectRef = useRef<HTMLSelectElement>(null);
+    const normalizedSelectableOptions = useMemo(
+        () =>
+            Array.from(
+                new Set(
+                    (selectableOptions ?? [])
+                        .map((item) => item.trim())
+                        .filter((item) => item.length > 0),
+                ),
+            ),
+        [selectableOptions],
+    );
 
     useEffect(() => {
         setIsAdding(false);
@@ -295,9 +340,13 @@ function EditableTagList({
 
     useEffect(() => {
         if (isAdding) {
+            if (normalizedSelectableOptions.length > 0) {
+                selectRef.current?.focus();
+                return;
+            }
             inputRef.current?.focus();
         }
-    }, [isAdding]);
+    }, [isAdding, normalizedSelectableOptions.length]);
 
     const submitTag = async () => {
         const nextTag = pendingTag.trim();
@@ -351,32 +400,66 @@ function EditableTagList({
                     ))}
                     {isAdding ? (
                         <span className="ai-inline-tag ai-inline-tag-editor">
-                            <input
-                                ref={inputRef}
-                                type="text"
-                                value={pendingTag}
-                                onChange={(event) =>
-                                    setPendingTag(event.target.value)
-                                }
-                                onBlur={() => {
-                                    setIsAdding(false);
-                                    setPendingTag("");
-                                    setSaveMessage("");
-                                }}
-                                onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                        event.preventDefault();
-                                        void submitTag();
+                            {normalizedSelectableOptions.length > 0 ? (
+                                <select
+                                    ref={selectRef}
+                                    value={pendingTag}
+                                    onChange={(event) =>
+                                        setPendingTag(event.target.value)
                                     }
-                                    if (event.key === "Escape") {
+                                    onBlur={() => {
                                         setIsAdding(false);
                                         setPendingTag("");
                                         setSaveMessage("");
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                            event.preventDefault();
+                                            void submitTag();
+                                        }
+                                        if (event.key === "Escape") {
+                                            setIsAdding(false);
+                                            setPendingTag("");
+                                            setSaveMessage("");
+                                        }
+                                    }}
+                                    disabled={isSaving}
+                                >
+                                    <option value="">请选择标签</option>
+                                    {normalizedSelectableOptions.map((item) => (
+                                        <option key={item} value={item}>
+                                            {item}
+                                        </option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <input
+                                    ref={inputRef}
+                                    type="text"
+                                    value={pendingTag}
+                                    onChange={(event) =>
+                                        setPendingTag(event.target.value)
                                     }
-                                }}
-                                placeholder={inputPlaceholder}
-                                disabled={isSaving}
-                            />
+                                    onBlur={() => {
+                                        setIsAdding(false);
+                                        setPendingTag("");
+                                        setSaveMessage("");
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                            event.preventDefault();
+                                            void submitTag();
+                                        }
+                                        if (event.key === "Escape") {
+                                            setIsAdding(false);
+                                            setPendingTag("");
+                                            setSaveMessage("");
+                                        }
+                                    }}
+                                    placeholder={inputPlaceholder}
+                                    disabled={isSaving}
+                                />
+                            )}
                         </span>
                     ) : null}
                     <button
@@ -447,11 +530,13 @@ function GenerateLevel3TagsResult({
 function Level1TagClassificationResult({
     rowId,
     content,
+    level1Options,
     onRemoveTag,
     onAddTag,
 }: {
     rowId: string;
     content: string;
+    level1Options: string[];
     onRemoveTag?: (tag: string) => void | Promise<void>;
     onAddTag?: (tag: string) => Promise<void>;
 }) {
@@ -459,6 +544,17 @@ function Level1TagClassificationResult({
     const level1Labels = normalizeLevel1Labels(parsed?.level1);
     const confidence = readTextValue(parsed?.confidence);
     const reason = readTextValue(parsed?.reason);
+    const selectableOptions = useMemo(
+        () =>
+            Array.from(
+                new Set(
+                    [...LEVEL1_TAG_OPTION_CATALOG, ...level1Options]
+                        .map((item) => item.trim())
+                        .filter((item) => item.length > 0),
+                ),
+            ),
+        [level1Options],
+    );
 
     return (
         <div className="ai-result-formatted">
@@ -474,9 +570,9 @@ function Level1TagClassificationResult({
             <EditableTagList
                 rowId={rowId}
                 tags={level1Labels}
+                selectableOptions={selectableOptions}
                 onAddTag={onAddTag}
                 onRemoveTag={onRemoveTag}
-                inputPlaceholder="新学科标签"
             />
             {renderInfoBlock("分类依据", reason, "neutral")}
         </div>
@@ -2167,6 +2263,9 @@ export function DetailPage({
                                                         }
                                                         content={
                                                             selectedCleaningContent
+                                                        }
+                                                        level1Options={
+                                                            level1Options
                                                         }
                                                         onAddTag={
                                                             onAddLevel1Tag

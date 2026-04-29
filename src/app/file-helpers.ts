@@ -606,6 +606,19 @@ function normalizeLoadedCell(value: unknown): ParsedCell {
     return { type: "text", value: cellValue };
 }
 
+function normalizeLoadedReviewCount(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.max(0, Math.trunc(value));
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+            return Math.max(0, Math.trunc(parsed));
+        }
+    }
+    return undefined;
+}
+
 function normalizeRowEnabled(value: unknown): boolean {
     return value !== false;
 }
@@ -736,11 +749,15 @@ export function normalizeLoadedFileState(value: unknown): FileViewState | null {
             const evaluationResults = normalizeRowEvaluationResults(
                 (item as Record<string, unknown>).evaluationResults,
             );
+            const reviewCount = normalizeLoadedReviewCount(item.reviewCount);
             const nextRow: ParsedRow = {
                 rowId: item.rowId,
                 enabled: normalizeRowEnabled(item.enabled),
                 values,
             };
+            if (reviewCount !== undefined) {
+                nextRow.reviewCount = reviewCount;
+            }
             if (Object.keys(aiResults).length > 0) {
                 nextRow.aiResults = aiResults;
             }

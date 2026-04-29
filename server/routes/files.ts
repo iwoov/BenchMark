@@ -192,6 +192,130 @@ function attachClientStateVersion<T extends Record<string, unknown>>(
     };
 }
 
+function toSafeStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+}
+
+function normalizePersistedStatisticsConfig(
+    value: unknown,
+    allowedKeys: Set<string>,
+    fallback?: unknown,
+): {
+    selectedFieldKeys: string[];
+    chartTypeByField: Record<string, string>;
+} {
+    const candidate =
+        value && typeof value === "object"
+            ? (value as {
+                  selectedFieldKeys?: unknown;
+                  chartTypeByField?: unknown;
+              })
+            : null;
+    const selectedFieldKeys = toSafeStringArray(
+        candidate?.selectedFieldKeys,
+    ).filter((key) => allowedKeys.has(key));
+    const rawChartTypeByField =
+        candidate?.chartTypeByField &&
+        typeof candidate.chartTypeByField === "object"
+            ? (candidate.chartTypeByField as Record<string, unknown>)
+            : {};
+    const chartTypeByField = Object.entries(rawChartTypeByField).reduce<
+        Record<string, string>
+    >((acc, [key, chartType]) => {
+        if (
+            allowedKeys.has(key) &&
+            typeof chartType === "string" &&
+            ["bar", "pie", "line", "table"].includes(chartType)
+        ) {
+            acc[key] = chartType;
+        }
+        return acc;
+    }, {});
+    if (
+        selectedFieldKeys.length > 0 ||
+        Object.keys(chartTypeByField).length > 0 ||
+        value !== undefined
+    ) {
+        return {
+            selectedFieldKeys,
+            chartTypeByField,
+        };
+    }
+    if (fallback !== undefined) {
+        return normalizePersistedStatisticsConfig(fallback, allowedKeys);
+    }
+    return {
+        selectedFieldKeys: [],
+        chartTypeByField: {},
+    };
+}
+
+function mergeFilePreferencesState(
+    currentState: unknown,
+    preferences: unknown,
+    nextVersion: number,
+): Record<string, unknown> | null {
+    if (!currentState || typeof currentState !== "object") {
+        return null;
+    }
+    const currentRecord = currentState as Record<string, unknown>;
+    const columns = Array.isArray(currentRecord.columns)
+        ? currentRecord.columns
+        : [];
+    const allowedKeys = new Set(
+        columns
+            .map((column) =>
+                column && typeof column === "object"
+                    ? (column as { key?: unknown }).key
+                    : undefined,
+            )
+            .filter((key): key is string => typeof key === "string"),
+    );
+    const prefs =
+        preferences && typeof preferences === "object"
+            ? (preferences as {
+                  selectedDisplayColumnKeys?: unknown;
+                  selectedEditableColumnKeys?: unknown;
+                  statisticsConfig?: unknown;
+              })
+            : {};
+
+    const displayKeys =
+        prefs.selectedDisplayColumnKeys !== undefined
+            ? toSafeStringArray(prefs.selectedDisplayColumnKeys).filter((key) =>
+                  allowedKeys.has(key),
+              )
+            : toSafeStringArray(currentRecord.selectedDisplayColumnKeys).filter(
+                  (key) => allowedKeys.has(key),
+              );
+    const editableSource =
+        prefs.selectedEditableColumnKeys !== undefined
+            ? prefs.selectedEditableColumnKeys
+            : currentRecord.selectedEditableColumnKeys;
+    const editableKeys = toSafeStringArray(editableSource).filter(
+        (key) => allowedKeys.has(key) && displayKeys.includes(key),
+    );
+    const statisticsConfig = normalizePersistedStatisticsConfig(
+        prefs.statisticsConfig,
+        allowedKeys,
+        currentRecord.statisticsConfig,
+    );
+
+    return {
+        ...currentRecord,
+        selectedDisplayColumnKeys: displayKeys,
+        selectedEditableColumnKeys: editableKeys,
+        statisticsConfig,
+        clientStateVersion: nextVersion,
+    };
+}
+
 function summarizeFileStateAIResults(state: unknown): {
     fileId: string;
     fileName: string;
@@ -827,9 +951,18 @@ function toListRow(row: Record<string, unknown>): Record<string, unknown> {
     );
     const aiResults = toListAIResults(row.aiResults);
     const cleaningResults = toListCleaningResults(row.cleaningResults);
+    const reviewCount =
+        typeof row.reviewCount === "number" && Number.isFinite(row.reviewCount)
+            ? Math.max(0, Math.trunc(row.reviewCount))
+            : typeof row.reviewCount === "string" &&
+                row.reviewCount.trim().length > 0 &&
+                Number.isFinite(Number(row.reviewCount))
+              ? Math.max(0, Math.trunc(Number(row.reviewCount)))
+              : undefined;
     return {
         rowId: getRowIdFromRecord(row),
         enabled: row.enabled !== false,
+        ...(reviewCount !== undefined ? { reviewCount } : {}),
         values,
         ...(aiResults ? { aiResults } : {}),
         ...(cleaningResults ? { cleaningResults } : {}),
@@ -1335,7 +1468,7 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
                 ? attachClientStateVersion(state as Record<string, unknown>)
                 : state;
 
-        if (preserveRows === true) {
+        if (preserveRows === true || !Array.isArray((versionedState as { rows?: unknown }).rows)) {
             const existingState = getFileState(fileId)?.state;
             const existingRows = extractStateRows(existingState);
             versionedState = {
@@ -1357,6 +1490,43 @@ export const registerFileRoutes = (app: Express, upload: Multer) => {
         }
 
         saveFileState(fileId, nextState.fileName, versionedState);
+        return res.json({ ok: true });
+    });
+
+    app.put("/api/files/:fileId/preferences", (req, res) => {
+        const { fileId } = req.params;
+        const { preferences, clientStateVersion } = req.body as {
+            preferences?: unknown;
+            clientStateVersion?: unknown;
+        };
+        const currentPersisted = getFileState(fileId);
+        if (!currentPersisted) {
+            return res.status(404).json({ message: "file not found" });
+        }
+
+        const currentVersion = readClientStateVersion(currentPersisted.state);
+        const nextVersion = readClientStateVersion({
+            clientStateVersion,
+        });
+        if (
+            currentVersion !== null &&
+            (nextVersion === null || nextVersion <= currentVersion)
+        ) {
+            return res.status(409).json({
+                message: "stale preferences ignored",
+            });
+        }
+
+        const mergedState = mergeFilePreferencesState(
+            currentPersisted.state,
+            preferences,
+            nextVersion ?? Math.max(Date.now(), (currentVersion ?? 0) + 1),
+        );
+        if (!mergedState) {
+            return res.status(400).json({ message: "invalid persisted state" });
+        }
+
+        saveFileState(fileId, currentPersisted.fileName, mergedState);
         return res.json({ ok: true });
     });
 
